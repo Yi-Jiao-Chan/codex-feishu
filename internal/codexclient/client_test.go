@@ -188,3 +188,110 @@ func TestPublicContentExcludesHiddenItems(t *testing.T) {
 		t.Fatal("hidden item exposed")
 	}
 }
+
+func TestIncompleteTurnItemsAreLoadedAcrossOpaquePages(t *testing.T) {
+	for _, view := range []string{"summary", "notLoaded"} {
+		t.Run(view, func(t *testing.T) {
+			path := fixture(t, func(ctx context.Context, c *websocket.Conn, w wire) {
+				var p map[string]any
+				json.Unmarshal(w.Params, &p)
+				switch w.Method {
+				case "thread/turns/list":
+					if p["itemsView"] != "full" {
+						t.Error("full view was not requested")
+					}
+					send(ctx, c, w.ID, map[string]any{"data": []map[string]any{{"id": "t", "itemsView": view, "items": []any{}}}, "nextCursor": nil})
+				case "thread/items/list":
+					if p["threadId"] != "thread" || p["turnId"] != "t" || p["sortDirection"] != "asc" {
+						t.Error("item history has incorrect scope")
+					}
+					if p["cursor"] == "opaque-next" {
+						send(ctx, c, w.ID, map[string]any{"data": []map[string]any{{"turnId": "t", "item": map[string]any{"type": "userMessage", "id": "u", "content": TextInput("first actual input")}}}, "nextCursor": nil})
+					} else {
+						// Even an empty page must continue while a cursor exists.
+						send(ctx, c, w.ID, map[string]any{"data": []any{}, "nextCursor": "opaque-next"})
+					}
+				}
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			client, err := Connect(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			turns, err := client.Turns(ctx, "thread")
+			if err != nil || len(turns) != 1 || turns[0].ItemsView != "full" || len(turns[0].Items) != 1 || turns[0].Items[0].PublicText() != "first actual input" {
+				t.Fatalf("incomplete view silently treated as no input: %v", err)
+			}
+		})
+	}
+}
+
+func TestItemHistoryCannotCrossTurnScope(t *testing.T) {
+	path := fixture(t, func(ctx context.Context, c *websocket.Conn, w wire) {
+		if w.Method == "thread/turns/list" {
+			send(ctx, c, w.ID, map[string]any{"data": []map[string]any{{"id": "t", "itemsView": "notLoaded"}}, "nextCursor": nil})
+		} else {
+			send(ctx, c, w.ID, map[string]any{"data": []map[string]any{{"turnId": "different", "item": map[string]string{"type": "userMessage", "id": "wrong"}}}, "nextCursor": nil})
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client, err := Connect(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err = client.Turns(ctx, "thread"); err == nil {
+		t.Fatal("wrong turn items were accepted")
+	}
+}
+
+// Ordinary server requests share a callback with App. Even an error reply from
+// an observer can consume it, so pass requests through without auto-answering.
+func TestServerRequestIsNotRPCResponseOrAutomaticallyAnswered(t *testing.T) {
+	for _, requestID := range []json.RawMessage{json.RawMessage(`2`), json.RawMessage(`"request-2"`)} {
+		t.Run(string(requestID), func(t *testing.T) {
+			var replies atomic.Int32
+			path := fixture(t, func(ctx context.Context, conn *websocket.Conn, w wire) {
+				if w.Method == "" {
+					replies.Add(1)
+					return
+				}
+				if w.Method == "probe" {
+					frame, _ := json.Marshal(map[string]any{"id": requestID, "method": "item/tool/requestUserInput", "params": map[string]string{"threadId": "fixture"}})
+					if err := conn.Write(ctx, websocket.MessageText, frame); err != nil {
+						t.Error(err)
+					}
+				}
+				send(ctx, conn, w.ID, map[string]string{"method": w.Method})
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			client, err := Connect(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			var response struct{ Method string }
+			if err = client.Call(ctx, "probe", nil, &response); err != nil || response.Method != "probe" {
+				t.Fatalf("request collided with RPC reply: %v", err)
+			}
+			select {
+			case event := <-client.Events():
+				if event.Method != "item/tool/requestUserInput" || string(event.RequestID) != string(requestID) {
+					t.Fatal("server request ID not preserved")
+				}
+			case <-ctx.Done():
+				t.Fatal("server request lost")
+			}
+			if err = client.Call(ctx, "barrier", nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if replies.Load() != 0 {
+				t.Fatal("observer answered server request")
+			}
+		})
+	}
+}

@@ -36,6 +36,10 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 
 服务端审批/用户输入请求独立于普通通知：M0 记录请求类型，转任务为“待用户处理”，提示回 App。未经真实双客户端验证，不在飞书生成允许/拒绝或问答提交按钮。
 
+普通 server request 必须透传且保持静默，不能自动回 method-not-found 或空 result；同实例内首个 result/error 会消费共享 callback，抢在 App 前拒绝审批或清空答案。用 generation、thread ID、原始请求 ID 去重；`serverRequest/resolved` 按对应请求解除等待，轮次终态清理该轮等待。M0 以同一过程卡显示“等待你在 Codex App 中处理”，不另发一张消息。特殊 UserVerification 不套用普通审批的 owner 规则。[准确版本审批路由研究](../research/approval-routing-0.162.0.md)
+
+隔离原生问答已证明同一请求/replay、桥静默与断开、另一端回答后继续及 resolved；这仍不能代替真实 App 问答 UI。命令审批探针在本机 `permissionRequest` hook 等待阶段超时，尚未到达原生审批，保留 pending。生产沿用原线程的 hooks 和策略；不得为消除测试阻塞关闭 managed hooks。Default 模式同步问答有 feature gate，工具出现在 schema 中不代表该模式可调用；仅自有 fixture 配置开启该 gate，桥不改真实线程配置。
+
 事件携带 connection_generation。重连产生新 generation，旧连接的晚响应不能确认新尝试。事件缓存有界；溢出时标记需要补齐并暂停依赖实时轮次的操作，不能静默丢失后继续宣称状态准确。
 
 ## 兼容清单

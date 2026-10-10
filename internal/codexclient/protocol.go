@@ -30,6 +30,7 @@ type Turn struct {
 	ID          string `json:"id"`
 	Status      string `json:"status"`
 	Items       []Item `json:"items"`
+	ItemsView   string `json:"itemsView"`
 	StartedAt   *int64 `json:"startedAt"`
 	CompletedAt *int64 `json:"completedAt"`
 }
@@ -114,7 +115,37 @@ func (c *Client) List(ctx context.Context) ([]Thread, error) {
 	return page[Thread](ctx, c, "thread/list", map[string]any{"limit": 100, "sortKey": "updated_at", "sortDirection": "desc", "useStateDbOnly": true})
 }
 func (c *Client) Turns(ctx context.Context, id string) ([]Turn, error) {
-	return page[Turn](ctx, c, "thread/turns/list", map[string]any{"threadId": id, "limit": 50, "sortDirection": "asc", "itemsView": "full"})
+	turns, err := page[Turn](ctx, c, "thread/turns/list", map[string]any{"threadId": id, "limit": 50, "sortDirection": "asc", "itemsView": "full"})
+	if err != nil {
+		return nil, err
+	}
+	for index := range turns {
+		turn := &turns[index]
+		switch turn.ItemsView {
+		case "", "full": // Missing view is retained for legacy fixture compatibility.
+			continue
+		case "summary", "notLoaded":
+		default:
+			return nil, errors.New("unsupported turn items view")
+		}
+		entries, err := page[struct {
+			TurnID string `json:"turnId"`
+			Item   Item   `json:"item"`
+		}](ctx, c, "thread/items/list", map[string]any{"threadId": id, "turnId": turn.ID, "limit": 100, "sortDirection": "asc"})
+		if err != nil {
+			return nil, err
+		}
+		items := make([]Item, 0, len(entries))
+		for _, entry := range entries {
+			if entry.TurnID != turn.ID {
+				return nil, errors.New("item history returned another turn")
+			}
+			items = append(items, entry.Item)
+		}
+		turn.Items = items
+		turn.ItemsView = "full"
+	}
+	return turns, nil
 }
 func (c *Client) Queue(ctx context.Context, id string) ([]Queued, error) {
 	return page[Queued](ctx, c, "thread/queue/list", map[string]any{"threadId": id, "limit": 100})

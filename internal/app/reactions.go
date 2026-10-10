@@ -40,6 +40,9 @@ func reactionFor(r store.Receipt, t codexclient.Turn) string {
 // Journal ambiguous writes and freeze them; never guess a reaction ID to delete.
 func (m *M0) syncReaction(ctx context.Context, r store.Receipt, t codexclient.Turn) {
 	desired := reactionFor(r, t)
+	if desired == "OnIt" && t.Status == "inProgress" && m.waitingInApp(t.ID) {
+		desired = "THINKING"
+	}
 	if t.Status == "completed" && !m.finalDelivered(ctx, t) {
 		desired = ""
 	}

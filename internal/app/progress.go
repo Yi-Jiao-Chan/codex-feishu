@@ -97,6 +97,13 @@ func uuid(key string) string { sum := sha256.Sum256([]byte(key)); return hex.Enc
 // One journalled create per turn; subsequent progress replaces that message.
 // Completed history never creates a fresh progress card.
 func (m *M0) syncTurn(ctx context.Context, t codexclient.Turn) error {
+	if t.Status != "inProgress" {
+		for key, request := range m.appRequests {
+			if request.turnID == t.ID {
+				delete(m.appRequests, key)
+			}
+		}
+	}
 	parent, anchorErr := m.turnParent(ctx, t)
 	if anchorErr != nil {
 		return anchorErr
@@ -110,7 +117,11 @@ func (m *M0) syncTurn(ctx context.Context, t codexclient.Turn) error {
 		return err
 	}
 	if t.Status == "inProgress" || id != "" {
-		card := cards.Progress(turnLabel(t), progressBody(t))
+		label := turnLabel(t)
+		if t.Status == "inProgress" && m.waitingInApp(t.ID) {
+			label = "等待你在 Codex App 中处理"
+		}
+		card := cards.Progress(label, progressBody(t))
 		if m.progress == nil {
 			m.progress = map[string]progressState{}
 		}

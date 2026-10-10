@@ -23,6 +23,7 @@ type M0 struct {
 	g                 messageGateway
 	progress          map[string]progressState
 	turnParents       map[string]string
+	appRequests       map[string]appRequest
 	db                *store.Store
 	thread, chat, bot string
 	OnEvidence        func(string, map[string]any)
@@ -40,8 +41,12 @@ func NewM0(ctx context.Context, cfg config.Config, c *codexclient.Client, g *fei
 	if !meta.InteractiveMain() || !cfg.Allows(meta.CWD) {
 		return nil, errors.New("M0 thread must be a persistent main thread in allowed roots")
 	}
-	if !strings.Contains(meta.Preview, "M0_APP_ORIGIN_20261010") && !strings.Contains(meta.Preview, "M0_APP_ORIGIN_V2_20261010") {
-		return nil, errors.New("M0 requires the explicit App test marker; existing work threads are excluded")
+	turns, err := c.Turns(ctx, thread)
+	if err != nil {
+		return nil, err
+	}
+	if !m0MarkedInput(turns) {
+		return nil, errors.New("M0 requires the explicit test marker in its first user input; preview is not input evidence")
 	}
 	if _, err = c.Attach(ctx, thread); err != nil {
 		return nil, err
@@ -50,6 +55,20 @@ func NewM0(ctx context.Context, cfg config.Config, c *codexclient.Client, g *fei
 		return nil, err
 	}
 	return &M0{cfg: cfg, c: c, g: g, db: db, thread: thread, chat: chat, bot: bot}, nil
+}
+
+// A preview can originate from a goal or delegated output. Inspect the real
+// first user item instead; the marker still does not prove App UI provenance.
+func m0MarkedInput(turns []codexclient.Turn) bool {
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Type == "userMessage" {
+				body := item.PublicText()
+				return strings.Contains(body, "M0_APP_ORIGIN_20261010") || strings.Contains(body, "M0_APP_ORIGIN_V2_20261010")
+			}
+		}
+	}
+	return false
 }
 func ptr(s *string) string {
 	if s == nil {
@@ -219,6 +238,7 @@ func (m *M0) Run(ctx context.Context) error {
 			if json.Unmarshal(event.Params, &p) != nil || p.ThreadID != m.thread {
 				continue
 			}
+			m.trackAppRequest(event)
 			if event.Method == "item/completed" && p.Item.Type == "userMessage" {
 				if err := m.mirror(ctx, p.Item); err != nil {
 					return err
