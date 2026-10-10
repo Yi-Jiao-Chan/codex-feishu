@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "example": true,
+  "command": "doctor",
+  "ok": false,
+  "state": "blocked",
+  "checks": [
+    {"id": "artifact.available", "status": "fail", "required": true, "detail": "格式示例：没有提供已实现的 codex-feishu 二进制", "remediation": "完成开发并提供验收版本，或提供已有发布包", "evidence_ref": null},
+    {"id": "codex.actual_server_compatibility", "status": "pending", "required": true, "detail": "需对目标主机实际 daemon 核验", "remediation": "运行真实的 codex app-server daemon version", "evidence_ref": null},
+    {"id": "feishu.live_callback", "status": "pending", "required": true, "detail": "需点击真实测试卡片", "remediation": "仅在获得本人测试授权后运行 verify", "evidence_ref": null}
+  ],
+  "next_steps": [{"kind": "prerequisite", "instruction": "此文件不是本机 doctor 报告；不得将 example 输出作为验证证据"}]
+}

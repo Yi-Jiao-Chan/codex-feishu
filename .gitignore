@@ -1,0 +1,10 @@
+/bin/
+*.db
+*.db-shm
+*.db-wal
+.env
+*.secret
+*.key
+/var/
+/config.local.toml
+__pycache__/

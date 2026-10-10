@@ -1,0 +1,66 @@
+# 07 目录规则与通知策略
+
+负责 `internal/rules/`、命令解析与规则存储。依赖 00、02；规则是领域函数，目录和时间边界适合参数化测试。
+
+## 目录命令与匹配
+
+```text
+/mute-dir /absolute/project
+/mute-dir /absolute/project --recursive
+/unmute-dir /absolute/project
+/unmute-dir /absolute/project --recursive
+/mute-dir list
+```
+
+默认 mute/unmute 只增删**精确规则**；带 --recursive 只增删该路径的递归规则。两条可以共存。删完仍被其他祖先规则覆盖时，反馈卡列出实际命中的规则，不能写“已恢复自动建群”。
+
+目录须位于本远程主机、使用绝对路径且存在。clean + realpath 解析符号链接后持久化；比较使用 path relative / 路径段边界。递归命中规则路径本身及所有子孙，`/repo/a` 不命中 `/repo/abc`。路径作为数据处理，不拼到 shell 字符串执行。
+
+worktree 候选包含 actual cwd 与可核验的 original project root。allowed_roots 允许其实际目录或项目根；mute 命中任一可信路径时禁止自动建群。不能因为 worktree 放在另一个临时根就绕过项目 mute。
+
+规则只作用于**未来自动建群**：已绑定会话继续同步，显式 /bind 和二期主动创建不受 mute 阻止。解除规则不重新给静默期的历史会话建群。反馈明确显示远程主机、精确/递归、作用范围和当前匹配原因。
+
+## 通知命令
+
+```text
+/notify at off
+/notify at on
+/notify at snooze 2h
+/notify at until 2026-10-11 09:00
+/notify at quiet 23:00-08:00
+/notify at quiet off
+/notify at status
+```
+
+规则按 `(app_id, open_id)` 保存，跨本部署全部任务群生效。接收用户只能修改自己的设置；操作者维护通知目标列表。默认 enabled=true、没有 snooze、每日 quiet 关闭，时区 Asia/Shanghai；安装向导可推荐 23:00–08:00，须明确写入用户选择。
+
+| 操作 | 写入行为 |
+| --- | --- |
+| off | enabled=false；保留其他规则 |
+| on | enabled=true、清除当前 snooze；保留每日 quiet |
+| snooze 2h | 记录绝对恢复时间；不自动解除长期 off |
+| until 时间 | 使用用户时区解析未来时间，保存 UTC；过去/歧义时间报错 |
+| quiet 时间段 | 保存本地 HH:mm 和时区；支持跨午夜 |
+| quiet off | 仅删除每日 quiet，不清除 off / snooze |
+| status | 显示全部规则、当前抑制原因、适用范围与恢复时间 |
+
+例如长期 off 时再 snooze，反馈明确“仍长期关闭，两小时后不会自动恢复”。quiet 采用左闭右开区间：23:00 生效，08:00 结束；起止相等拒绝并建议 off 表示长期关闭。时间使用 IANA 时区，规则持久化后重启不延长 snooze。
+
+## 提醒决策与送达
+
+默认只有 completed、failed、needs_user 三类新事件具备提醒资格；人类镜像、token 增量、普通进度不 @。同一事件对同一用户的通知键唯一，状态变化与内容更新不能重复提醒。
+
+任一长期 off、snooze、每日 quiet 命中就抑制。事件产生并安排通知时记录每个目标是否具备资格；quiet 期间被抑制的通知标 suppressed，不放进“稍后提醒”队列。真正发送前重新判断当前策略和群成员可达性，任何新抑制规则立即生效。
+
+重连与旧历史绑定的补齐不新建 @；首次自动绑定的新任务依 05 的 completedAt 规则单独判定。已持久安排但尚未发送的新通知，发送时若命中免打扰则终止该次提醒，不能等待休息时间结束再补发。正文继续投递。这样关闭 @ 不丢上下文，也不会在早上集中补提醒。
+
+所有 @ 由 03 的结构化 mention 生成；AI 文本里带类似 mention 语法不能自行触发提醒。关闭机器人的 @ 不改变飞书客户端对普通群消息的通知设置，卡片反馈应准确说明。
+
+## 验收
+
+1. 精确/递归、前缀碰撞、符号链接、worktree、叠加规则与解除后的反馈正确。
+2. 非操作者不能修改目录；接收者可关闭自己的 @，不能替别人开关。
+3. 23:00、00:00、07:59、08:00 四个边界与重启后的 snooze 正确。
+4. off + snooze + quiet 组合，以及 on 仅清 snooze、保留 quiet 的结果正确。
+5. 多群同时完成只提醒允许的用户；限流待发期间用户 off 后不再 @。
+6. quiet 期间正文同步，结束后没有积压 @；历史补齐无提醒。

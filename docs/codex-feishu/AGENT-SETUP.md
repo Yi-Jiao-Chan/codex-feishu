@@ -1,0 +1,201 @@
+# Agent 一键配置指南：Codex × 飞书
+
+版本：2026-10-10 / 配置 schema v1。对象：用户和负责配置的 Agent。
+
+本指南自包含，目标是在用户提供少量信息后，由 Agent 检测环境、生成配置、安装用户服务并验证。**当前 codex-feishu 桥接产品尚未开发；本指南中的 codex-feishu 命令是待实现契约。** Agent 必须先确认存在通过验收的二进制与这些命令；没有时完成可做的环境检查并报告软件前置条件，不能假装已经配置完成。开发任务另见开发手册，不在一次配置任务里默认编写整个产品。
+
+## 用户直接交给 Agent 的提示词
+
+```text
+请按本文为我配置并启动 Codex × 飞书桥接工具，先检测环境，只向我询问缺失的信息。
+目标是 Codex App 已连接的远程机器，复用现有共享 App Server，不新起替代服务。
+先配置一期：App 发起任务自动建群、双向同步、默认排队、按钮追加引导、目录 mute 和 @ 控制。
+允许写入本工具的用户配置、安装/启动本工具用户服务。
+允许向我本人发送测试卡、创建只有我和机器人的测试群，以及创建独立的 Codex 测试会话。
+不要给其他用户发送测试消息。沿用原 Codex 权限，不改变现有工作会话。
+长期密钥通过本机文件或安全输入保存，不要让我贴到聊天里。
+请实际验证收发、回调和同会话回显；未能验证的项目明确列出，不要仅凭进程启动报成功。
+```
+
+如果用户删掉测试授权，只做配置和可做的只读检查，保留外部测试为 pending。用户只要求看配置计划时，只执行 plan。用户要求“按本文配置并启动”且保留上述授权时，Agent 可完成本地配置、服务安装和指定本人测试，不再逐步询问同一授权。
+
+## A. 自动检测，先不问用户能检测到的内容
+
+在目标远程执行主机运行。若 Agent 当前不在 App 连接的机器，先使用用户已有 SSH 连接；连接地址未知时才询问地址/用户，不索要私钥正文。
+
+真实可用的基础检查命令：
+
+```sh
+id -un
+uname -sm
+command -v codex
+codex --version
+codex app-server daemon version
+command -v codex-feishu
+systemctl --user is-system-running
+```
+
+Agent 分别检查退出码和 JSON，不能把 shell 输出当一条成功链。某个检查失败不阻止其余独立只读检查。不要改 HOME、CODEX_HOME，也不要为了检查而读取/打印 Codex auth.json 或 app_secret 文件正文；SDK 验证通过受限文件引用加载凭据。
+
+自动检测并记录：
+
+1. App 所用远程主机、系统用户和实际共享 daemon；daemon 返回的 socketPath / appServerVersion 为准。本机先前验证版本为 0.162.0，但目标机必须重新检查。
+2. codex-feishu 可执行文件、version --json 的命令能力与已验收兼容清单。若没有，检查用户提供的发布包/二进制；不要猜下载地址、版本或校验和。
+3. 现有 codex-feishu 配置、host_id、服务和数据库中的有效通知规则；沿用已有部署，优先做差异更新，不重置用户命令设置。
+4. 可访问项目/目录及 realpath，作为待选择建议，不默认镜像整台机器。
+5. 用户级服务管理器与 SSH 注销后的常驻条件。无 user manager/linger 时具体报告，不自行 sudo 或改系统级服务。
+6. 目标主机可出站连接飞书；长连接不需要公网回调 URL，不开放 Codex 端口。
+
+若要读取源码仓库或构建已提供的源码，先遵循该仓库 AGENTS.md 和 CodeGraph 就绪检查；普通安装配置无需扫描源码。
+
+**前置故障处理：**没有桥版本、共享 daemon 未运行、不是同一执行用户、版本未验收，均不进入启用同步。仍可整理目录建议、检查服务环境和收集缺失项。daemon 未启动时提示用户先用 App 连接这台机器；不私自创建一个新执行器代替它。
+
+## B. 收集最少信息
+
+通常三组信息足够。能从现有配置读取的不要重复问；独立环境准备可在等待答案期间继续。
+
+| 信息 | 提问方式 | 自动化处理 |
+| --- | --- | --- |
+| 飞书应用 | 企业自建应用的 App ID；App Secret 已保存在哪个本机文件？ | 检查文件权限；API/长连接验证应用 |
+| 使用者 | 你知道此应用下自己的 open_id 吗？不知道可单聊配对 | 有 ID 直接验证；无 ID 走 D |
+| 目录与提醒 | 哪些项目允许自动建群？是否设置每日免打扰，例如 23:00–08:00？ | 建议现有 App 项目；规范化路径，生成明确规则 |
+
+默认 operator 与通知目标都是本人；通知只在最终结果、失败或需处理时 @；时区 Asia/Shanghai；每日 quiet 默认关闭，可采用用户选择。默认排队、一期自动专属群、二期关闭，这些已确定行为不要再当必答问题。
+
+用户主动提出其他通知接收者时，收集该应用下的 open_id 与是否加入任务群，加入名单放 identity.group_member_open_ids；不能仅靠姓名猜 ID，也不为配对顺手给其他人发消息。第二期已经发布且用户明确启用时，才补问工作群 chat_id，默认创建仍为专属群。
+
+长期 secret **不进入聊天或 argv**。首选用户已有的受限文件；如需要录入，用配置工具安全 TTY 提示。没有安全输入通道时，引导用户在目标机器保存文件并只回复绝对路径。Agent 仅核验可读、所有者、0600，不显示内容。
+
+## C. 飞书后台一次性准备
+
+若应用已可用，按实际检查结果跳过已完成项。未完成时给用户一张具体操作清单：
+
+1. 在飞书开放平台创建企业自建应用，启用机器人，取得 App ID 和 Secret。
+2. 配置长连接接收事件，添加 `im.message.receive_v1` 和 `card.action.trigger`。
+3. 按发布包 `compat/feishu-permissions.json` 的精确权限 ID 申请：私聊收消息、群内 @ 收消息、发送/回复/更新、创建群和所需成员管理、读取核验所需群/成员/自身投递记录；二期另含话题能力。
+4. 发布版本，完成组织需要的审批，设置应用可见范围包含本人及计划使用的群成员。
+5. 在飞书找到机器人并打开单聊。需要群内收发时，机器人须在目标群中。
+
+Agent 可以检测 token、API 错误、长连接和实际事件；仅持有应用凭据不能保证有权自动创建应用、申请组织权限或发布。没有已经授权的控制台操作能力时，上述平台步骤由用户/管理员完成，Agent继续其他准备并提示具体缺项。不要索要整套管理员凭据。
+
+参考：[飞书官方 SDK](https://github.com/larksuite/oapi-sdk-go/blob/v3_main/doc/channel.zh.md)、[自动群管理](https://open.feishu.cn/solutions/detail/groups?lang=zh-CN)、[卡片回调](https://open.feishu.cn/document/feishu-cards/card-callback-communication)。权限精确 ID 以已验收发布清单为准，不能由 Agent 根据名称编造。
+
+## D. 不知道 open_id：单聊配对
+
+此步骤要求机器人已发布且能收私聊。只在正式 serve 尚未启动时运行临时配对监听；已有服务则由现有实例处理受控配对，不抢占事件连接。
+
+Agent 先准备一个仅包含 app_id、secret 文件引用与环境的临时向导输入。调用已确认存在的 `setup pair --input <绝对路径> --timeout 300 --json`。它给出一次性口令，Agent指导用户在机器人单聊发：
+
+```text
+/pair <一次性口令>
+```
+
+工具验证口令后返回实际 sender.open_id。Agent 将其设为 owner，默认填入 operator 与通知目标。配对期间不得启用自动建群或执行用户其他消息；只能接受该应用、私聊、未过期口令。一次性口令可为指导展示一次，长期凭据不展示。
+
+超时保持 needs_input，提示检查发布、私聊订阅和可见范围；不能把发送者姓名、union_id 或另一个应用的 open_id 代替。用户未回答/未配对时继续保持缺项，等待时间不能代替其选择。
+
+## E. 生成向导输入与计划
+
+Agent 用安全序列化生成受限 JSON 文件，替换全部占位值。以下是完整字段示例，**不是可直接运行的用户配置**：
+
+```json
+{
+  "schema_version": 1,
+  "artifact": {"binary_path": "/absolute/path/to/codex-feishu"},
+  "feishu": {"app_id": "cli_replace_me", "app_secret_file": "/absolute/path/to/app-secret"},
+  "identity": {"owner_open_id": "ou_replace_owner", "pair_owner": false, "operator_open_ids": ["ou_replace_owner"], "notification_open_ids": ["ou_replace_owner"], "group_member_open_ids": []},
+  "discovery": {"allowed_roots": ["/absolute/path/to/projects"], "auto_group": true},
+  "notifications": {"timezone": "Asia/Shanghai", "quiet_hours": ""},
+  "features": {"phase": "phase1", "creation": false},
+  "service": {"mode": "systemd-user"},
+  "verification": {"send_test_card_to_owner": true, "create_private_test_group": true, "create_codex_test_thread": true}
+}
+```
+
+verification 的三个 true **仅来自用户明确授权的范围**；没有对应授权填写 false。其他用户不能因在 notification 列表中自动成为操作者。
+
+Agent 将以下变量设为验证过的绝对路径/计划 ID；它们是任务变量，不是系统环境变量：cfb_cli、cfb_intake、cfb_config、cfb_plan_id。不得对包含用户输入的路径做未转义 shell 拼接。
+
+```sh
+"$cfb_cli" version --json
+"$cfb_cli" setup --input "$cfb_intake" --plan --json
+```
+
+计划应列明：安装版本与兼容性、实际共享端点、本人身份、允许目录、自动建群、提醒/quiet、配置/密钥引用/数据库位置、将管理的用户服务和允许的测试。
+
+向用户简短展示计划后，若任务已有上述配置授权继续执行；若用户只要求计划，到此交付。占位值、缺身份、未验收版本、权限 pending 不可被勾成通过。
+
+## F. 应用并启动
+
+CLI 已通过能力检查且 plan 无必需缺项时：
+
+```sh
+"$cfb_cli" setup --input "$cfb_intake" --apply --plan-id "$cfb_plan_id" --json
+"$cfb_cli" doctor --config "$cfb_config" --json
+"$cfb_cli" service install --config "$cfb_config" --user --json
+"$cfb_cli" service start --config "$cfb_config" --json
+"$cfb_cli" status --config "$cfb_config" --json
+```
+
+逐步检查退出码，不用 shell 链把后续步骤在失败后继续跑。setup 生成正式 TOML，备份现有配置并原子写入；目录 0700，配置/secret 0600。保留原 host_id、数据库和绑定。重复配置差异为空时 no-op，不换身份、不清空历史、不重建群。
+
+doctor 是只读检查，不自动发送消息。基础失败立即停止对应后续动作；状态未知保存诊断而不重复 apply / 建群 / 发消息。service install 只操作本工具的用户服务，不重启 Codex，不修改原权限，不开放公网端口。
+
+若服务环境无法保证 SSH 注销后常驻，报告 systemd/linger 的具体情况，由适用管理员或已有 supervisor 解决；不能以 nohup 成功代替完整验收。配置文件已生成而服务阻塞时保留可复用成果。
+
+## G. 真实验证
+
+有提示词中的本人测试授权时，运行：
+
+```sh
+"$cfb_cli" verify --config "$cfb_config" --target self --allow-test-card --allow-test-group --allow-test-thread --json
+```
+
+删除未经授权的对应 allow 标志。运行实例负责验证事件，verify 不另开一个竞争收消息的正式长连接。测试会话在独立临时目录，使用已发布的受控测试流程；不向用户正在工作的线程注入消息，不改变原会话权限。
+
+| 检查 | 自动证据 | 用户需要做的最少动作 |
+| --- | --- | --- |
+| 飞书发送与回调 | 消息 ID、同一卡更新、有效 callback 收据 | 在本人测试卡点一次按钮 |
+| 建群与首轮同步 | 一次创建意图、chat ID、绑定、首条人类与 AI item 映射 | 查看测试群内容 |
+| App 发起自动建群 | 新 App thread 事件、一个绑定、真实群 | 在 App 远程测试项目发一条“只回复 READY”的新任务 |
+| 飞书输入与 App 回显 | 收据、原 thread ID、user item.clientId、队列状态 | 测试群 @ 机器人，确认同一 App 页面出现输入 |
+| 忙时排队与显式引导 | 受控活跃轮、原生队列、delete/steer 确认、无重复 item | 测试卡点击“追加引导”，确认队列/聊天记录 |
+| @ 与 quiet | 结构化 mention、策略命中、被抑制记录 | 确认本人收到 @；测试关闭后不再 @ |
+| 恢复与持久性 | 服务重启后原绑定/规则/水位，SSH 注销后检查 | 仅在需要时重连 App/SSH 验证 |
+
+配置 Agent 能读取线程内容但看不到 App 界面时，必须请用户确认 UI；可用文本确认，无需用户提交截图。用户尚未操作则该项 pending，不能用后台历史代替 UI 验收。忙时测试使用隔离测试流程；临时目录不在允许范围时为其设置专用测试范围，结束后移除，不能扩大生产监听范围。
+
+测试结束恢复用户原通知规则，归档测试 Codex 会话，停止临时配对/模拟组件；测试群保留明确测试标签，不自动解散。不要删除生产配置、日志证据或绑定。
+
+## H. 故障处理与完成报告
+
+| 情况 | Agent 应做的事 |
+| --- | --- |
+| 没有桥二进制 / 命令不存在 | 指明软件尚未提供；保留环境报告，不执行虚构命令 |
+| CLI 版本正确但 daemon 不兼容 | 报实际 appServerVersion 和所缺能力，暂停写入；不自动换服务 |
+| token 可用但收不到消息 | 检查发布、事件订阅、应用范围、群中机器人与 @，不盲目重建应用 |
+| 群/消息创建响应未知 | 使用原意图核验；不重复创建、不改 UUID |
+| 回显历史存在但 UI 未确认 | 保持 UI pending，给一条具体确认动作 |
+| 重跑已有部署 | 差异更新，沿用 host_id、DB 与 bindings，不重复建群 |
+| 运行正常但待审批 | 回 App 处理；不扩大权限绕过 |
+
+最终报告应包含实际安装版本、远程主机/用户、配置与状态路径、服务状态、允许目录、通知规则、测试群/线程标识，以及通过/未通过的验证项。不包含密钥、token、配对口令或用户全量对话。
+
+全部必需验证通过才说“配置完成，双向同步已验证”；仅进程运行就说“服务已启动，以下验收待完成”。若缺外部条件，说明**具体阻塞、已完成部分、用户下一步**，不反复请求已有授权。
+
+## 配好后常用指令
+
+```text
+/mute-dir /project --recursive          禁该目录及子孙未来自动建群
+/unmute-dir /project --recursive        解除该递归规则
+/mute-dir list                          查看目录规则
+/notify at off                          长期关闭对自己的 @
+/notify at on                           恢复并清临时暂停，仍遵守 quiet
+/notify at snooze 2h                    暂停两小时
+/notify at until 2026-10-11 09:00        暂停到指定时间（用户时区）
+/notify at quiet 23:00-08:00             每日休息时间
+/notify at quiet off                    清每日时间段
+/notify at status                       查看当前实际状态
+```
+
+普通群消息要 @ 机器人；忙时默认排队，卡片点击“追加引导”才改变当前轮。关闭 @ 保留内容同步。第二期启用后才提供 /new、直接消息创建与话题选择。

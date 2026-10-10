@@ -1,0 +1,68 @@
+{
+  "appServerVersion": "0.162.0",
+  "localFixture": true,
+  "checks": {
+    "test_thread_created": true,
+    "active_turn_uses_local_fixture": true,
+    "two_clients_same_thread": true,
+    "queue_shared_between_clients": true,
+    "queue_does_not_steer_current_turn": true,
+    "queue_start_rejects_busy": true,
+    "claimed_queued_message_for_steer": true,
+    "steer_targets_original_active_turn": true,
+    "stale_turn_id_rejected": true,
+    "native_queue_drains_after_turn": true,
+    "queue_empty_after_drain": true,
+    "all_inputs_persisted_once": true,
+    "steer_persisted_in_current_turn": true,
+    "queued_turn_order": true,
+    "other_client_receives_user_events": true,
+    "other_client_receives_ai_events": true,
+    "steer_reaches_model_context": true
+  },
+  "error": null,
+  "threadId": "01a124c3-27e9-7a92-a302-1e89c4373f42",
+  "activeTurnId": "01a124c3-285f-7180-85e5-e2310354149e",
+  "queueStartWhileBusy": {
+    "code": -32600,
+    "message": "thread already has an active or pending turn"
+  },
+  "staleSteerError": {
+    "code": -32600,
+    "message": "expected active turn id `wrong-turn` but found `01a124c3-285f-7180-85e5-e2310354149e`"
+  },
+  "completedTurns": [
+    {
+      "id": "01a124c3-285f-7180-85e5-e2310354149e",
+      "status": "completed"
+    },
+    {
+      "id": "01a124c3-2e66-71c1-a2d2-f7b92ac856b8",
+      "status": "completed"
+    },
+    {
+      "id": "01a124c3-304a-7803-ae47-f0e9c58dc0f1",
+      "status": "completed"
+    }
+  ],
+  "userMessageCorrelation": [
+    {
+      "turnId": "01a124c3-285f-7180-85e5-e2310354149e",
+      "clientId": "bridge-probe-initial-b2220bd45fd0"
+    },
+    {
+      "turnId": "01a124c3-285f-7180-85e5-e2310354149e",
+      "clientId": "bridge-probe-steer-b2220bd45fd0"
+    },
+    {
+      "turnId": "01a124c3-2e66-71c1-a2d2-f7b92ac856b8",
+      "clientId": "bridge-probe-next-one-b2220bd45fd0"
+    },
+    {
+      "turnId": "01a124c3-304a-7803-ae47-f0e9c58dc0f1",
+      "clientId": "bridge-probe-next-two-b2220bd45fd0"
+    }
+  ],
+  "modelRequestCount": 4,
+  "testThreadArchived": true
+}

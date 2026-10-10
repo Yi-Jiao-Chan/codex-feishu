@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "template": true,
+  "phase": "phase1",
+  "artifact_commit": null,
+  "bridge_version": null,
+  "codex_cli_version": null,
+  "codex_app_server_version": null,
+  "protocol_schema_digest": null,
+  "feishu_sdk_version": null,
+  "host_id": null,
+  "cases": [
+    {"id": "P1-01", "status": "pending", "evidence": [], "blocking_reason": "未执行真实 App 自动建群验收"},
+    {"id": "P1-03", "status": "pending", "evidence": [], "blocking_reason": "未执行 App 界面双向回显验收"},
+    {"id": "P1-05", "status": "pending", "evidence": [], "blocking_reason": "需列出 Q3–Q9 具体证据"},
+    {"id": "P1-11", "status": "pending", "evidence": [], "blocking_reason": "未执行独立 Agent 配置验收"}
+  ],
+  "required_case_ids": ["P1-01", "P1-02", "P1-03", "P1-04", "P1-05", "P1-06", "P1-07", "P1-08", "P1-09", "P1-10", "P1-11", "P1-12"],
+  "ready_to_release": false
+}

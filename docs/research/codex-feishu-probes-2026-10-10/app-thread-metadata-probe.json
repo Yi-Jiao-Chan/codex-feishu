@@ -1,0 +1,9 @@
+{
+  "source": "vscode",
+  "threadSource": "user",
+  "originator": "codex-tui",
+  "parentThreadId": null,
+  "ephemeral": false,
+  "canAcceptDirectInput": true,
+  "projectId": null
+}

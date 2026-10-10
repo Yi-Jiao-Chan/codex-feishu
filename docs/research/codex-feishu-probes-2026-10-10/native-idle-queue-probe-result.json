@@ -1,0 +1,12 @@
+{
+  "appServerVersion": "0.162.0",
+  "checks": {
+    "queue_add_accepts_fresh_thread_without_initial_turn": true,
+    "idle_queue_add_automatically_starts_turn": true,
+    "idle_queue_empty_after_execution": true,
+    "fresh_queue_input_persists_as_user_message": true
+  },
+  "error": null,
+  "threadId": "01a124cc-b12a-7930-8586-518c142272e0",
+  "testThreadArchived": true
+}

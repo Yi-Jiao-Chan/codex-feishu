@@ -1,0 +1,27 @@
+{
+  "appServerVersion": "0.162.0",
+  "checks": {
+    "queue_delete_claims_only_once": true,
+    "failed_steer_can_be_requeued_after_known_rejection": true,
+    "requeued_content_and_correlation_preserved": true,
+    "queue_survives_bridge_client_disconnect": true,
+    "interrupted_turn_keeps_pending_queue": true,
+    "pending_queue_readable_without_subscription": true
+  },
+  "error": null,
+  "threadId": "01a124c8-7dc7-7b32-ae4b-ada5f27088a7",
+  "testThreadMetadata": {
+    "source": "vscode",
+    "threadSource": "feishu.bridge.validation",
+    "originator": "codex-tui",
+    "ephemeral": false,
+    "parentThreadId": null
+  },
+  "observerReceivedThreadStarted": true,
+  "queueLengthAfterSameClientIdRetry": 2,
+  "clientIdIsIdempotencyKey": false,
+  "threadStatusAfterUnsubscribe": {
+    "type": "idle"
+  },
+  "testThreadArchived": true
+}

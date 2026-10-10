@@ -1,0 +1,44 @@
+# 开发规格示例：占位值必须由 setup 替换；桥接产品尚未实现。
+schema_version = 1
+
+[host]
+id = "replace-with-persistent-generated-host-id"
+
+[codex]
+cli_path = "auto"
+endpoint = "auto"
+
+[feishu]
+app_id = "cli_replace_me"
+app_secret_file = "/absolute/path/to/app-secret"
+
+[access]
+owner_open_id = "ou_replace_owner"
+operator_open_ids = ["ou_replace_owner"]
+
+[groups]
+additional_member_open_ids = []
+
+[discovery]
+enabled = true
+first_run = "baseline"
+allowed_roots = ["/absolute/path/to/projects"]
+scan_interval_seconds = 15
+
+[notifications]
+# 初次配置的默认值；数据库中用户命令设置优先，重跑不重置。
+target_open_ids = ["ou_replace_owner"]
+timezone = "Asia/Shanghai"
+mention_on = ["completed", "failed", "needs_user"]
+quiet_hours = ""
+
+[sync]
+card_update_min_interval_ms = 800
+
+[creation]
+enabled = false
+default_follow_mode = "group"
+workgroup_chat_ids = []
+
+[storage]
+database_file = "/absolute/path/to/codex-feishu/bridge.db"

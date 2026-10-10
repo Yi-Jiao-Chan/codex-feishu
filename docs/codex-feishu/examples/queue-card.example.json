@@ -1,0 +1,29 @@
+{
+  "schema": "2.0",
+  "header": {
+    "title": {"tag": "plain_text", "content": "已排队 · 第 2 条"},
+    "template": "blue"
+  },
+  "body": {
+    "elements": [
+      {"tag": "markdown", "content": "请先补充失败原因，再继续修改。\n当前轮结束后执行。"},
+      {
+        "tag": "button",
+        "element_id": "steer",
+        "type": "primary",
+        "size": "large",
+        "width": "fill",
+        "text": {"tag": "plain_text", "content": "追加引导"},
+        "behaviors": [{"type": "callback", "value": {"action": "steer_queue_item", "token": "example-steer-non-executable-token", "revision": 3}}]
+      },
+      {
+        "tag": "button",
+        "element_id": "remove",
+        "type": "text",
+        "text": {"tag": "plain_text", "content": "移除"},
+        "behaviors": [{"type": "callback", "value": {"action": "remove_queue_item", "token": "example-remove-non-executable-token", "revision": 3}}]
+      },
+      {"tag": "div", "text": {"tag": "plain_text", "content": "人类发送 · 飞书 · 张三 · 16:21", "text_size": "notation", "text_color": "grey"}}
+    ]
+  }
+}

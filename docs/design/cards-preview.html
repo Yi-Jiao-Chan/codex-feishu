@@ -1,0 +1,166 @@
+<div id="cf-proposal-preview">
+  <div class="viz-carousel viz-dotted-background" aria-label="飞书卡片交互预览" data-previous-label="上一张" data-next-label="下一张">
+    <section data-variant="群聊跟进与追加引导" aria-label="群聊跟进与追加引导">
+      <div class="cf-stage">
+        <div class="cf-product" aria-label="任务群卡片">
+          <div class="cf-chat-heading"><i data-lucide="messages-square" aria-hidden="true"></i><span>Codex · open-access · 修复测试</span><span class="cf-label">一期</span></div>
+          <article class="cf-native-card">
+            <div class="cf-card-body">
+              <p class="cf-body-text">检查导入失败的原因，补充对应的回归验证。</p>
+              <div class="cf-source">人类发送 · 你 · Codex 端 · 15:40</div>
+            </div>
+          </article>
+          <article class="cf-native-card">
+            <div class="cf-header"><span>修复导入测试</span><span class="cf-status" id="cf-task-status">运行中</span></div>
+            <div class="cf-card-body">
+              <p class="cf-body-text">已定位失败的测试，正在检查调用路径。</p>
+              <details id="cf-run-details"><summary class="cursor-interaction">执行详情</summary><div class="cf-detail">项目：open-access<br>当前动作：检查相关调用<br>已排队：<span id="cf-queue-count">1</span> 条</div></details>
+              <div class="cf-source">AI 回复 · Codex · 15:41</div>
+            </div>
+          </article>
+          <article class="cf-native-card" aria-live="polite">
+            <div class="cf-header"><span id="cf-queue-title">已排队 · 第 1 条</span></div>
+            <div class="cf-card-body">
+              <p class="cf-body-text">先说明失败原因，再继续修改。</p>
+              <p class="cf-secondary" id="cf-queue-hint">当前轮结束后执行</p>
+              <div class="cf-actions" id="cf-queue-actions">
+                <button type="button" class="cf-primary cursor-interaction" id="cf-steer"><i data-lucide="corner-up-right" aria-hidden="true"></i>追加引导</button>
+                <button type="button" class="cf-secondary-button cursor-interaction" id="cf-remove">移除</button>
+              </div>
+              <div class="cf-source">人类发送 · 你 · 飞书 · 15:42</div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section data-variant="飞书创建任务" aria-label="飞书创建任务" hidden>
+      <div class="cf-stage">
+        <div class="cf-product" aria-label="新建任务卡片">
+          <div class="cf-chat-heading"><i data-lucide="bot" aria-hidden="true"></i><span>Codex 机器人</span><span class="cf-label">二期</span></div>
+          <article class="cf-native-card">
+            <div class="cf-header"><span>创建任务</span></div>
+            <form class="cf-card-body" id="cf-create-form">
+              <div class="cf-field"><span class="cf-field-label">执行位置</span><div class="cf-location"><i data-lucide="server" aria-hidden="true"></i>远程开发机</div></div>
+              <label class="cf-field" for="cf-directory"><span class="cf-field-label">工作目录</span><select class="cf-input cursor-interaction" id="cf-directory"><option value="open-access">open-access</option><option value="another">选择其他目录…</option></select></label>
+              <div class="cf-path" id="cf-selected-path">/projects/open-access</div>
+              <label class="cf-field" for="cf-task"><span class="cf-field-label">任务说明</span><textarea class="cf-input" id="cf-task" rows="3" required>检查导入失败的原因，补充对应的回归验证。</textarea></label>
+              <label class="cf-field" for="cf-mode"><span class="cf-field-label">跟进位置</span><select class="cf-input cursor-interaction" id="cf-mode"><option value="group">专属群聊</option><option value="topic">工作群话题</option></select></label>
+              <p class="cf-secondary" id="cf-mode-hint">创建新的任务群，加入你和机器人。</p>
+              <label class="cf-field" id="cf-topic-target" for="cf-workgroup" hidden><span class="cf-field-label">目标工作群</span><select class="cf-input cursor-interaction" id="cf-workgroup"><option>我的工作群</option></select></label>
+              <div class="cf-actions"><button type="submit" class="cf-primary cf-full cursor-interaction" id="cf-create">创建任务</button></div>
+              <p class="cf-secondary" id="cf-create-result" aria-live="polite" hidden></p>
+            </form>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section data-variant="通知设置" aria-label="通知设置" hidden>
+      <div class="cf-stage">
+        <div class="cf-product" aria-label="通知设置卡片">
+          <div class="cf-chat-heading"><i data-lucide="bell" aria-hidden="true"></i><span>Codex · 通知设置</span><span class="cf-label">一期</span></div>
+          <article class="cf-native-card">
+            <div class="cf-header"><span>你的 @ 提醒</span></div>
+            <div class="cf-card-body">
+              <div class="cf-setting-row"><span>当前状态</span><span id="cf-at-state" aria-live="polite">已开启</span></div>
+              <div class="cf-setting-row"><span>每日免打扰</span><span>23:00–08:00</span></div>
+              <div class="cf-setting-row"><span>时区</span><span>Asia/Shanghai</span></div>
+              <p class="cf-secondary">设置对所有任务群生效。免打扰期间，消息仍持续同步。</p>
+              <div class="cf-actions"><button type="button" class="cf-primary cf-full cursor-interaction" id="cf-snooze">暂停 @ 2 小时</button></div>
+              <div class="cf-source">通知对象 · 你</div>
+            </div>
+          </article>
+          <article class="cf-native-card">
+            <div class="cf-header"><span>目录自动建群</span></div>
+            <div class="cf-card-body"><div class="cf-location"><i data-lucide="folder" aria-hidden="true"></i>/projects/scratch</div><p class="cf-secondary">已禁用 · 包含所有子孙目录</p><div class="cf-source">已有任务群继续同步</div></div>
+          </article>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+<style>
+  #cf-proposal-preview { --cf-surface:light-dark(#ffffff,#202327); --cf-text:light-dark(#202124,#ebedf0); --cf-muted:light-dark(#646a73,#adb3be); --cf-line:light-dark(#e5e7eb,#3a3f47); --cf-header-bg:light-dark(#eaf0ff,#28354c); --cf-header-text:light-dark(#2554a9,#bfd0ff); --cf-action:light-dark(#3370ff,#4b7dff); --cf-action-text:#ffffff; --cf-input-bg:light-dark(#ffffff,#252930); --cf-padding:16px; color-scheme:light dark; }
+  #cf-proposal-preview .cf-stage { min-height:590px; padding:24px 12px; box-sizing:border-box; display:flex; justify-content:center; align-items:flex-start; }
+  #cf-proposal-preview .cf-product { width:100%; max-width:430px; color:var(--cf-text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; font-size:14px; line-height:1.55; }
+  #cf-proposal-preview .cf-chat-heading { display:flex; gap:9px; align-items:center; margin-bottom:18px; font-weight:500; flex-wrap:wrap; }
+  #cf-proposal-preview .cf-chat-heading > svg { color:var(--cf-muted); flex:none; }
+  #cf-proposal-preview .cf-label { color:var(--cf-muted); font-size:12px; font-weight:400; margin-left:auto; }
+  #cf-proposal-preview .cf-native-card { background:var(--cf-surface); border:1px solid var(--cf-line); border-radius:10px; overflow:hidden; margin-top:12px; }
+  #cf-proposal-preview .cf-header { background:var(--cf-header-bg); color:var(--cf-header-text); padding:12px var(--cf-padding); display:flex; gap:12px; align-items:center; justify-content:space-between; font-weight:500; }
+  #cf-proposal-preview .cf-status { font-size:12px; font-weight:400; white-space:nowrap; }
+  #cf-proposal-preview .cf-card-body { padding:var(--cf-padding); }
+  #cf-proposal-preview p { margin:0 0 10px; }
+  #cf-proposal-preview .cf-secondary { color:var(--cf-muted); font-size:12px; }
+  #cf-proposal-preview .cf-source { color:var(--cf-muted); font-size:12px; border-top:1px solid var(--cf-line); padding-top:10px; margin-top:14px; overflow-wrap:anywhere; }
+  #cf-proposal-preview .cf-actions { display:flex; gap:8px; margin-top:16px; align-items:center; flex-wrap:wrap; }
+  #cf-proposal-preview button { font:inherit; min-height:48px; border-radius:6px; padding:9px 14px; display:inline-flex; align-items:center; justify-content:center; gap:7px; font-weight:500; }
+  #cf-proposal-preview .cf-primary { background:var(--cf-action); color:var(--cf-action-text); border:1px solid var(--cf-action); flex:1; }
+  #cf-proposal-preview .cf-secondary-button { border:1px solid var(--cf-line); color:var(--cf-text); background:var(--cf-surface); font-weight:400; }
+  #cf-proposal-preview button:disabled { opacity:.55; cursor:default; }
+  #cf-proposal-preview .cf-full { width:100%; }
+  #cf-proposal-preview details { color:var(--cf-muted); font-size:12px; margin-top:12px; }
+  #cf-proposal-preview summary { min-height:24px; }
+  #cf-proposal-preview .cf-detail { margin-top:8px; overflow-wrap:anywhere; }
+  #cf-proposal-preview .cf-field { display:block; margin-bottom:14px; }
+  #cf-proposal-preview .cf-field-label { display:block; font-weight:500; margin-bottom:7px; }
+  #cf-proposal-preview .cf-input { box-sizing:border-box; width:100%; background:var(--cf-input-bg); color:var(--cf-text); border:1px solid var(--cf-line); border-radius:6px; font-family:inherit; font-size:16px; line-height:1.5; padding:9px 11px; min-height:44px; }
+  #cf-proposal-preview textarea { resize:vertical; }
+  #cf-proposal-preview .cf-path { font-size:12px; color:var(--cf-muted); overflow-wrap:anywhere; margin-top:-7px; margin-bottom:16px; }
+  #cf-proposal-preview .cf-location { display:flex; align-items:center; gap:8px; overflow-wrap:anywhere; }
+  #cf-proposal-preview .cf-setting-row { display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:14px; }
+  #cf-proposal-preview [hidden] { display:none !important; }
+  @media (max-width:360px) { #cf-proposal-preview .cf-stage { padding:16px 6px; min-height:650px; } }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('cf-proposal-preview');
+  const get = id => root.querySelector('#' + id);
+  const defaults = { queue:'queued', mode:'group', snoozed:false, created:false, padding:16 };
+  const restored = window.openai?.widgetState?.privateContent;
+  const state = { ...defaults, ...(restored && typeof restored === 'object' ? restored : {}) };
+  if (!['queued','steered','removed'].includes(state.queue)) state.queue = 'queued';
+  if (!['group','topic'].includes(state.mode)) state.mode = 'group';
+  const save = () => window.openai?.setWidgetState?.({modelContent:{cardPreview:{queue:state.queue,creationMode:state.mode,atSnoozed:state.snoozed}},privateContent:{...state}})?.catch(() => {});
+  function render() {
+    if (!['queued','steered','removed'].includes(state.queue)) state.queue = 'queued';
+    if (!['group','topic'].includes(state.mode)) state.mode = 'group';
+    state.padding = Math.max(12, Math.min(20, Number(state.padding) || 16));
+    root.style.setProperty('--cf-padding', String(state.padding) + 'px');
+    const queued = state.queue === 'queued';
+    get('cf-queue-title').textContent = queued ? '已排队 · 第 1 条' : state.queue === 'steered' ? '已追加至当前轮' : '已移除';
+    get('cf-queue-hint').textContent = queued ? '当前轮结束后执行' : state.queue === 'steered' ? '当前轮已接收这条补充消息' : '这条消息已从待执行队列移除';
+    get('cf-queue-actions').hidden = !queued;
+    get('cf-queue-count').textContent = queued ? '1' : '0';
+    get('cf-mode').value = state.mode;
+    get('cf-topic-target').hidden = state.mode !== 'topic';
+    get('cf-mode-hint').textContent = state.mode === 'group' ? '创建新的任务群，加入你和机器人。' : '所有跟进与回复保持在选定工作群的话题中。';
+    get('cf-at-state').textContent = state.snoozed ? '已暂停 · 两小时后恢复' : '已开启';
+    get('cf-snooze').textContent = state.snoozed ? '恢复 @ 提醒' : '暂停 @ 2 小时';
+    get('cf-create').disabled = state.created;
+    get('cf-create').textContent = state.created ? '已创建 · 预览' : '创建任务';
+    get('cf-create-result').hidden = !state.created;
+    get('cf-create-result').textContent = state.mode === 'group' ? '预览：任务已绑定专属群聊。' : '预览：任务已绑定工作群话题。';
+  }
+  function settleQueue(next) {
+    get('cf-steer').disabled = true;
+    get('cf-remove').disabled = true;
+    get('cf-queue-title').textContent = next === 'steered' ? '正在追加引导…' : '正在移除…';
+    setTimeout(() => { state.queue = next; render(); save(); }, 450);
+  }
+  get('cf-steer').addEventListener('click', () => settleQueue('steered'));
+  get('cf-remove').addEventListener('click', () => settleQueue('removed'));
+  get('cf-mode').addEventListener('change', e => { state.mode = e.target.value; state.created = false; render(); save(); });
+  get('cf-directory').addEventListener('change', e => { get('cf-selected-path').textContent = e.target.value === 'open-access' ? '/projects/open-access' : '预览：在独立选择卡浏览远程目录'; });
+  get('cf-snooze').addEventListener('click', () => { state.snoozed = !state.snoozed; render(); save(); });
+  get('cf-create-form').addEventListener('submit', e => { e.preventDefault(); state.created = true; render(); save(); });
+  window.addEventListener('openai:set_globals', e => {
+    const incoming = e.detail?.globals?.widgetState?.privateContent;
+    if (incoming && typeof incoming === 'object') { Object.assign(state, defaults, incoming); render(); }
+  });
+  render();
+  if (globalThis.Tweak) {
+    const tweak = new Tweak({container:root.querySelector('.cf-product'),onChange:render});
+    tweak.addSlider(state,'padding',{label:'卡片留白',min:12,max:20,step:2,unit:'px',reference:'--cf-padding'});
+  }
+})();
+</script>

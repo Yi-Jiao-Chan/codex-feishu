@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "artifact": {"binary_path": "/absolute/path/to/codex-feishu"},
+  "feishu": {"app_id": "cli_replace_me", "app_secret_file": "/absolute/path/to/app-secret"},
+  "identity": {"owner_open_id": null, "pair_owner": true, "operator_open_ids": [], "notification_open_ids": [], "group_member_open_ids": []},
+  "discovery": {"allowed_roots": ["/absolute/path/to/projects"], "auto_group": true},
+  "notifications": {"timezone": "Asia/Shanghai", "quiet_hours": ""},
+  "features": {"phase": "phase1", "creation": false},
+  "service": {"mode": "systemd-user"},
+  "verification": {"send_test_card_to_owner": false, "create_private_test_group": false, "create_codex_test_thread": false}
+}
