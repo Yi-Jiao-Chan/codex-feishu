@@ -77,6 +77,14 @@ bin/codex-feishu m0-listen --config /absolute/path/to/config.toml --thread APP_T
 ## 仍需完成的门槛
 
 1. 真实 App 分类：首条输入、App UI fork / worktree / 子代理元数据，已请求用户进行同一 M0 会话的独立 fork 测试；原生 fork 协议通过不能代替 UI 来源证明。App 与 CLI 均可能呈现 source=vscode、originator=codex-tui；不能据此分类。[准确版本分类研究](thread-classification-0.162.0.md)与源码核验已完成。
+
+   分类维护检查已补齐活跃及归档的人类 fork，再对每条测试谱系读取活跃及归档的 spawned descendants。只读 metadata/turns，不 resume 已归档线程，不输出标题或正文。分页覆盖空页后续 cursor，并拒绝重复 cursor。最新实际检查仍只有原 App 测试线程（7 个 userMessage），没有测试 fork 或子代理样本；因此真实 App 分类继续 pending，不能据此次只读结果宣布 M0 完成。
+
+   开发检查的参数为位置参数，不使用 `--config`：
+
+   ```sh
+   go run ./cmd/m0-maintenance /absolute/path/to/m0.toml APP_TEST_THREAD_ID --classification-check
+   ```
 2. M0 API：权限阻塞已解除；@、手机长代码、群成员、引用 parent_id、UUID 即时重复均已通过。去重期限采用官方建群同 owner 10 小时、消息/回复1小时契约；本次未等待期限到达或超期再请求，也不会用未知请求去验证是否产生重复。原先首个群的 UUID 放 body 不作为去重通过证据。仅测新发送含 @；PATCH 触发提醒行为仍未测，首版过程 PATCH 始终不含 @，最终新发送才含策略生成的 @。
 3. 一期权限拒绝 / 长内容分片 / 过期按钮等剩余矩阵继续保留 pending；手机 fixture 通过不泛化到所有内容。
    审批需核验真实 App 处理及桥等待卡；命令审批原生探针需在保留平台 hooks 的条件下到达审批请求。同步问答的双客户端协议通过不能代替这些验收。

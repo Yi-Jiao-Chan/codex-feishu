@@ -19,6 +19,15 @@ func checkClassification(ctx context.Context, c *codexclient.Client, cfg config.
 	if err != nil {
 		fail(err)
 	}
+	archivedThreads, err := archivedClassificationThreads(ctx, c)
+	if err != nil {
+		fail(err)
+	}
+	archivedIDs := map[string]bool{}
+	for _, thread := range archivedThreads {
+		archivedIDs[thread.ID] = true
+	}
+	threads = append(threads, archivedThreads...)
 	selected := map[string]bool{root: true}
 	for changed := true; changed; {
 		changed = false
@@ -46,6 +55,7 @@ func checkClassification(ctx context.Context, c *codexclient.Client, cfg config.
 			}
 		}
 		record := classificationRecord(cfg, thread)
+		record["archived"] = archivedIDs[thread.ID]
 		record["user_item_count"] = userItems
 		record["git_common_dir"] = gitMetadata(ctx, thread.CWD, "rev-parse", "--path-format=absolute", "--git-common-dir")
 		if thread.ID != root {
@@ -89,8 +99,45 @@ func checkClassification(ctx context.Context, c *codexclient.Client, cfg config.
 			}
 		}
 	}
-	if err = json.NewEncoder(os.Stdout).Encode(map[string]any{"bound_test_thread": root, "metadata": records, "subagent_scope": "spawned descendants of bound test and its active forks; active and archived", "app_ui_verified_by_metadata": false}); err != nil {
+	if err = json.NewEncoder(os.Stdout).Encode(map[string]any{"bound_test_thread": root, "metadata": records, "subagent_scope": "spawned descendants of bound test and its forks; active and archived", "app_ui_verified_by_metadata": false}); err != nil {
 		os.Exit(4)
+	}
+}
+
+// Fork lineage can be archived in App before the operator reports its ID.
+// Read metadata through the existing daemon; never resume archived threads.
+func archivedClassificationThreads(ctx context.Context, c *codexclient.Client) ([]codexclient.Thread, error) {
+	return classificationPages(func(cursor string) ([]codexclient.Thread, *string, error) {
+		var result struct {
+			Data       []codexclient.Thread `json:"data"`
+			NextCursor *string              `json:"nextCursor"`
+		}
+		params := map[string]any{"archived": true, "limit": 100, "useStateDbOnly": true}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		err := c.Call(ctx, "thread/list", params, &result)
+		return result.Data, result.NextCursor, err
+	})
+}
+
+func classificationPages(fetch func(string) ([]codexclient.Thread, *string, error)) ([]codexclient.Thread, error) {
+	var threads []codexclient.Thread
+	cursor := ""
+	seen := map[string]bool{}
+	for {
+		data, next, err := fetch(cursor)
+		if err != nil {
+			return nil, err
+		}
+		threads = append(threads, data...)
+		if next == nil || *next == "" {
+			return threads, nil
+		}
+		if seen[*next] {
+			return nil, errors.New("repeated archived classification cursor")
+		}
+		cursor, seen[*next] = *next, true
 	}
 }
 
