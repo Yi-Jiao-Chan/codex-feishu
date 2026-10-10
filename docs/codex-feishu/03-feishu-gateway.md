@@ -4,7 +4,7 @@
 
 ## 接入与发布条件
 
-使用飞书企业自建应用，启用机器人，通过官方 Go SDK 长连接接收事件，不要求公网回调服务。M0 固定一个已构建和联调的 SDK 版本。官方 v3_main 已有 Channel；若所选稳定版本没有该包，用该版本已有的 ws + event dispatcher 实现相同领域接口，不导入不存在的 package。[官方 SDK Channel 文档](https://github.com/larksuite/oapi-sdk-go/blob/v3_main/doc/channel.zh.md)
+使用飞书企业自建应用，启用机器人，通过官方 Go SDK 长连接接收事件，不要求公网回调服务。当前 M0 锁定 Go SDK v3.12.0，使用 ws + event dispatcher + core.Request，以避免 Channel 发送降级和不明确的重试；该版本已有 Channel，但本项目不使用其出站默认分支。SDK 版本升级须重新核验生命周期和发送语义。[官方 SDK Channel 文档](https://github.com/larksuite/oapi-sdk-go/blob/v3_main/doc/channel.zh.md)
 
 订阅 `im.message.receive_v1` 和 `card.action.trigger`；接收范围须包含操作者与测试群。SDK 负责长连接协议与事件解析，桥负责权限、去重、路由和业务确认。Channel 启动/停止生命周期按固定版本文档执行，不能停止后再次 Start 同一个终态 ws.Client。
 
@@ -18,6 +18,7 @@
 | 以机器人发送 / 回复 / 更新消息 | 镜像与状态 | 收到消息，原卡可更新 |
 | 创建群聊及管理所需成员 | 自动建群 | 建一个本人和机器人的测试群 |
 | 读取群、成员及必要的自身投递记录 | 重建绑定、超时核验、@ 检查 | 能读回已建群 / 目标成员 / 自己的消息 |
+| 原消息状态 reaction | 接收 / 排队 / 执行 / 完成反馈 | 添加、替换并仅删除本机器人 reaction；`im:message.reactions:write_only` |
 | 话题回复 | 二期 | 原始 root/thread 信息保留，回复留在话题 |
 
 控制台配置、版本发布和组织审批不能通过“拿到 tenant token”替代。doctor 检查不出来的权限标 pending，真实 probe 才能将其变为 pass。不要为了接收 @ 消息申请读取所有群消息，除非平台当前权限模型确有需要并在发布清单解释。
@@ -34,7 +35,7 @@
 
 发送类型分为 send、reply、update。每次记录稳定 delivery_id 与平台支持的实际 UUID/去重字段；M0 核验字段、有效期及重试行为。群创建同样核验接口去重能力。无法证明幂等且响应丢失的请求进入 unknown，不能沿用普通 HTTP 重试器。
 
-Card JSON 2.0 用原生 API 发送与更新，保留 message/card ID。不要每个增量发一条新消息。发送和更新限流各自按平台错误及 Retry-After 等实际信号调节。
+Card JSON 2.0 用原生 API 发送与更新，保留 message/card ID。每 turn 一张过程卡，同一卡最短 2 秒 PATCH；最终结果独立发送。不要每个 agentMessage 或增量发一条新消息。reaction 是辅助反馈，其失败不能阻断主链路或触发输入重试。发送和更新限流各自按平台错误与 x-ogw-ratelimit-reset 等实际信号调节。原消息引用使用 POST /im/v1/messages/:message_id/reply，持久父消息 ID 与回复 ID；普通群 reply_in_thread=false，不把 reply 失败降级成普通 send。
 
 @ 必须由桥根据 07 的策略生成结构化 mention；用户/AI 正文中的类似 mention 标签作为普通内容显示，不能绕过免打扰。目标须已在群内；不可达成员在状态中明确标注，不退回 @所有人。
 

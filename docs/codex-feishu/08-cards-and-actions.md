@@ -6,20 +6,22 @@
 
 借鉴 [assistant-ui QueueItem](https://www.assistant-ui.com/docs/api-reference/primitives/queue-item) 的 Steer / Remove，以及 [AI Elements Task](https://elements.ai-sdk.dev/components/task) 和 [Message](https://elements.ai-sdk.dev/components/message) 的正文、状态与详情分层。实现使用 [飞书 Card JSON 2.0](https://open.feishu.cn/document/feishu-cards/card-json-v2-structure)，不使用 code-anywhere 卡片或 Web React 组件。
 
-详细原生组件约束见[卡片研究](../research/codex-feishu-card-ux-2026-10-10.md)。公开组件能展示一个状态，不代表后端已经确认该状态。
+本轮紧凑样式、cc-connect 聚合机制和 reaction 约束见[补充研究](../research/progress-cards-reactions-2026-10-10.md)。详细原生组件约束见[卡片研究](../research/codex-feishu-card-ux-2026-10-10.md)。公开组件能展示一个状态，不代表后端已经确认该状态。
 
 ## 视图与布局契约
 
 | 视图模型 | 从上到下 | 操作 |
 | --- | --- | --- |
-| TaskView | 短标题、文字状态、项目、最近动作、更新时间、折叠详情 | 运行：停止；停止且有队列：继续执行；待审批：回 App |
-| QueuedInputView | 已排队与真实序号、输入摘要、结束后执行说明、来源页脚 | 主：追加引导；次：移除 |
+| TaskView | 小字状态、最新公开动作、工具统计；完成后压缩为状态 | 运行：停止；停止且有队列：继续执行；待审批：回 App |
+| QueuedInputView | 小字排队状态与真实序号；不重复人类正文，无来源脚注 | 横排小按钮：追加引导 / 移除 |
 | HumanMirrorView | 人类正文、底部灰色来源引用区 | 不添加 AI 操作或伪造人名 |
-| AIReplyView | 公开正文、必要的折叠执行摘要、底部 AI 来源引用区 | 生成中同卡更新；最终正文固定 |
+| AIReplyView | 最终公开正文、底部小字 AI 来源引用区 | 过程在 TaskView 更新；最终结果独立发送 |
 | CreationDraftView | 主机、唯一已选目录、任务内容、跟进模式、目标、提交 | 主：创建任务；次：取消 / 选择其他目录 |
 | NotificationView | @ 开关、生效原因、暂停结束、每日 quiet、范围 | 常用暂停 / 恢复；完整状态可用命令查询 |
 
-全局：单列、短标题、真实状态文字；颜色辅助而不承担唯一语义。首屏最多两个主要动作；手机主按钮 large / fill；长路径完整值放详情，不把省略文本回传执行。没有实际计划或百分比时不画进度条。
+全局：不使用彩色 header，短文本卡采用 compact 宽度，body.padding="8px 12px"，vertical_spacing="4px"。正文 normal（14px）、状态与来源 notation（12px）；来源用底部 Markdown 引用区。首屏最多两个主要动作；队列操作横排 small / text，长路径完整值放详情，不把省略文本回传执行。没有实际计划或百分比时不画进度条。
+
+回复关系使用飞书真实 Reply API；过程 / 结果引用触发本轮的输入，操作卡引用对应补充输入，不用卡片内复制正文伪装引用。
 
 来源引用区采用原生 notation / grey 文本，明确“人类发送”或“AI 回复”、来源和时间，置于正文和详情的最下方。长来源可以换行，不依赖 hover。模板对正文中的原生标签作安全编码，不让正文生成可执行按钮或 @。
 
@@ -61,4 +63,4 @@ token 由服务端映射到 binding、receipt/native queue ID、动作、可操�
 4. 审批显示回 App；未验收能力没有按钮。
 5. 表单提交只产生一个有效草稿/创建意图；选择其他目录回到原草稿。
 
-起步样例：[队列卡](examples/queue-card.example.json)。它通过 JSON 语法检查，尚待 M0 原生渲染确认；不可作为已经上线的卡片。
+起步样例：[队列卡](examples/queue-card.example.json)。样式字段与当前 M0 渲染器一致；按钮令牌是无效占位值。M0 短文本的实际飞书桌面样式已由用户确认，手机和长代码边界仍待验收。

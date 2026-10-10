@@ -1,29 +1,75 @@
 {
   "schema": "2.0",
-  "header": {
-    "title": {"tag": "plain_text", "content": "已排队 · 第 2 条"},
-    "template": "blue"
+  "config": {
+    "update_multi": true,
+    "width_mode": "compact"
   },
   "body": {
+    "padding": "8px 12px",
+    "vertical_spacing": "4px",
     "elements": [
-      {"tag": "markdown", "content": "请先补充失败原因，再继续修改。\n当前轮结束后执行。"},
       {
-        "tag": "button",
-        "element_id": "steer",
-        "type": "primary",
-        "size": "large",
-        "width": "fill",
-        "text": {"tag": "plain_text", "content": "追加引导"},
-        "behaviors": [{"type": "callback", "value": {"action": "steer_queue_item", "token": "example-steer-non-executable-token", "revision": 3}}]
+        "tag": "markdown",
+        "content": "已排队 · 当前轮结束后执行",
+        "text_size": "notation"
       },
       {
-        "tag": "button",
-        "element_id": "remove",
-        "type": "text",
-        "text": {"tag": "plain_text", "content": "移除"},
-        "behaviors": [{"type": "callback", "value": {"action": "remove_queue_item", "token": "example-remove-non-executable-token", "revision": 3}}]
-      },
-      {"tag": "div", "text": {"tag": "plain_text", "content": "人类发送 · 飞书 · 张三 · 16:21", "text_size": "notation", "text_color": "grey"}}
+        "tag": "column_set",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "auto",
+            "elements": [
+              {
+                "tag": "button",
+                "type": "text",
+                "size": "small",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "追加引导"
+                },
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "action": "steer",
+                      "token": "example-non-executable-token",
+                      "revision": 1
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "auto",
+            "elements": [
+              {
+                "tag": "button",
+                "type": "text",
+                "size": "small",
+                "text": {
+                  "tag": "plain_text",
+                  "content": "移除"
+                },
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "action": "remove",
+                      "token": "example-non-executable-token",
+                      "revision": 1
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     ]
   }
 }
