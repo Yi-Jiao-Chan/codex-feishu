@@ -15,6 +15,7 @@ type Thread struct {
 	CreatedAt      int64           `json:"createdAt"`
 	UpdatedAt      int64           `json:"updatedAt"`
 	ParentThreadID *string         `json:"parentThreadId"`
+	ForkedFromID   *string         `json:"forkedFromId"`
 	ProjectID      *string         `json:"projectId"`
 	Ephemeral      bool            `json:"ephemeral"`
 	ThreadSource   json.RawMessage `json:"threadSource"`

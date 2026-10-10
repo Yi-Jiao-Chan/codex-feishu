@@ -37,7 +37,7 @@ func NewM0(ctx context.Context, cfg config.Config, c *codexclient.Client, g *fei
 	if err != nil {
 		return nil, err
 	}
-	if meta.ParentThreadID != nil || meta.Ephemeral || !cfg.Allows(meta.CWD) {
+	if !meta.InteractiveMain() || !cfg.Allows(meta.CWD) {
 		return nil, errors.New("M0 thread must be a persistent main thread in allowed roots")
 	}
 	if !strings.Contains(meta.Preview, "M0_APP_ORIGIN_20261010") && !strings.Contains(meta.Preview, "M0_APP_ORIGIN_V2_20261010") {

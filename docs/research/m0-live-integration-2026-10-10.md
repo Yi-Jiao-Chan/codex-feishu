@@ -18,6 +18,10 @@
 | 紧凑样式 | 无 header、compact、body padding 8px 12px / vertical_spacing 4px；过程与状态 12px，最终正文14px，来源底部12px引用区；PATCH 实际接受且用户确认 | pass（桌面短文本） |
 | App 实际追加引导 | 用户确认补充消息从原生队列进入当前轮，最终结果包含引导标记；后台 exact delete / expectedTurnId 指向同一轮，两个输入完成 reaction | pass |
 | 原消息引用回复 | 真实 Reply API 发送、PATCH 后 GET 读回 parent_id 与用户补充消息 ID 相同；业务按 turn 首条输入 / 操作卡对应输入选择父消息，相关单元测试通过 | pass（API / 关联逻辑） |
+| 群成员与机器人读回 | 用户开通并发布 im:chat.members:read 后，实际 GET 群 / 全量成员 / 机器人是否在群 / 自己消息全部成功；owner_in_group、bot_in_group 均 true | pass |
+| 实际 @ 与手机长代码 | 引用原用户消息发送含本人显式 @ 的 24 行长代码卡；用户对实际提醒、手机完整查看及底部引用区答复“没问题” | pass（本次 fixture） |
+| UUID 实际去重 | 同一进程内，建群 query.uuid、发送 body.uuid、引用回复 body.uuid 各立即重复一次，返回 ID 均与第一次相同；每次请求独立 journal，未知不重试 | pass（即时重复，不证明过期后行为） |
+| fork / worktree 协议 | 既有 daemon + 独立本地模型 / 临时 Git 仓库：fork 新 ID、forkedFromId、parent 空、实际 cwd、注册 worktree/common-dir、继承 turn ID 均正确；两条 fixture 线程归档清理 | pass（协议，真实 App 分类仍待确认） |
 | Go 原生双客户端协议 | opt-in 集成测试使用已有 daemon + 本地模型 fixture，证明 queue/add、exact delete、expectedTurnId steer、原生消费各一次；独立线程清理 | pass（协议，不能代替 App UI） |
 | 竞争与未知响应 | Go race 测试包含输入去重、journal 重启、监听独占锁、RPC / 消息丢响应不重复发送、同卡聚合、结果去重、reaction 替换与未知冻结 | pass（本地故障注入） |
 
@@ -37,6 +41,10 @@
 引用回复 probe：`om_x100b63949337b0a4deb07bedc020768`；GET 读回 parent_id 为 `om_x100b6394869448a0b18e657371eb3ee`，与目标一致。原消息回复关系在发送时确定，旧直接发送的消息无法通过普通 PATCH 改成引用回复；正式后续投递使用 Reply API。
 
 既有三条已完成的飞书测试输入也成功添加 CheckMark。旧忙时测试的三条公开过程卡收敛为一张状态卡，撤回另外两条；撤回一个旧“已进入会话”操作卡。原生聊天记录及最终回复保留。
+
+补充验证：UUID 测试群 `oc_a3087ee5c360729cf922b6580bceca32`，发送去重消息 `om_x100b639569a3c8a8debb78f71693978`；主测试群 @ / 手机布局引用卡 `om_x100b6395695edcb4c2fd3919234b2e0`。相同 UUID 两次立即调用只得到同一个 chat_id/message_id，引用卡 parent_id 也正确。
+
+原生 fork fixture：源线程 `01a1255a-c725-7d70-9bd4-0d1af6e58ac3`，fork `01a1255a-d082-70a1-863b-8966761c1e0f`；测试后均归档，临时仓库与 worktree 删除。无用户工作线程变更。
 
 ## 当前实现边界
 
@@ -58,9 +66,13 @@ bin/codex-feishu m0-listen --config /absolute/path/to/config.toml --thread APP_T
 
 ## 仍需完成的门槛
 
-1. 真实 App UI：手机 / 长代码 / 权限拒绝场景。追加引导 UI 已由用户确认。
-2. M0 API：群成员 GET 实际返回99991672，缺 im:chat.members:read（已请用户开通并发布）；自身消息与回复 parent_id 已可读回。仍需真实 @ 提醒；UUID 去重有效期对应的实际重复调用。已修正建群 UUID 在 query，发送 UUID 在 body，SDK / 本地 wire 测试证明形状；原先首个群的 UUID 放 body 不作为去重通过证据。
-3. M0 分类：首条输入、fork / worktree / 子代理边界。App 与 CLI 均可能呈现 source=vscode、originator=codex-tui；不能据此分类。
+1. 真实 App 分类：首条输入、App UI fork / worktree / 子代理元数据，已请求用户进行同一 M0 会话的独立 fork 测试；原生 fork 协议通过不能代替 UI 来源证明。App 与 CLI 均可能呈现 source=vscode、originator=codex-tui；不能据此分类。[准确版本分类研究](thread-classification-0.162.0.md)与源码核验已完成。
+2. M0 API：权限阻塞已解除；@、手机长代码、群成员、引用 parent_id、UUID 即时重复均已通过。去重期限采用官方建群同 owner 10 小时、消息/回复1小时契约；本次未等待期限到达或超期再请求，也不会用未知请求去验证是否产生重复。原先首个群的 UUID 放 body 不作为去重通过证据。仅测新发送含 @；PATCH 触发提醒行为仍未测，首版过程 PATCH 始终不含 @，最终新发送才含策略生成的 @。
+3. 一期权限拒绝 / 长内容分片 / 过期按钮等剩余矩阵继续保留 pending；手机 fixture 通过不泛化到所有内容。
 4. M1–M3：自动发现 / 唯一建群与绑定、持久 outbox、重连 / 恢复 / 限流、队列全部竞争场景、停止 / 显式恢复、目录 mute、@ / quiet / snooze、正式 setup / 服务 / 兼容与权限清单、一期矩阵。
+
+本轮 `go test -race ./...`、`go vet ./...` 与 opt-in 原生队列 / fork / worktree 集成测试通过。M0 维护工具新增只读 `--scope-check` / `--classification-check` 与一次性 `--uuid-probe`；重复启动 probe 不重发已确认或未知调用，去重有效期不跨进程猜测。原测试桥接重启后长连接 ready、同一绑定保留。
+
+权限选择详见[精确权限研究](feishu-m0-permissions-2026-10-10.md)。
 
 M0 协议成功或用户确认局部界面不免除剩余发布门槛。参见[集成验收](../codex-feishu/11-integration-and-acceptance.md)、[过程卡与 reaction 的一手来源研究](progress-cards-reactions-2026-10-10.md)。

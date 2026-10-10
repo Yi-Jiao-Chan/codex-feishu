@@ -76,10 +76,12 @@ flowchart TD
 
 已在本机 Codex CLI / 共享 App Server **0.162.0** 验证共享线程、事件、原生队列、引导、断线及空闲入口，共 27 项断言通过。测试使用本地模拟模型；这是协议证据，尚未证明真实 App 页面和飞书客户端的完整体验。
 
-M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书私聊、群 @、建群、回调已通过。用户已确认每轮过程卡更新、单独最终回复、原消息 reaction 的新版交互。追加引导 UI 也已由用户确认，引用回复 parent_id 已实际读回验证；群成员权限、真实 @、手机、故障恢复与一期发布矩阵仍需完成。详见[M0 进展](../research/m0-live-integration-2026-10-10.md)。原生实验接口按验收过的版本发布兼容清单，升级后不能跳过这些门槛。
+M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书私聊、群 @、建群、回调已通过。用户已确认每轮过程卡更新、单独最终回复、原消息 reaction 的新版交互。追加引导 UI 也已由用户确认，引用回复 parent_id 已实际读回验证；群成员权限、真实 @、手机长代码 fixture 与 UUID 即时重复已通过；App fork/worktree/子代理分类、故障恢复与一期发布矩阵仍需完成。详见[M0 进展](../research/m0-live-integration-2026-10-10.md)。原生实验接口按验收过的版本发布兼容清单，升级后不能跳过这些门槛。
 
 - [已确认实施方案](../research/codex-feishu-implementation-proposal-2026-10-10.md)
 - [开源调研](../research/codex-feishu-bridge-2026-10-10.md)
+- [飞书权限研究](../research/feishu-m0-permissions-2026-10-10.md)
+- [准确版本线程分类](../research/thread-classification-0.162.0.md)
 - [卡片组件研究](../research/codex-feishu-card-ux-2026-10-10.md)
 - [主链路验证](../research/codex-feishu-probes-2026-10-10/native-queue-probe-result.json)、[并发与边界](../research/codex-feishu-probes-2026-10-10/native-race-probe-result.json)、[空闲入口](../research/codex-feishu-probes-2026-10-10/native-idle-queue-probe-result.json)
 

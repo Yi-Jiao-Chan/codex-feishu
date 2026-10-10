@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,10 +78,34 @@ func TestNativeDaemonQueueAndSteer(t *testing.T) {
 	}
 	defer b.Close()
 	provider := fmt.Sprintf("cfb_go_fixture_%d", time.Now().UnixNano())
+	repository := filepath.Join(t.TempDir(), "repository")
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	if err := os.Mkdir(repository, 0700); err != nil {
+		t.Fatal(err)
+	}
+	git := func(cwd string, args ...string) string {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = cwd
+		for _, env := range os.Environ() {
+			key, _, _ := strings.Cut(env, "=")
+			if !strings.HasPrefix(key, "GIT_") {
+				cmd.Env = append(cmd.Env, env)
+			}
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("isolated git fixture failed: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(repository, "init", "--quiet")
+	git(repository, "-c", "user.name=M0 fixture", "-c", "user.email=m0@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "M0 isolated worktree fixture")
+	git(repository, "worktree", "add", "--quiet", "--detach", worktree, "HEAD")
 	var created struct {
 		Thread Thread `json:"thread"`
 	}
-	err = a.Call(ctx, "thread/start", map[string]any{"cwd": t.TempDir(), "model": "fixture-model", "modelProvider": provider, "approvalPolicy": "never", "sandbox": "read-only", "threadSource": "feishu.bridge.validation", "config": map[string]any{"model_providers." + provider: map[string]any{"name": "Isolated Go fixture", "base_url": fixture.URL + "/v1", "wire_api": "responses", "requires_openai_auth": false, "supports_websockets": false, "request_max_retries": 0}, "model_reasoning_effort": "low"}}, &created)
+	err = a.Call(ctx, "thread/start", map[string]any{"cwd": repository, "model": "fixture-model", "modelProvider": provider, "approvalPolicy": "never", "sandbox": "read-only", "threadSource": "feishu.bridge.validation", "config": map[string]any{"model_providers." + provider: map[string]any{"name": "Isolated Go fixture", "base_url": fixture.URL + "/v1", "wire_api": "responses", "requires_openai_auth": false, "supports_websockets": false, "request_max_retries": 0}, "model_reasoning_effort": "low"}}, &created)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +204,39 @@ func TestNativeDaemonQueueAndSteer(t *testing.T) {
 	if err != nil || len(queue) != 0 {
 		t.Fatal("native queue not empty")
 	}
+	var forked struct {
+		Thread Thread `json:"thread"`
+	}
+	if err = a.Call(ctx, "thread/fork", map[string]any{"threadId": id, "cwd": worktree, "threadSource": "user", "excludeTurns": true, "deferGoalContinuation": true}, &forked); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stop()
+		if e := a.Call(cleanup, "thread/archive", map[string]string{"threadId": forked.Thread.ID}, nil); e != nil {
+			t.Errorf("archive isolated fork: %v", e)
+		}
+	}()
+	fork := forked.Thread
+	if fork.ID == id || fork.ForkedFromID == nil || *fork.ForkedFromID != id || !fork.InteractiveMain() {
+		t.Fatal("native human fork lineage or main-thread classification incorrect")
+	}
+	actualCWD, err := filepath.EvalSymlinks(fork.CWD)
+	if err != nil || actualCWD != worktree {
+		t.Fatal("fork cwd does not match the selected worktree")
+	}
+	common := git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir") != common {
+		t.Fatal("registered worktree common-dir differs")
+	}
+	if !strings.Contains(git(repository, "worktree", "list", "--porcelain", "-z"), "worktree "+worktree+"\x00") {
+		t.Fatal("fork cwd is not in the registered worktree set")
+	}
+	inherited, err := b.Turns(ctx, fork.ID)
+	if err != nil || len(inherited) != len(turns) || inherited[0].ID != turns[0].ID {
+		t.Fatal("fork inherited history boundary not preserved")
+	}
+	t.Logf("fork=%s forked_from=%s checks=independent id, no subagent parent, interactive source, actual cwd, registered worktree/common-dir, inherited turn IDs; App UI NOT asserted", fork.ID, id)
 	t.Logf("daemon=%s thread=%s current_turn=%s checks=idle queue/add, shared queue, exact delete, stale rejection, expected-turn steer, ordered drain, clientId persistence; App UI NOT asserted", d.AppServerVersion, id, turnID)
 	if strings.TrimSpace(id) == "" {
 		t.Fatal("missing isolated thread ID")

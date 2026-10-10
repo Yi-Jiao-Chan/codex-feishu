@@ -19,8 +19,11 @@ func main() {
 	syscall.Umask(0077)
 	replyProbe := len(os.Args) == 4 && os.Args[3] == "--reply-probe"
 	checkOnly := len(os.Args) == 4 && os.Args[3] == "--check-only"
-	if len(os.Args) != 3 && !checkOnly && !replyProbe {
-		fmt.Fprintln(os.Stderr, "usage: m0-maintenance CONFIG TEST_THREAD [--check-only|--reply-probe]")
+	uuidProbe := len(os.Args) == 4 && os.Args[3] == "--uuid-probe"
+	scopeCheck := len(os.Args) == 4 && os.Args[3] == "--scope-check"
+	classificationCheck := len(os.Args) == 4 && os.Args[3] == "--classification-check"
+	if len(os.Args) != 3 && !checkOnly && !replyProbe && !uuidProbe && !scopeCheck && !classificationCheck {
+		fmt.Fprintln(os.Stderr, "usage: m0-maintenance CONFIG TEST_THREAD [--check-only|--reply-probe|--uuid-probe|--scope-check|--classification-check]")
 		os.Exit(2)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -34,6 +37,10 @@ func main() {
 		panic(e)
 	}
 	g := feishu.New(cfg.Feishu.AppID, secret)
+	if scopeCheck {
+		checkScopes(ctx, g)
+		return
+	}
 	db, e := store.Open(cfg.Storage.DatabaseFile)
 	if e != nil {
 		panic(e)
@@ -48,6 +55,10 @@ func main() {
 		probeReply(ctx, g, db, thread, chat)
 		return
 	}
+	if uuidProbe {
+		probeUUID(ctx, g, db, cfg, chat)
+		return
+	}
 	d, e := codexclient.Discover(ctx, cfg.Codex.CLIPath)
 	if e != nil {
 		panic(e)
@@ -57,6 +68,10 @@ func main() {
 		panic(e)
 	}
 	defer c.Close()
+	if classificationCheck {
+		checkClassification(ctx, c, cfg, thread)
+		return
+	}
 	turns, e := c.Turns(ctx, thread)
 	if e != nil {
 		panic(e)

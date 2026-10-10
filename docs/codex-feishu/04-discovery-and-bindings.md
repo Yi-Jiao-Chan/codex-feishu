@@ -6,7 +6,7 @@
 
 处理允许项目范围内、持久化、有实际人类输入的交互主会话。排除 ephemeral、存在父代理关系的子线程、桥 validation/creation 标记的线程。用户 fork 出的新主会话可以独立跟进；不能因为 sessionId 与 threadId 不同就判为子代理。
 
-来源不能写死：本机 App 主线程出现过 source=vscode、originator=codex-tui、threadSource=user。M0 保存真实 App 新建、fork、worktree 与子代理的脱敏样例，再落实分类器。至少保证 App 主会话可发现；共享 daemon 内其他符合条件的交互会话可复用入口，来源页脚在无法细分时写“Codex 端”。CLI 回显仍不验收。
+来源不能写死：本机真正 App 与误用 CLI 的测试主线程都出现过 source=vscode、originator=codex-tui、threadSource=null；这些字段不能区分两种入口。M0 保存真实 App 新建、fork、worktree 与子代理的脱敏样例，再落实分类器。准确版本规则与边界见[分类研究](../research/thread-classification-0.162.0.md)：parentThreadId 与所有 subAgent 变体排除；forkedFromId 不排除；preview 不作首条用户输入证明。至少保证 App 主会话可发现；共享 daemon 内其他符合条件的交互会话可复用入口，来源页脚在无法细分时写“Codex 端”。CLI 回显仍不验收。
 
 只看到 thread/started 不代表已经有首条任务。对候选读取元数据和首条 userMessage，空白草稿保持等待。新 thread/start 尚未生成 rollout 时可短暂读不到，按候选状态重查，不因此建空群或判永久失败。
 
