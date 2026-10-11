@@ -91,6 +91,7 @@ M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书
 - [私聊配对与 Agent 配置指引进展](../research/m3-pairing-2026-10-12.md)
 - [通知配置事务与恢复](../research/m3-policy-apply-2026-10-12.md)
 - [正式消息限流恢复](../research/m3-rate-limit-delivery-2026-10-12.md)
+- [旧 M0 原群与历史卡片接管](../research/m3-legacy-adoption-2026-10-12.md)
 - [验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)
 - [准确版本审批与问答路由](../research/approval-routing-0.162.0.md)
 - [卡片组件研究](../research/codex-feishu-card-ux-2026-10-10.md)

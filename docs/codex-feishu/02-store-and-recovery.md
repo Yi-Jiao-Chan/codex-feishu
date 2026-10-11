@@ -12,6 +12,8 @@ schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输�
 
 ## SQLite 结构
 
+schema 11 新增 `legacy_adoptions`。schema 1 须经显式接管，不能由普通启动自动升级；库存摘要、旧绑定与 confirmed 消息 ID 和正式表在同一事务保存，原日志保留。存储基础与纯历史 mapper 已通过隔离测试，迁移 CLI、备份/锁及真实切换仍待整合，见[M0 接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
+
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 
 | 表 | 主键 / 唯一约束 | 主要字段 |

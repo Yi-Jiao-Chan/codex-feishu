@@ -471,7 +471,7 @@ func TestVersionNineMigrationPreservesMirrorAndM0Journals(t *testing.T) {
 	if err := s.FinishMirrorAttempt(ctx, first.ID, "unknown", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`DROP TABLE outbound_throttles; PRAGMA user_version=9`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE legacy_adoptions; DROP TABLE outbound_throttles; PRAGMA user_version=9`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -490,7 +490,7 @@ func TestVersionNineMigrationPreservesMirrorAndM0Journals(t *testing.T) {
 		t.Fatalf("migration changed native journal: %s %v", state, err)
 	}
 	var version int
-	if err := s.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 10 {
+	if err := s.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatalf("migration version: %d %v", version, err)
 	}
 	if _, err := s.DB.Exec(`INSERT INTO outbound_throttles(host_id,thread_id,mirror_key,last_attempt_id,next_retry_at_ms,rejection_count) VALUES('host','thread','human','missing',1000,1)`); err == nil {

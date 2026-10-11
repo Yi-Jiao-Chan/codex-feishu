@@ -59,13 +59,29 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 	if err != nil {
 		return err
 	}
-	byClient := make(map[string]store.Receipt, len(receipts))
-	for _, r := range receipts {
-		byClient[r.ClientID] = r
-	}
 	old, err := e.Store.Mirrors(ctx, e.HostID, thread)
 	if err != nil {
 		return err
+	}
+	plan, err := e.renderSnapshot(thread, turns, receipts, old, replay, observedAtMS)
+	if err != nil {
+		return err
+	}
+	return e.Store.StageSnapshot(ctx, e.HostID, thread, plan.Docs, plan.Links, plan.Mark)
+}
+
+type snapshotPlan struct {
+	Docs  []store.Mirror
+	Links []store.InputLink
+	Mark  store.Watermark
+}
+
+// renderSnapshot shares the live renderer with reviewed legacy adoption. It does
+// no database or native work and preserves the caller's existing reply anchors.
+func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts []store.Receipt, old []store.Mirror, replay bool, observedAtMS int64) (snapshotPlan, error) {
+	byClient := make(map[string]store.Receipt, len(receipts))
+	for _, r := range receipts {
+		byClient[r.ClientID] = r
 	}
 	existing := make(map[string]store.Mirror, len(old))
 	byTurn := make(map[string][]store.Mirror)
@@ -79,17 +95,17 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 	seenTurns := make(map[string]bool, len(turns))
 	for _, turn := range turns {
 		if turn.ID == "" || seenTurns[turn.ID] || turn.ItemsView != "" && turn.ItemsView != "full" {
-			return errors.New("sync requires unique full turns")
+			return snapshotPlan{}, errors.New("sync requires unique full turns")
 		}
 		seenTurns[turn.ID] = true
 		switch turn.Status {
 		case "inProgress", "completed", "failed", "interrupted":
 		default:
-			return errors.New("unsupported native turn status")
+			return snapshotPlan{}, errors.New("unsupported native turn status")
 		}
 		items, err := uniqueItems(turn.Items)
 		if err != nil {
-			return err
+			return snapshotPlan{}, err
 		}
 		turn.Items = items
 		mark.TurnID = turn.ID
@@ -116,7 +132,7 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 			}
 			parts, err := cards.SplitMessage("人类发送", "Codex 端", text, e.MaxCardBytes)
 			if err != nil {
-				return err
+				return snapshotPlan{}, err
 			}
 			for n, part := range parts {
 				key := mirrorKey("human", turn.ID, i.ID, fmt.Sprint(n))
@@ -139,7 +155,7 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 			// An empty native turn may be a draft; public assistant content
 			// without its initiating input needs recovery, not a plain send.
 			if len(turn.Items) != 0 {
-				return errors.New("public turn has no initiating human input")
+				return snapshotPlan{}, errors.New("public turn has no initiating human input")
 			}
 			continue
 		}
@@ -152,7 +168,7 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 			}
 			card, err := boundedRenderedProgress(progressBody(turn), e.MaxCardBytes, render)
 			if err != nil {
-				return err
+				return snapshotPlan{}, err
 			}
 			if card != "" {
 				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
@@ -165,7 +181,7 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 			}
 			parts, err := cards.SplitMessage("AI 回复", "Codex", body, e.MaxCardBytes)
 			if err != nil {
-				return err
+				return snapshotPlan{}, err
 			}
 			for n, part := range parts {
 				key := mirrorKey("final", turn.ID, fmt.Sprint(n))
@@ -191,7 +207,7 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 			docs = append(docs, m)
 		}
 	}
-	return e.Store.StageSnapshot(ctx, e.HostID, thread, docs, links, mark)
+	return snapshotPlan{Docs: docs, Links: links, Mark: mark}, nil
 }
 
 func mirrorKey(kind string, parts ...string) string {

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	_ "modernc.org/sqlite"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,6 +26,12 @@ func ID() string {
 func Open(path string) (*Store, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("database must be absolute")
+	}
+	// Check an existing schema before chmod, journal-mode changes or migrations.
+	// M0 needs a reviewed adoption so formal discovery cannot discard its route
+	// and replay old conversation cards into a newly created group.
+	if err := checkOpenSchema(path); err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
@@ -53,6 +60,33 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db}, nil
+}
+
+func checkOpenSchema(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return errors.New("existing database unavailable")
+	}
+	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
+	// Read live WAL rather than immutable=1's possibly stale main file. SQLite
+	// may create reader sidecars; no rows, schema, mode or permissions change.
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return errors.New("existing database unavailable")
+	}
+	defer db.Close()
+	var version int
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return errors.New("existing database unavailable")
+	}
+	if version == 1 {
+		return ErrLegacyAdoptionRequired
+	}
+	if version > SchemaVersion {
+		return errors.New("database schema is newer than this binary")
+	}
+	return nil
 }
 func (s *Store) Close() error { return s.DB.Close() }
 

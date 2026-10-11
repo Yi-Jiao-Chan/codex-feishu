@@ -42,15 +42,23 @@ func TestMigrationPreservesM0AndNeverDowngrades(t *testing.T) {
 	if fresh, err := s.Begin(ctx, "lost-response", "queue.add"); err != nil || !fresh {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`DROP TABLE request_reminder_attempts; DROP TABLE request_mentions; DROP TABLE app_requests; DROP TABLE task_control_claims; DROP TABLE task_controls; DROP TABLE command_replies; DROP TABLE mentions; DROP TABLE mention_events; DROP TABLE notification_policy_history; DROP TABLE directory_rules; DROP TABLE submission_attempts; DROP TABLE submission_actions; DROP TABLE submission_inputs; DROP TABLE notification_rules; DROP TABLE input_history_links; DROP TABLE outbound_attempts; DROP TABLE outbound; DROP TABLE mirrors; DROP TABLE history_watermarks; DROP TABLE bindings; DROP TABLE create_intents; DROP TABLE thread_observations; DROP TABLE deployment; PRAGMA user_version=1;`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE legacy_adoptions; DROP TABLE request_reminder_attempts; DROP TABLE request_mentions; DROP TABLE app_requests; DROP TABLE task_control_claims; DROP TABLE task_controls; DROP TABLE command_replies; DROP TABLE mentions; DROP TABLE mention_events; DROP TABLE notification_policy_history; DROP TABLE directory_rules; DROP TABLE submission_attempts; DROP TABLE submission_actions; DROP TABLE submission_inputs; DROP TABLE notification_rules; DROP TABLE input_history_links; DROP TABLE outbound_attempts; DROP TABLE outbound; DROP TABLE mirrors; DROP TABLE history_watermarks; DROP TABLE bindings; DROP TABLE create_intents; DROP TABLE thread_observations; DROP TABLE deployment; PRAGMA user_version=1;`); err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
-	s, err := Open(path)
+	// Exercise schema preservation directly. The public opener now refuses
+	// unreviewed schema-1 adoption; this lower-level test deliberately retains
+	// an unknown journal to ensure the DDL itself never rewrites it.
+	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	if err = migrateSchema(tx); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	state, _, err := s.Operation(ctx, "lost-response")
 	if err != nil || state != "sending" {
 		t.Fatalf("journal lost: %s %v", state, err)

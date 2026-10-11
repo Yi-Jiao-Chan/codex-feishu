@@ -5,7 +5,15 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 10
+const SchemaVersion = 11
+
+const LegacyAdoptionSchema = `
+CREATE TABLE legacy_adoptions (
+ plan_id TEXT PRIMARY KEY, host_id TEXT NOT NULL UNIQUE REFERENCES deployment(host_id),
+ app_id TEXT NOT NULL, source_digest TEXT NOT NULL, native_digest TEXT NOT NULL,
+ adopted_at_ms INTEGER NOT NULL CHECK(adopted_at_ms>0)
+);
+`
 
 // Preserve the M0 journals while adding production discovery and outbox slices.
 // Never reset user_version on open or accept a newer database accidentally.
@@ -19,6 +27,23 @@ func migrate(db *sql.DB) error {
 	if err = tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
+	if version == 1 {
+		return ErrLegacyAdoptionRequired
+	}
+	if err = migrateSchema(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateSchema is also used inside the reviewed legacy adoption transaction.
+// Its caller must validate the old journals before entering this path.
+func migrateSchema(tx *sql.Tx) error {
+	var version int
+	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	var err error
 	if version > SchemaVersion {
 		return errors.New("database schema is newer than this binary")
 	}
@@ -173,5 +198,13 @@ PRAGMA user_version=4;
 			return err
 		}
 	}
-	return tx.Commit()
+	if version < 11 {
+		if _, err = tx.Exec(LegacyAdoptionSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=11"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
