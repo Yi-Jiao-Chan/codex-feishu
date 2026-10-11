@@ -20,6 +20,9 @@ import (
 
 var commit = "development"
 
+// Set true only after the complete P1 acceptance matrix has been verified.
+var phase1Released = false
+
 type check struct {
 	ID       string `json:"id"`
 	Status   string `json:"status"`
@@ -34,6 +37,8 @@ type output struct {
 	Checks        []check  `json:"checks"`
 	NextSteps     []string `json:"next_steps"`
 	Data          any      `json:"data,omitempty"`
+	PlanID        string   `json:"plan_id,omitempty"`
+	Paths         any      `json:"paths,omitempty"`
 }
 
 func emit(o output) {
@@ -54,12 +59,19 @@ func main() {
 }
 func run(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: codex-feishu version | doctor | verify | serve | m0-listen (development, not phase1 release)")
+		fmt.Fprintln(os.Stderr, "usage: codex-feishu version | doctor | verify | setup | service | status | serve | m0-listen (development, not phase1 release)")
 		return 2
 	}
 	command := args[0]
-	if command == "serve" {
+	switch command {
+	case "serve":
 		return runServe(ctx, args[1:])
+	case "setup":
+		return runSetup(ctx, args[1:])
+	case "service":
+		return runService(ctx, args[1:])
+	case "status":
+		return runStatus(ctx, args[1:])
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "absolute TOML config path")
@@ -74,7 +86,7 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	if command == "version" {
-		emit(output{Command: command, OK: true, State: "phase1-development", Data: map[string]any{"version": "0.0.1-dev", "commit": commit, "config_schema": 1, "commands": []string{"version", "doctor", "verify", "m0-listen", "serve"}, "phase1_released": false, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "m0_app_ui_verified": true, "m0_feishu_verified": true, "phase1_service_ui_verified": false}})
+		emit(output{Command: command, OK: true, State: "phase1-development", Data: map[string]any{"version": "0.0.1-dev", "commit": commit, "config_schema": 1, "commands": []string{"version", "doctor", "verify", "m0-listen", "serve", "setup", "service", "status"}, "phase1_released": phase1Released, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "m0_app_ui_verified": true, "m0_feishu_verified": true, "phase1_service_ui_verified": false, "capabilities": map[string]any{"setup_plan": true, "setup_apply": true, "setup_pair": false, "status_live_instance": false, "status_readonly_snapshot": true}}})
 		return 0
 	}
 	if command != "doctor" && command != "verify" && command != "m0-listen" {

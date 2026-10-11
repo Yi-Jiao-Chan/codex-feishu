@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已具备 version、只读 doctor、M0 verify / m0-listen 和新增 serve；新版 serve 已通过自动测试，尚未替换 M0 实例。setup / pair、service、完整 status / doctor 与发布流程仍待实现。详见[正式服务整合进展](../research/m2-service-and-task-controls-2026-10-12.md)。Agent 配置指南仅在已构建、通过完整联调的桥版本存在时进入应用阶段。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、M0 verify / m0-listen、serve、setup plan / apply、service 和只读 status。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对、实时健康通道、已有通知规则的向导更新、迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
 
 ## 命令表
 
@@ -61,6 +61,10 @@ apply 用部署配置锁，备份旧配置，原子写临时文件并 rename；�
 
 同一有效输入再次 apply 为 no-op；重复 install 不添加第二份服务；start 已运行返回现状。重新配置只更新本工具配置，不能自动开启二期、升级 Codex 或修改原会话权限。
 
+当前开发实现：计划实际核验所选二进制、现有 daemon、密钥文件权限、目录和现有部署；输入、二进制、密钥或配置变化使旧 plan_id 失效。配置写入前保存 prepared 日志，原子替换后保存 applied；中断后重复同一计划可核验已写入内容。已有 host_id 和数据库路径保留，通知 off / snooze / quiet 只读展示；明确修改已有用户规则时列出独立差异并返回 pending，不部分写入配置。当前 apply 不创建或迁移数据库。
+
+改变运行中配置前须停止本工具实例，再重新 plan / apply；应用锁或数据库锁被占用时拒绝替换配置。service install 更新正在使用的 unit 后仅报告 restart pending，须明确 stop / start；start 对已运行服务是 no-op。配置 Agent 不应将这两种情况写成更新已经生效。
+
 ## 配对与凭据
 
 用户没有 open_id 时，setup pair 创建至少 80 bit 随机单次口令、有效期 5 分钟，只接受私聊 `/pair <口令>`。匹配后返回该应用下 sender.open_id；配对期间不自动建群、不执行其他消息、不接受群中的口令。已有 owner 时重新配对必须经过本机配置身份，不允许飞书陌生人自行重置。
@@ -72,6 +76,8 @@ apply 用部署配置锁，备份旧配置，原子写临时文件并 rename；�
 Linux 首选 systemd --user，ExecStart 使用绝对二进制路径和配置路径，WorkingDirectory 不影响 Codex 会话 cwd。设置合理 Restart=on-failure，保留日志脱敏和本工具部署锁。安装器只管理 codex-feishu.service，不管理 App 的 daemon。
 
 运行中 status/verify/pair 复用现有实例，不另开竞争正式事件的 ws 连接。可以通过仅同用户可访问的本机 Unix 控制通道查询健康与提交测试/配对请求，限制为这些管理用例，不提供额外网络执行 API。
+
+当前 status 只读检查用户服务、daemon 和数据库计数；可读 M0 schema 1 而不迁移。管理通道未接入，故实时连接状态为 unknown，必需检查 pending、退出码 5。systemd active、daemon running 或持久记录可读均不能代替实时桥健康证明。
 
 检测 user manager 与注销后的常驻能力；服务在当前 SSH 中 active 不能证明退出 SSH 后仍在。若 linger/现有 supervisor 条件不足，输出具体系统阻塞，不能用一次后台 nohup 宣称完整常驻。工具不自行申请 sudo、修改系统级服务或暴露 Codex 网络端口。
 

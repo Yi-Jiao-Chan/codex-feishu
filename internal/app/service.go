@@ -256,7 +256,9 @@ func (s *Service) disconnected(ctx context.Context) {
 }
 
 func (s *Service) generation(native ServiceNative) *Runtime {
-	tracker := &RequestTracker{}
+	tracker := &RequestTracker{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID,
+		Options: store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn},
+		Gateway: s.Gateway, Membership: s.Gateway, Now: s.Now, GenerationStartedAtMS: s.now().UnixMilli()}
 	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting}
 	controllers := map[string]*submissions.Controller{}
 	var controllerMu sync.Mutex
@@ -282,7 +284,8 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		PollInterval:          time.Duration(s.Config.Sync.CardUpdateMinIntervalMS) * time.Millisecond,
 		MinProgressIntervalMS: int64(s.Config.Sync.CardUpdateMinIntervalMS),
 		Mentions:              store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn},
-		Ready:                 s.Gateway.Ready, Notice: s.Notice, Now: s.Now, EventObserved: tracker.Observe,
+		Ready:                 s.Gateway.Ready, Notice: s.Notice, Now: s.Now, EventObservedContext: tracker.ObserveContext,
+		HistoryHydrated: tracker.Hydrated, WaitingReminder: tracker.DispatchOne,
 		DirectoryRules: func(ctx context.Context) ([]rules.DirectoryRule, error) {
 			return s.Store.DirectoryRules(ctx, s.Config.Host.ID, s.Config.Feishu.AppID)
 		},
@@ -299,7 +302,9 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		return c.Tick(ctx)
 	}
 	r.HistoryPreparing = func(ctx context.Context, thread string, turns []codexclient.Turn) error {
-		tracker.Reconcile(thread, turns)
+		if err := tracker.ReconcileContext(ctx, thread, turns); err != nil {
+			return err
+		}
 		return task(thread).Prepare(ctx, thread, turns)
 	}
 	r.RenderProgress = func(thread, turn, status, body string) string { return task(thread).Render(thread, turn, status, body) }

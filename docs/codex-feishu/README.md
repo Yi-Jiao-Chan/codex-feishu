@@ -85,6 +85,7 @@ M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书
 - [首装基线与草稿发现研究](../research/discovery-baseline-0.162.0.md)、[M1 基础实现进展](../research/m1-discovery-foundation-2026-10-12.md)
 - [运行时、持久输入与目录规则](../research/m1-runtime-and-m2-inputs-2026-10-12.md)
 - [正式服务、命令与任务控制整合进展](../research/m2-service-and-task-controls-2026-10-12.md)
+- [配置向导、用户服务与待处理提醒进展](../research/m3-setup-and-request-reminders-2026-10-12.md)
 - [准确版本审批与问答路由](../research/approval-routing-0.162.0.md)
 - [卡片组件研究](../research/codex-feishu-card-ux-2026-10-10.md)
 - [主链路验证](../research/codex-feishu-probes-2026-10-10/native-queue-probe-result.json)、[并发与边界](../research/codex-feishu-probes-2026-10-10/native-race-probe-result.json)、[空闲入口](../research/codex-feishu-probes-2026-10-10/native-idle-queue-probe-result.json)

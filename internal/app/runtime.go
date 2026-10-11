@@ -48,8 +48,11 @@ type Runtime struct {
 	ActorTick                  func(context.Context, string) error
 	HistoryPreparing           func(context.Context, string, []codexclient.Turn) error
 	HistoryStaged              func(context.Context, string, []codexclient.Turn) error
+	HistoryHydrated            func(context.Context, string, []codexclient.Turn) error
+	WaitingReminder            func(context.Context, string) (bool, error)
 	AfterDelivery              func(context.Context, string, []codexclient.Turn) error
 	EventObserved              func(codexclient.Event)
+	EventObservedContext       func(context.Context, codexclient.Event) error
 	RenderProgress             func(string, string, string, string) string
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
 	Notice  func(string)
@@ -165,6 +168,11 @@ func (r *Runtime) Run(parent context.Context) error {
 	if err := r.Store.RecoverMirrorDispatches(ctx, r.HostID); err != nil {
 		return err
 	}
+	if r.WaitingReminder != nil {
+		if err := r.Store.RecoverRequestReminders(ctx, r.HostID); err != nil {
+			return err
+		}
+	}
 	bounds, err := r.Store.Bindings(ctx, r.HostID)
 	if err != nil {
 		return err
@@ -222,6 +230,13 @@ func (r *Runtime) Run(parent context.Context) error {
 			}
 			if r.EventObserved != nil {
 				r.EventObserved(event)
+			}
+			if r.EventObservedContext != nil {
+				if err := r.EventObservedContext(ctx, event); err != nil {
+					// Stop this generation rather than lose a resolved request or
+					// give a failed first observation a later event timestamp.
+					return errors.New("native request journal requires reconciliation")
+				}
 			}
 			if event.Method == "thread/started" && r.DiscoveryEnabled {
 				var params struct {
@@ -399,6 +414,9 @@ actorLoop:
 					if err == nil && r.HistoryStaged != nil {
 						err = r.HistoryStaged(readCtx, a.thread, turns)
 					}
+					if err == nil && r.HistoryHydrated != nil {
+						err = r.HistoryHydrated(readCtx, a.thread, turns)
+					}
 				}
 				cancel()
 				if err != nil {
@@ -429,6 +447,11 @@ actorLoop:
 						if r.AfterDelivery != nil {
 							if err := r.AfterDelivery(ctx, a.thread, turns); err != nil {
 								r.notice("feedback.reconcile_pending")
+							}
+						}
+						if r.WaitingReminder != nil && err == nil {
+							if _, err := r.WaitingReminder(ctx, a.thread); err != nil {
+								r.notice("request.reminder_pending")
 							}
 						}
 					}

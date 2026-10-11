@@ -2,7 +2,7 @@
 
 负责 `internal/rules/`、命令解析与规则存储。依赖 00、02；规则是领域函数，目录和时间边界适合参数化测试。
 
-当前实现边界：目录物理匹配 / 注册工作树规则、严格目录命令解析和 host/app 隔离持久化、通知 `Policy` 计算、严格 `/notify at` 解析与纯更新函数、通知规则 revision 持久化已实现。默认初始化不会覆盖用户已有的 off / snooze / quiet，deadline 使用 UTC RFC3339Nano，不因重启延长。completed / failed 的首次提醒资格、历史策略审计、发送前策略与群成员核验、载荷冻结、送达去重和不确定结果恢复已接入多会话运行时，并通过自动测试。目录与自己的通知命令已接入新版 serve 的原子命令 / 回复日志，自动测试通过；现有 M0 listener 尚不能使用本页命令，新版尚未部署。needs_user 提醒仍待整合。详见[实现与只读证据](../research/m1-history-sync-and-rules-2026-10-12.md)、[运行时整合进展](../research/m1-runtime-and-m2-inputs-2026-10-12.md)、[接收器与通知出站进展](../research/m2-receiver-and-notification-delivery-2026-10-12.md)和[正式服务整合进展](../research/m2-service-and-task-controls-2026-10-12.md)。
+当前实现边界：目录物理匹配 / 注册工作树规则、严格目录命令解析和 host/app 隔离持久化、通知 `Policy` 计算、严格 `/notify at` 解析与纯更新函数、通知规则 revision 持久化已实现。默认初始化不会覆盖用户已有的 off / snooze / quiet，deadline 使用 UTC RFC3339Nano，不因重启延长。completed / failed 的首次提醒资格、历史策略审计、发送前策略与群成员核验、载荷冻结、送达去重和不确定结果恢复已接入多会话运行时，并通过自动测试。目录与自己的通知命令已接入新版 serve 的原子命令 / 回复日志；needs_user 也已有持久提醒日志，但新事件资格存在下述原生时间证据限制。现有 M0 listener 尚不能使用本页新增命令，新版尚未部署。详见[实现与只读证据](../research/m1-history-sync-and-rules-2026-10-12.md)、[运行时整合进展](../research/m1-runtime-and-m2-inputs-2026-10-12.md)、[接收器与通知出站进展](../research/m2-receiver-and-notification-delivery-2026-10-12.md)、[正式服务整合进展](../research/m2-service-and-task-controls-2026-10-12.md)和[待处理提醒进展](../research/m3-setup-and-request-reminders-2026-10-12.md)。
 
 ## 目录命令与匹配
 
@@ -57,6 +57,10 @@ worktree 候选包含 actual cwd 与可核验的 original project root。allowed
 重连与旧历史绑定的补齐不新建 @；首次自动绑定的新任务依 05 的 completedAt 规则单独判定。已持久安排但尚未发送的新通知，发送时若命中免打扰则终止该次提醒，不能等待休息时间结束再补发。正文继续投递。这样关闭 @ 不丢上下文，也不会在早上集中补提醒。
 
 所有 @ 由 03 的结构化 mention 生成；AI 文本里带类似 mention 语法不能自行触发提醒。关闭机器人的 @ 不改变飞书客户端对普通群消息的通知设置，卡片反馈应准确说明。
+
+开发版 needs_user 只保存审批 / 问答的路由身份、方法、时间和状态，不保存命令、问题或答案，不在飞书代答。每个符合资格的请求至多发送一张引用该轮人类输入的固定提醒卡；成员不可核验或任一时间策略抑制时终止该次提醒，不留到早上补发。重连先清除当前代际确认状态，等待真实请求重放和完整历史核验；未知发送结果冻结。
+
+0.162.0 请求通知不含原始发生时间，不能仅凭重连后的接收时间区分旧请求与新请求。当前只承认有本代际真实新会话出生证明的首轮，或 startedAt 严格晚于首次历史核验秒的后续新轮。此前已执行的轮、同秒边界和证据不明请求仍显示“回 App 处理”，但保守抑制新的 @；此限制与真实审批 UI 验收仍需解决 / 明确验证，不能宣称全部 needs_user 场景已经覆盖。
 
 ## 验收
 

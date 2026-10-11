@@ -333,7 +333,7 @@ func TestVersionTwoMigrationPreservesDiscoveryAndM0Journals(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Model a real v2 database: no v3 tables, retained discovery and M0 state.
-	if _, err := s.DB.Exec(`DROP TABLE task_control_claims; DROP TABLE task_controls; DROP TABLE command_replies; DROP TABLE mentions; DROP TABLE mention_events; DROP TABLE notification_policy_history; DROP TABLE directory_rules; DROP TABLE submission_attempts; DROP TABLE submission_actions; DROP TABLE submission_inputs; DROP TABLE notification_rules; DROP TABLE input_history_links; DROP TABLE outbound_attempts; DROP TABLE outbound; DROP TABLE mirrors; DROP TABLE history_watermarks; PRAGMA user_version=2;`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE request_reminder_attempts; DROP TABLE request_mentions; DROP TABLE app_requests; DROP TABLE task_control_claims; DROP TABLE task_controls; DROP TABLE command_replies; DROP TABLE mentions; DROP TABLE mention_events; DROP TABLE notification_policy_history; DROP TABLE directory_rules; DROP TABLE submission_attempts; DROP TABLE submission_actions; DROP TABLE submission_inputs; DROP TABLE notification_rules; DROP TABLE input_history_links; DROP TABLE outbound_attempts; DROP TABLE outbound; DROP TABLE mirrors; DROP TABLE history_watermarks; PRAGMA user_version=2;`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
