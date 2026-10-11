@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"time"
 
 	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/store"
 	messages "codex-feishu/internal/sync"
 )
@@ -19,6 +21,7 @@ type Feedback struct {
 	Gateway       ReactionGateway
 	HostID, AppID string
 	Waiting       func(string, string) bool
+	Now           func() time.Time
 }
 
 func (f *Feedback) scope(thread string) store.SubmissionScope {
@@ -112,13 +115,30 @@ func (f *Feedback) Received(ctx context.Context, thread string) error {
 }
 
 func (f *Feedback) set(ctx context.Context, thread string, r store.Receipt, desired string) error {
-	t, claimed, err := f.Store.ClaimReactionTransition(ctx, f.scope(thread), r.ID, r.State, desired)
+	clock := f.Now
+	if clock == nil {
+		clock = time.Now
+	}
+	claimAt := clock().UnixMilli()
+	t, claimed, err := f.Store.ClaimReactionTransitionAt(ctx, f.scope(thread), r.ID, r.State, desired, claimAt)
 	if err != nil || !claimed {
 		return err
 	}
-	key := fmt.Sprintf("p1.reaction.%s.%d", r.ID, t.Revision)
 	remoteID := ""
-	finishError := func(key string, remoteErr error) error {
+	finishError := func(operation string, remoteErr error) error {
+		var limited *feishu.RateLimited
+		if errors.As(remoteErr, &limited) {
+			at := clock().UnixMilli()
+			if at < claimAt {
+				at = claimAt
+			}
+			delay := limited.RetryAfter.Milliseconds()
+			if delay < 1000 {
+				delay = 1000
+			}
+			return f.Store.DeferReactionTransition(ctx, t, operation, at, delay)
+		}
+		key := store.ReactionOperationKey(t, operation)
 		state := resultState(remoteErr)
 		if err := f.Store.Finish(ctx, key, state, ""); err != nil {
 			return err
@@ -126,7 +146,7 @@ func (f *Feedback) set(ctx context.Context, thread string, r store.Receipt, desi
 		return f.Store.FinishReactionTransition(ctx, t, state, "")
 	}
 	if t.PreviousID != "" {
-		fresh, err := f.Store.Begin(ctx, key+".delete", "feishu.reaction.delete")
+		fresh, err := f.Store.Begin(ctx, store.ReactionOperationKey(t, "delete"), "feishu.reaction.delete")
 		if err != nil {
 			return err
 		}
@@ -134,14 +154,14 @@ func (f *Feedback) set(ctx context.Context, thread string, r store.Receipt, desi
 			return store.ErrConflict
 		}
 		if err := f.Gateway.DeleteReaction(ctx, t.MessageID, t.PreviousID); err != nil {
-			return finishError(key+".delete", err)
+			return finishError("delete", err)
 		}
-		if err := f.Store.Finish(ctx, key+".delete", "confirmed", t.PreviousID); err != nil {
+		if err := f.Store.RecordReactionDeletion(ctx, t); err != nil {
 			return err
 		}
 	}
 	if desired != "" {
-		fresh, err := f.Store.Begin(ctx, key+".add", "feishu.reaction.add")
+		fresh, err := f.Store.Begin(ctx, store.ReactionOperationKey(t, "add"), "feishu.reaction.add")
 		if err != nil {
 			return err
 		}
@@ -150,15 +170,15 @@ func (f *Feedback) set(ctx context.Context, thread string, r store.Receipt, desi
 		}
 		remoteID, err = f.Gateway.AddReaction(ctx, t.MessageID, desired)
 		if err != nil {
-			return finishError(key+".add", err)
+			return finishError("add", err)
 		}
 		if remoteID == "" {
-			if err := f.Store.Finish(ctx, key+".add", "unknown", ""); err != nil {
+			if err := f.Store.Finish(ctx, store.ReactionOperationKey(t, "add"), "unknown", ""); err != nil {
 				return err
 			}
 			return f.Store.FinishReactionTransition(ctx, t, "unknown", "")
 		}
-		if err := f.Store.Finish(ctx, key+".add", "confirmed", remoteID); err != nil {
+		if err := f.Store.Finish(ctx, store.ReactionOperationKey(t, "add"), "confirmed", remoteID); err != nil {
 			return err
 		}
 	}

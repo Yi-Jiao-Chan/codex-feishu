@@ -21,6 +21,8 @@ func TestRateLimitClassificationUsesDocumentedResponseAndOperation(t *testing.T)
 		{"send", "POST", base, `{"code":230020}`, "limited", 400},
 		{"reply", "POST", base + "/om_one/reply", `{"code":230020}`, "limited", 400},
 		{"update", "PATCH", base + "/om_one", `{"code":230020}`, "limited", 400},
+		{"reaction-add-generic", "POST", base + "/om_one/reactions", `{"code":99991400}`, "limited", 429},
+		{"reaction-delete-generic", "DELETE", base + "/om_one/reactions/r_one", `{"code":99991400}`, "limited", 400},
 		{"reaction-not-allowlisted", "POST", base + "/om_one/reactions", `{"code":230020}`, "rejected", 400},
 		{"quota", "POST", base, `{"code":99991403}`, "rejected", 429},
 		{"sending-in-flight", "POST", base, `{"code":230049}`, "unknown", 400},

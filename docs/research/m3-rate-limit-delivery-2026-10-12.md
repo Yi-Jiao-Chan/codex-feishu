@@ -30,4 +30,16 @@
 
 ## 仍需完成
 
-建群、reaction、命令回复及 App 待处理提醒的持久限流恢复尚需分别接入；unknown 的远端读回核验、旧 M0 迁移接管、受控 verify、用户服务真实安装与一期验收也仍 pending。`phase1_released=false` 保持不变，不能把新 capability 当作整个一期发布通过。
+建群、命令回复及 App 待处理提醒的持久限流恢复尚需分别接入；reaction 已完成下述隔离实现。unknown 的远端读回核验、真实 M0 迁移接管、受控 verify、用户服务真实安装与一期验收也仍 pending。`phase1_released=false` 保持不变，不能把新 capability 当作整个一期发布通过。
+
+## Reaction 的持久限流恢复
+
+正式 `Feedback` 的 add/delete 使用现有网关 typed RateLimited，未扩大 HTTP/code allowlist：通用 `99991400` 且 HTTP 400/429 可延后，reaction 的 `230020` 不支持重试。等待从响应接收时间计算，server 秒数下限与持久指数退避共同生效；超时、5xx、不明确的 429 和永久拒绝不进入此路径。
+
+schema 12 的 `reaction_throttles` 保存 receipt、原操作 key/revision、等待下限和连续拒绝次数；限流拒绝与重新开放已知 reaction 状态在一个事务提交，原操作保持 rejected。下一领取重新核验所属 binding 和当前 receipt.state，生成新 revision，使用最新期望表情。waiting 阶段既不发写请求，也不让 received-loop 反复读取该组成员。完成/已无需更新时清除 throttle。重启不重置等待；changing 按旧规则转 unknown，不能自动重发。
+
+删除成功时，原 delete 操作 confirmed 与旧 emoji/ID 清除共同提交。随后 add 限流不重复删除旧 ID；删除自身限流则保留已知旧 ID，到期再删除。remote 成功但本地确认失败保持 changing，恢复为 unknown，而非盲重试。所有反馈仍独立于原生 queue/steer 提交，不改变输入状态或 client ID。聚合诊断的 `reactions.deferred` 只给数量，不泄露正文。
+
+新增隔离测试覆盖持久等待与重启、响应时钟、server floor、指数退避和溢出、最新状态、delete/add 两阶段、SQL 故障回滚、unknown/永久拒绝不重开、schema 11→12 保留已知 reaction、状态摘要与 received-loop 筛选。网关模拟 HTTP 验证 reaction 的通用频控与不支持代码；真实 M0 未迁移，无外部消息或实际 reaction 请求。
+
+Reaction 组合实现通过 `go test -race ./... -count=1`、`go vet ./...` 和 `git diff --check`；仍只声明该开发切片，未执行真实部署或一期发布。

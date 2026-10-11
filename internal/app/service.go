@@ -331,7 +331,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	tracker := &RequestTracker{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID,
 		Options: store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn},
 		Gateway: s.Gateway, Membership: s.Gateway, Now: s.Now, GenerationStartedAtMS: s.now().UnixMilli()}
-	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting}
+	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, Now: s.now}
 	controllers := map[string]*submissions.Controller{}
 	var controllerMu sync.Mutex
 	s.mu.Lock()
@@ -434,7 +434,7 @@ func (s *Service) commandLoop(ctx context.Context, commands *Commands) {
 }
 
 func (s *Service) receivedLoop(ctx context.Context) {
-	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID}
+	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Now: s.now}
 	timer := time.NewTicker(time.Second)
 	defer timer.Stop()
 	for {
@@ -445,7 +445,7 @@ func (s *Service) receivedLoop(ctx context.Context) {
 			if !s.Gateway.Ready() {
 				continue
 			}
-			bindings, err := s.Store.ReceivedFeedbackBindings(ctx, s.Config.Host.ID, s.Config.Feishu.AppID)
+			bindings, err := s.Store.ReceivedFeedbackBindingsAt(ctx, s.Config.Host.ID, s.Config.Feishu.AppID, s.now().UnixMilli())
 			if err != nil {
 				s.notice("feedback.storage_pending")
 				continue

@@ -91,6 +91,12 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 	if err != nil {
 		return h, err
 	}
+	if schema >= 12 {
+		h.Reactions["deferred"], err = count(`SELECT COUNT(*) FROM reaction_throttles t JOIN m0_receipts r ON r.id=t.receipt_id JOIN bindings b ON b.thread_id=r.thread_id AND b.chat_id=r.chat_id WHERE b.host_id=? AND r.app_id=?`, host, app)
+		if err != nil {
+			return h, errors.New("reaction retry health unavailable")
+		}
+	}
 	if schema >= 2 {
 		if err := countStates(h.GroupIntents, remoteStates, `SELECT COUNT(*) FROM create_intents WHERE host_id=? AND state=?`, host); err != nil {
 			return h, err

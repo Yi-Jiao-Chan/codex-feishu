@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
 
 type ReactionTransition struct {
@@ -15,6 +16,13 @@ type ReactionTransition struct {
 // current durable state. An old received snapshot cannot replace newer running
 // feedback. Ambiguous transitions stay frozen and never affect native input.
 func (s *Store) ClaimReactionTransition(ctx context.Context, scope SubmissionScope, receiptID, expectedState, desired string) (ReactionTransition, bool, error) {
+	return s.ClaimReactionTransitionAt(ctx, scope, receiptID, expectedState, desired, time.Now().UnixMilli())
+}
+
+func (s *Store) ClaimReactionTransitionAt(ctx context.Context, scope SubmissionScope, receiptID, expectedState, desired string, nowMS int64) (ReactionTransition, bool, error) {
+	if nowMS <= 0 {
+		return ReactionTransition{}, false, ErrConflict
+	}
 	switch desired {
 	case "", "Get", "THINKING", "OnIt", "CheckMark", "CrossMark":
 	default:
@@ -44,9 +52,24 @@ func (s *Store) ClaimReactionTransition(ctx context.Context, scope SubmissionSco
 	if err := tx.QueryRowContext(ctx, `SELECT emoji,reaction_id,revision,state FROM m0_reactions WHERE receipt_id=?`, receiptID).Scan(&emoji, &previous, &revision, &state); err != nil {
 		return ReactionTransition{}, false, err
 	}
-	if state != "confirmed" || emoji == desired {
+	if state != "confirmed" {
 		return ReactionTransition{}, false, nil
 	}
+	if emoji == desired {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM reaction_throttles WHERE receipt_id=?", receiptID); err != nil {
+			return ReactionTransition{}, false, err
+		}
+		return ReactionTransition{}, false, tx.Commit()
+	}
+	var due int64
+	err = tx.QueryRowContext(ctx, "SELECT next_retry_at_ms FROM reaction_throttles WHERE receipt_id=?", receiptID).Scan(&due)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return ReactionTransition{}, false, err
+	}
+	if due > nowMS {
+		return ReactionTransition{}, false, nil
+	}
+
 	if revision < 0 || revision == 1<<63-1 {
 		return ReactionTransition{}, false, ErrConflict
 	}
@@ -64,12 +87,16 @@ func (s *Store) FinishReactionTransition(ctx context.Context, transition Reactio
 	if state != "confirmed" && state != "unknown" && state != "rejected" || state == "confirmed" && (transition.Desired != "") != (remoteID != "") {
 		return ErrConflict
 	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	var result sql.Result
-	var err error
 	if state == "confirmed" {
-		result, err = s.DB.ExecContext(ctx, `UPDATE m0_reactions SET emoji=?,reaction_id=?,state=? WHERE receipt_id=? AND revision=? AND state='changing'`, transition.Desired, remoteID, state, transition.ReceiptID, transition.Revision)
+		result, err = tx.ExecContext(ctx, `UPDATE m0_reactions SET emoji=?,reaction_id=?,state=? WHERE receipt_id=? AND revision=? AND state='changing'`, transition.Desired, remoteID, state, transition.ReceiptID, transition.Revision)
 	} else {
-		result, err = s.DB.ExecContext(ctx, `UPDATE m0_reactions SET state=? WHERE receipt_id=? AND revision=? AND state='changing'`, state, transition.ReceiptID, transition.Revision)
+		result, err = tx.ExecContext(ctx, `UPDATE m0_reactions SET state=? WHERE receipt_id=? AND revision=? AND state='changing'`, state, transition.ReceiptID, transition.Revision)
 	}
 	if err != nil {
 		return err
@@ -81,7 +108,10 @@ func (s *Store) FinishReactionTransition(ctx context.Context, transition Reactio
 	if count != 1 {
 		return ErrConflict
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, "DELETE FROM reaction_throttles WHERE receipt_id=?", transition.ReceiptID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RecoverReactionTransitions(ctx context.Context, host, app string) error {
@@ -99,7 +129,11 @@ func (s *Store) RecoverReactionTransitions(ctx context.Context, host, app string
 // ReceivedFeedbackBindings selects only pending acknowledgements. The service
 // must not poll the membership API for every idle/history-only task group.
 func (s *Store) ReceivedFeedbackBindings(ctx context.Context, host, app string) ([]Binding, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT b.thread_id,b.intent_id,b.chat_id FROM bindings b JOIN deployment d USING(host_id) JOIN m0_receipts r ON r.thread_id=b.thread_id AND r.chat_id=b.chat_id AND r.app_id=d.app_id LEFT JOIN m0_reactions x ON x.receipt_id=r.id WHERE b.host_id=? AND d.app_id=? AND r.state='received' AND (x.receipt_id IS NULL OR x.state='confirmed' AND x.emoji<>'Get')`, host, app)
+	return s.ReceivedFeedbackBindingsAt(ctx, host, app, time.Now().UnixMilli())
+}
+
+func (s *Store) ReceivedFeedbackBindingsAt(ctx context.Context, host, app string, nowMS int64) ([]Binding, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT b.thread_id,b.intent_id,b.chat_id FROM bindings b JOIN deployment d USING(host_id) JOIN m0_receipts r ON r.thread_id=b.thread_id AND r.chat_id=b.chat_id AND r.app_id=d.app_id LEFT JOIN m0_reactions x ON x.receipt_id=r.id WHERE b.host_id=? AND d.app_id=? AND r.state='received' AND (x.receipt_id IS NULL OR x.state='confirmed' AND x.emoji<>'Get') AND NOT EXISTS(SELECT 1 FROM reaction_throttles t WHERE t.receipt_id=r.id AND t.next_retry_at_ms>?)`, host, app, nowMS)
 	if err != nil {
 		return nil, err
 	}
