@@ -43,6 +43,25 @@ func (f *Feedback) Stage(ctx context.Context, thread string) error {
 	return nil
 }
 
+// StageReceived performs local work only, after a native generation has joined
+// and before the next recovery. The service separately dispatches this existing
+// mirror outbox serially; this method never calls a gateway or native daemon.
+func (f *Feedback) StageReceived(ctx context.Context, thread string) error {
+	if err := f.Store.StageSubmissions(ctx, f.scope(thread)); err != nil {
+		return err
+	}
+	ns, err := f.Store.Submissions(ctx, f.scope(thread))
+	if err != nil {
+		return err
+	}
+	for _, n := range ns {
+		if err := f.Store.StageQueueCardWithOptions(ctx, f.scope(thread), n.ID, store.QueueCardOptions{LocalPending: true, Offline: true}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (f *Feedback) Sync(ctx context.Context, thread string, turns []codexclient.Turn) error {
 	ns, err := f.Store.Submissions(ctx, f.scope(thread))
 	if err != nil {

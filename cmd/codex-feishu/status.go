@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"time"
 
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
+	"codex-feishu/internal/control"
 	"codex-feishu/internal/store"
 	"codex-feishu/internal/userservice"
 )
@@ -26,14 +28,43 @@ func runStatus(ctx context.Context, args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	o := output{Command: "status", State: "readonly-snapshot", Checks: []check{{"instance.live_health", "pending", true, "managed instance control channel is not yet integrated; this snapshot does not prove live bridge connections"}}}
+	o := output{Command: "status", State: "readonly-snapshot"}
 	data := map[string]any{"bridge_connections": "unknown", "host_id": cfg.Host.ID}
+	identity, identityErr := control.Identity(*path, cfg)
+	endpoint, endpointErr := control.Path(cfg.Feishu.AppID)
+	var live control.Snapshot
+	liveErr := control.ErrUnavailable
+	if identityErr == nil && endpointErr == nil {
+		live, liveErr = control.Query(ctx, endpoint, identity)
+	}
+	code := 5
+	if liveErr == nil {
+		o, code = liveStatus(live)
+		data["bridge_connections"], data["instance"], data["durable"] = "observed", live, live.Persistent
+	} else {
+		o.Checks = append(o.Checks, check{"instance.live_health", "pending", true, "managed endpoint unavailable; snapshot cannot prove live bridge connections"})
+		o.NextSteps = []string{"start the managed bridge or inspect its control endpoint; the legacy M0 listener has no control endpoint"}
+		if errors.Is(liveErr, control.ErrIdentity) || identityErr != nil {
+			o.State, code = "instance-configuration-conflict", 6
+			o.Checks[0].Status, o.Checks[0].Detail = "fail", "running configuration differs; explicitly stop, apply and restart the bridge"
+		} else if errors.Is(liveErr, control.ErrUnsafe) || endpointErr != nil {
+			o.State, code = "instance-endpoint-unsafe", 6
+			o.Checks[0].Status, o.Checks[0].Detail = "fail", "control endpoint path, permissions or OS peer identity could not be verified"
+		}
+	}
 	if manager, err := userservice.New(userservice.Options{}); err == nil {
 		result := manager.ReadStatus(ctx, *path)
 		data["user_service"] = result
 		for _, c := range result.Checks {
-			o.Checks = append(o.Checks, check{c.ID, c.Status, c.Required, map[string]string{"message": c.Detail, "remediation": c.Remediation}})
+			// A live foreground bridge is valid without a systemd unit. The
+			// configuration workflow verifies service lifecycle separately.
+			o.Checks = append(o.Checks, check{c.ID, c.Status, false, map[string]string{"message": c.Detail, "remediation": c.Remediation}})
 		}
+	}
+	if liveErr == nil {
+		o.Data = data
+		emit(o)
+		return code
 	}
 	if daemon, err := codexclient.Discover(ctx, cfg.Codex.CLIPath); err == nil {
 		data["codex_daemon"] = daemon
@@ -53,7 +84,55 @@ func runStatus(ctx context.Context, args []string) int {
 	} else {
 		o.Checks = append(o.Checks, check{"store.snapshot", "pending", true, "database missing or schema unavailable; nothing created"})
 	}
-	o.Data, o.NextSteps = data, []string{"live instance health remains pending; no additional Feishu receiver was opened"}
+	o.Data = data
 	emit(o)
-	return 5
+	return code
+}
+
+func liveStatus(s control.Snapshot) (output, int) {
+	o := output{Command: "status", State: "running", OK: true, Checks: []check{{"instance.live_health", "pass", true, "read from the running same-user bridge with matching configuration"}}}
+	observe := func(id string, good bool, detail string) {
+		status := "pass"
+		if !good {
+			status, o.OK = "pending", false
+		}
+		o.Checks = append(o.Checks, check{id, status, true, detail})
+	}
+	observe("instance.running", s.Running, "current service lifecycle")
+	observe("instance.codex_connection", s.NativeConnected, "existing native generation attachment")
+	observe("instance.feishu_connection", s.FeishuConnected, "existing Feishu receiver ready state")
+	observe("instance.bindings_reconciled", int64(s.HydratedBindings) == s.Persistent.Bindings, "bound threads hydrated in this native generation")
+	// Journals can describe the same operation at several layers. Check whether
+	// any result needs confirmation; adding their counts would double-count it.
+	known := true
+	for _, states := range []struct {
+		counts  map[string]int64
+		pending []string
+	}{
+		{s.Persistent.Inputs, []string{"unknown", "submitting", "steering", "removing"}},
+		{s.Persistent.Outbound, []string{"unknown", "dispatching"}},
+		{s.Persistent.OutboundAttempts, []string{"unknown", "dispatching"}},
+		{s.Persistent.NativeActions, []string{"unknown", "running"}},
+		{s.Persistent.NativeAttempts, []string{"awaiting_reconciliation", "dispatching"}},
+		{s.Persistent.CommandReplies, []string{"unknown", "dispatching"}},
+		{s.Persistent.Reactions, []string{"unknown", "changing"}},
+		{s.Persistent.GroupIntents, []string{"unknown", "dispatching"}},
+		{s.Persistent.TaskControls, []string{"unknown", "pending"}},
+		{s.Persistent.TaskClaims, []string{"unknown", "pending"}},
+		{s.Persistent.Requests, []string{"awaiting_reconciliation", "reminder_unknown", "reminder_dispatching"}},
+		{s.Persistent.ReminderAttempts, []string{"unknown", "dispatching"}},
+	} {
+		for _, state := range states.pending {
+			if states.counts[state] > 0 {
+				known = false
+			}
+		}
+	}
+	observe("instance.operations_known", known, "current remote writes and recovered requests require confirmation; resolved native attempt ambiguity is retained only as historical audit counts")
+	if !o.OK {
+		o.State = "reconciling"
+		o.NextSteps = []string{"inspect pending checks and frozen operations; do not resubmit unknown operations"}
+		return o, 5
+	}
+	return o, 0
 }

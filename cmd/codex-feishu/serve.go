@@ -10,6 +10,7 @@ import (
 	"codex-feishu/internal/app"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
+	"codex-feishu/internal/control"
 	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/store"
 )
@@ -84,8 +85,34 @@ func runServe(ctx context.Context, args []string) int {
 		last[code] = now
 		emit(output{Command: "serve", State: code})
 	}
-	emit(output{Command: "serve", State: "starting", Data: map[string]any{"host_id": cfg.Host.ID, "store_schema": store.SchemaVersion, "phase1_released": false}})
-	err = service.Run(ctx)
+	identity, err := control.Identity(*path, cfg)
+	if err != nil {
+		emit(output{Command: "serve", State: "control-identity-unavailable"})
+		return 6
+	}
+	endpoint, err := control.Path(cfg.Feishu.AppID)
+	if err != nil {
+		emit(output{Command: "serve", State: "control-endpoint-unavailable"})
+		return 6
+	}
+	server, err := control.Listen(ctx, endpoint, identity, service.Health)
+	if err != nil {
+		emit(output{Command: "serve", State: "control-endpoint-conflict"})
+		return 6
+	}
+	defer server.Close()
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	var workers sync.WaitGroup
+	results := make(chan error, 2)
+	workers.Add(2)
+	go func() { defer workers.Done(); results <- service.Run(runCtx) }()
+	go func() { defer workers.Done(); results <- server.Serve(runCtx) }()
+	emit(output{Command: "serve", State: "starting", Data: map[string]any{"host_id": cfg.Host.ID, "store_schema": store.SchemaVersion, "phase1_released": phase1Released, "control_endpoint": endpoint}})
+	err = <-results
+	stop()
+	server.Close()
+	workers.Wait()
 	if ctx.Err() != nil {
 		emit(output{Command: "serve", OK: true, State: "stopped"})
 		return 0

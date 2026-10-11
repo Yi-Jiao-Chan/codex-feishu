@@ -1,32 +1,65 @@
 package cards
 
-// QueueInput renders only operation state, never the human input body. Revision
-// and the exact native queue ID travel in the callback; stale cards cannot act
-// on a replacement queue entry after a restore or concurrent App operation.
+import "strconv"
+
+// QueueView contains verified operation facts, never the human message body.
+// Active means a currently verified native turn; unknown/idle never offers steer.
+type QueueView struct {
+	State, Token, QueueID         string
+	Revision                      int64
+	QueueOrdinal                  int
+	Active, Stopped, LocalPending bool
+}
+
+// QueueInput retains the old entry point with conservative unknown turn state.
 func QueueInput(state, token, queueID string, revision int64) string {
-	labels := map[string]string{
-		"received": "已收到", "submitting": "正在提交", "accepted": "已进入会话",
-		"queued": "已排队 · 当前轮结束后执行", "consumed": "已进入会话",
-		"steering": "正在追加引导", "removing": "正在移除", "steered": "已追加引导",
-		"removed": "已移除", "unknown": "正在核验 · 请勿重复提交", "failed": "提交失败",
-	}
-	label := labels[state]
+	return QueueInputView(QueueView{State: state, Token: token, QueueID: queueID, Revision: revision})
+}
+func QueueInputView(v QueueView) string {
+	labels := map[string]string{"received": "已收到 · 待提交", "submitting": "正在提交", "accepted": "已进入会话", "queued": "已排队 · 等待执行状态核验", "consumed": "已进入会话", "steering": "正在追加引导", "removing": "正在移除", "steered": "已追加引导", "removed": "已移除", "unknown": "正在核验 · 请勿重复提交", "failed": "提交失败"}
+	label := labels[v.State]
 	if label == "" {
 		label = labels["unknown"]
 	}
-	els := []element{{"tag": "markdown", "content": label, "text_size": "notation"}}
-	if state == "queued" && token != "" && queueID != "" && revision > 0 {
-		button := func(label, action string) element {
-			b := Button(label, action, token)
-			b["behaviors"] = []element{{"type": "callback", "value": element{
-				"action": action, "token": token, "queue_id": queueID, "revision": revision,
-			}}}
-			return b
+	if v.State == "queued" {
+		if v.Stopped {
+			label = "已排队 · 队列已保留，等待显式继续"
+		} else if v.Active {
+			// An active turn does not prove the separate native queue is
+			// unpaused, so it grants steer without promising automatic start.
+			label = "已排队"
 		}
-		els = append(els, element{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "8px", "columns": []element{
-			{"tag": "column", "width": "auto", "elements": []element{button("追加引导", "steer")}},
-			{"tag": "column", "width": "auto", "elements": []element{button("移除", "remove")}},
-		}})
+		if v.QueueOrdinal > 0 {
+			label += " · 第 " + strconv.Itoa(v.QueueOrdinal) + " 条"
+		}
+	}
+	if v.State == "received" && v.LocalPending {
+		label = "已收到 · 尚未提交，可取消本地待提交消息"
+	}
+	els := []element{{"tag": "markdown", "content": label, "text_size": "notation"}}
+	button := func(label, action string) element {
+		b := Button(label, action, v.Token)
+		b["behaviors"] = []element{{"type": "callback", "value": element{"action": action, "token": v.Token, "queue_id": v.QueueID, "revision": v.Revision}}}
+		return b
+	}
+	var buttons []element
+	if v.Token != "" && v.Revision > 0 {
+		if v.State == "queued" && v.QueueID != "" {
+			if v.Active && !v.Stopped {
+				buttons = append(buttons, button("追加引导", "steer"))
+			}
+			buttons = append(buttons, button("移除", "remove"))
+		}
+		if v.State == "received" && v.LocalPending && v.QueueID == "" {
+			buttons = append(buttons, button("取消待提交", "cancel_pending"))
+		}
+	}
+	if len(buttons) > 0 {
+		columns := make([]element, 0, len(buttons))
+		for _, b := range buttons {
+			columns = append(columns, element{"tag": "column", "width": "auto", "elements": []element{b}})
+		}
+		els = append(els, element{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "8px", "columns": columns})
 	}
 	return render(els)
 }

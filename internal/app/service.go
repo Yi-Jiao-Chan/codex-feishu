@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -52,6 +53,8 @@ type Service struct {
 	tasks           map[string]*TaskControls
 	actionsReady    map[string]bool
 	nativeConnected atomic.Bool
+	running         atomic.Bool
+	startedAtMS     atomic.Int64
 }
 
 func (s *Service) now() time.Time {
@@ -73,13 +76,33 @@ func (s *Service) Wake(thread string) {
 		runtime.Wake(thread)
 	}
 }
-func (s *Service) NativeConnected() bool { return s.nativeConnected.Load() }
+func (s *Service) NativeConnected() bool {
+	if !s.nativeConnected.Load() {
+		return false
+	}
+	s.mu.RLock()
+	runtime := s.current
+	s.mu.RUnlock()
+	if runtime == nil {
+		return s.nativeConnected.Load()
+	}
+	// Err is a terminal-event diagnostic, not a general readiness method on
+	// RuntimeNative. The production client exposes the reader's Done signal.
+	if native, ok := runtime.Native.(interface{ Done() <-chan struct{} }); ok {
+		select {
+		case <-native.Done():
+			return false
+		default:
+		}
+	}
+	return s.nativeConnected.Load()
+}
 
 // A connected socket alone does not establish fresh per-thread control state.
 // Ordinary inputs remain durable while disconnected; buttons need a completed
 // history reconciliation in the current native generation.
 func (s *Service) actionAvailable(thread string) bool {
-	if !s.nativeConnected.Load() {
+	if !s.NativeConnected() {
 		return false
 	}
 	s.mu.RLock()
@@ -94,6 +117,11 @@ func (s *Service) Run(parent context.Context) error {
 	if err := s.Config.Validate(); err != nil {
 		return err
 	}
+	if !s.running.CompareAndSwap(false, true) {
+		return errors.New("service is already running")
+	}
+	s.startedAtMS.Store(s.now().UnixMilli())
+	defer s.running.Store(false)
 	if _, err := s.Store.BeginBaseline(parent, s.Config.Host.ID, s.Config.Feishu.AppID, s.now().UnixMilli()); err != nil {
 		return err
 	}
@@ -116,6 +144,11 @@ func (s *Service) Run(parent context.Context) error {
 		return err
 	}
 	if err := s.Store.RecoverCommandDispatches(parent, s.Config.Host.ID); err != nil {
+		return err
+	}
+	// Offline cards may be dispatched before any native generation connects.
+	// Recover only pre-existing in-flight mirror writes, while no actor exists.
+	if err := s.Store.RecoverMirrorDispatches(parent, s.Config.Host.ID); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(parent)
@@ -190,17 +223,39 @@ func (s *Service) nativeLoop(ctx context.Context) {
 				s.notice("codex.reconcile_required")
 			}
 		}
-		timer := time.NewTimer(interval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if !s.waitForRetry(ctx, interval) {
 			return
-		case <-timer.C:
 		}
 		if interval < 30*time.Second {
 			interval *= 2
 			if interval > 30*time.Second {
 				interval = 30 * time.Second
+			}
+		}
+	}
+}
+
+// Only the native-generation owner dispatches offline mirrors. Runtime has
+// already joined every actor; the next generation cannot recover this journal
+// while an offline HTTP request is in flight. Feedback fills backoff time but
+// cannot move the next native attempt past that backoff deadline.
+func (s *Service) waitForRetry(ctx context.Context, interval time.Duration) bool {
+	deadline := time.Now().Add(interval)
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return true
+		case <-tick.C:
+			if remaining := time.Until(deadline); remaining > 0 {
+				feedbackCtx, cancel := context.WithTimeout(ctx, remaining)
+				s.disconnected(feedbackCtx)
+				cancel()
 			}
 		}
 	}
@@ -223,14 +278,24 @@ func (s *Service) disconnected(ctx context.Context) {
 	if location == nil {
 		location = time.UTC
 	}
+	feedback := &Feedback{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID}
 	for _, b := range bindings {
 		if ctx.Err() != nil {
 			return
 		}
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := feedback.StageReceived(callCtx, b.ThreadID)
+		if err != nil {
+			s.notice("offline.receipt_card_pending")
+			cancel()
+			continue
+		}
 		mark, err := s.Store.Watermark(callCtx, s.Config.Host.ID, b.ThreadID)
+		status := "Codex 连接暂不可用"
 		if err == nil {
-			status := "Codex 连接已断开 · 状态截至 " + time.UnixMilli(mark.ObservedAtMS).In(location).Format("01-02 15:04:05")
+			status = "Codex 连接已断开 · 状态截至 " + time.UnixMilli(mark.ObservedAtMS).In(location).Format("01-02 15:04:05")
+		}
+		if err == nil || errors.Is(err, sql.ErrNoRows) {
 			err = s.Store.StageDisconnectedCards(callCtx, store.SubmissionScope{HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, ThreadID: b.ThreadID}, status)
 		}
 		if err != nil {

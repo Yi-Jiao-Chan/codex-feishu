@@ -1,0 +1,65 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+type healthNative struct {
+	*serviceNative
+	done chan struct{}
+}
+
+func (n *healthNative) Done() <-chan struct{} { return n.done }
+
+func TestHealthReadsExistingConnectionsAndHydrationWithoutBodies(t *testing.T) {
+	db, cfg, _ := serviceFixture(t)
+	gateway := &serviceGateway{}
+	gateway.ready.Store(true)
+	s := &Service{Store: db, Config: cfg, Gateway: gateway, actionsReady: map[string]bool{"thread": true, "unrelated": true}}
+	s.running.Store(true)
+	s.startedAtMS.Store(time.Now().Add(-time.Second).UnixMilli())
+	s.nativeConnected.Store(true)
+	live, err := s.Health(context.Background())
+	if err != nil || !live.Running || !live.NativeConnected || !live.FeishuConnected || live.HydratedBindings != 1 || live.Persistent.Bindings != 1 {
+		t.Fatal("actual generation facts unavailable", live, err)
+	}
+	b, _ := json.Marshal(live)
+	if strings.Contains(string(b), "thread") || strings.Contains(string(b), cfg.Feishu.AppID) || strings.Contains(string(b), cfg.Access.OwnerOpenID) {
+		t.Fatal("health exposed routing identities", string(b))
+	}
+	s.nativeConnected.Store(false)
+	live, err = s.Health(context.Background())
+	if err != nil || live.NativeConnected || live.HydratedBindings != 0 || !live.FeishuConnected {
+		t.Fatal("offline generation reported hydrated", live, err)
+	}
+	s.running.Store(false)
+	live, err = s.Health(context.Background())
+	if err != nil || live.FeishuConnected || live.NativeConnected {
+		t.Fatal("stopped service claimed connected", live, err)
+	}
+}
+
+func TestHealthAndButtonsFailClosedBeforeDisconnectedActorsJoin(t *testing.T) {
+	db, cfg, root := serviceFixture(t)
+	native := &healthNative{serviceNative: serviceTestNative(root), done: make(chan struct{})}
+	s := &Service{Store: db, Config: cfg, current: &Runtime{Native: native}, actionsReady: map[string]bool{"thread": true}}
+	s.running.Store(true)
+	s.nativeConnected.Store(true)
+	if !s.NativeConnected() || !s.actionAvailable("thread") {
+		t.Fatal("healthy native connection unavailable")
+	}
+	// The socket reader has stopped, but Runtime may still be joining an
+	// actor with a bounded Feishu HTTP request. No event is consumed here.
+	close(native.done)
+	if s.NativeConnected() || s.actionAvailable("thread") {
+		t.Fatal("closed socket still enabled native operations")
+	}
+	live, err := s.Health(context.Background())
+	if err != nil || live.NativeConnected || live.HydratedBindings != 0 {
+		t.Fatal("closed native reader reported healthy", live, err)
+	}
+}

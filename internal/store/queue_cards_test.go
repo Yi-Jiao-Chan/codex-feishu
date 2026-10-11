@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -90,5 +91,102 @@ func TestQueueCardCannotUnfreezeUnknownOrUseForeignScope(t *testing.T) {
 	}
 	if err := s.StageQueueCard(ctx, SubmissionScope{"host", "another-app", "thread"}, receipt.ID); !errors.Is(err, ErrConflict) {
 		t.Fatal("foreign application staged card", err)
+	}
+}
+
+func TestQueueCardStoppedAndIdleNeverOfferSteerOrExecutionPromise(t *testing.T) {
+	s, _, scope, r := submissionStore(t)
+	ctx := context.Background()
+	if e := s.ObserveSubmission(ctx, scope, r.ID, "queued", "native-q", 3, "", ""); e != nil {
+		t.Fatal(e)
+	}
+	for _, status := range []string{"inProgress", "interrupted", "completed"} {
+		v := TaskControl{TurnID: "turn", NativeStatus: status, State: "available", Kind: "stop", QueueCount: 3, Fingerprint: status}
+		if status == "interrupted" {
+			v.Kind = "continue"
+		}
+		if status == "completed" {
+			v.State = "unavailable"
+			v.Kind = ""
+		}
+		if e := s.StageTaskControls(ctx, scope, []TaskControl{v}); e != nil {
+			t.Fatal(e)
+		}
+		if e := s.StageQueueCard(ctx, scope, r.ID); e != nil {
+			t.Fatal(e)
+		}
+		m, e := s.Mirror(ctx, scope.HostID, scope.ThreadID, QueueCardKey(r.ID))
+		if e != nil {
+			t.Fatal(e)
+		}
+		if strings.Contains(m.Card, "追加引导") != (status == "inProgress") || strings.Contains(m.Card, "当前轮结束后执行") {
+			t.Fatalf("wrong queue UI %s %s", status, m.Card)
+		}
+		if !strings.Contains(m.Card, "第 3 条") {
+			t.Fatal("lost actual ordinal")
+		}
+		if status == "interrupted" && !strings.Contains(m.Card, "等待显式继续") {
+			t.Fatal("stopped queue lost retain guidance")
+		}
+	}
+}
+func TestDisconnectedQueueKeepsOnlySafeLocalCancellation(t *testing.T) {
+	s, _, scope, r := submissionStore(t)
+	ctx := context.Background()
+	n := deliveredPendingCard(t, s, scope, r)
+	if e := s.StageDisconnectedCards(ctx, scope, "disconnected"); e != nil {
+		t.Fatal(e)
+	}
+	m, e := s.Mirror(ctx, scope.HostID, scope.ThreadID, QueueCardKey(r.ID))
+	if e != nil || !strings.Contains(m.Card, "cancel_pending") {
+		t.Fatal("offline erased local cancel", e)
+	}
+	if _, e := s.DB.Exec(`INSERT INTO submission_attempts(attempt_id,host_id,app_id,thread_id,receipt_id,stage,state,client_id,created_at_ms) VALUES('late','host','app','thread',?,'add','unknown',?,1)`, r.ID, r.ClientID); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.StageDisconnectedCards(ctx, scope, "disconnected"); e != nil {
+		t.Fatal(e)
+	}
+	m, e = s.Mirror(ctx, scope.HostID, scope.ThreadID, QueueCardKey(r.ID))
+	if e != nil || strings.Contains(m.Card, "cancel_pending") {
+		t.Fatal("offline exposed uncertain cancel", e)
+	}
+	if _, e := cancelLocal(t, s, scope, n); !errors.Is(e, ErrSubmissionStale) {
+		t.Fatal("old safe callback canceled ambiguous item", e)
+	}
+}
+
+func TestQueueCardMirrorCreationIsIndependentOfTaskLookup(t *testing.T) {
+	for _, withTask := range []bool{false, true} {
+		t.Run(fmt.Sprint(withTask), func(t *testing.T) {
+			s, _, scope, r := submissionStore(t)
+			ctx := context.Background()
+			if e := s.ObserveSubmission(ctx, scope, r.ID, "queued", "native-q", 1, "", ""); e != nil {
+				t.Fatal(e)
+			}
+			if withTask {
+				v := TaskControl{TurnID: "turn", NativeStatus: "interrupted", Kind: "continue", State: "available", QueueCount: 1, Fingerprint: "stopped"}
+				if e := s.StageTaskControls(ctx, scope, []TaskControl{v}); e != nil {
+					t.Fatal(e)
+				}
+			}
+			if e := s.StageQueueCard(ctx, scope, r.ID); e != nil {
+				t.Fatalf("initial queued mirror task=%t: %v", withTask, e)
+			}
+			before, e := s.Mirror(ctx, scope.HostID, scope.ThreadID, QueueCardKey(r.ID))
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e := s.ObserveSubmission(ctx, scope, r.ID, "queued", "native-q", 2, "", ""); e != nil {
+				t.Fatal(e)
+			}
+			if e := s.StageQueueCard(ctx, scope, r.ID); e != nil {
+				t.Fatalf("existing queued mirror task=%t: %v", withTask, e)
+			}
+			after, e := s.Mirror(ctx, scope.HostID, scope.ThreadID, before.Key)
+			if e != nil || after.Revision != before.Revision+1 || !strings.Contains(after.Card, "第 2 条") {
+				t.Fatal("existing queued card was not updated", e)
+			}
+		})
 	}
 }

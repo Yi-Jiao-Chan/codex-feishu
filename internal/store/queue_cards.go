@@ -19,11 +19,27 @@ func QueueCardKey(receiptID string) string { return "ui:queue:" + receiptID }
 // inputs need only reactions; create a card when queued, uncertain or failed,
 // then keep updating that same card as its operation completes.
 func (s *Store) StageQueueCard(ctx context.Context, scope SubmissionScope, receiptID string) error {
+	return s.StageQueueCardWithOptions(ctx, scope, receiptID, QueueCardOptions{})
+}
+
+// LocalPending creates the offline receipt card only when no native attempt
+// exists. Offline disables native controls regardless of old hydrated state.
+type QueueCardOptions struct{ LocalPending, Offline bool }
+
+func (s *Store) StageQueueCardWithOptions(ctx context.Context, scope SubmissionScope, receiptID string, options QueueCardOptions) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := stageQueueCardTx(ctx, tx, scope, receiptID, options); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func stageQueueCardTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, receiptID string, options QueueCardOptions) error {
+	var err error
 	if _, err = submissionBinding(ctx, tx, scope); err != nil {
 		return err
 	}
@@ -36,12 +52,41 @@ func (s *Store) StageQueueCard(ctx context.Context, scope SubmissionScope, recei
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if errors.Is(err, sql.ErrNoRows) && n.State != "queued" && n.State != "unknown" && n.State != "failed" {
+	mirrorMissing := errors.Is(err, sql.ErrNoRows)
+	localPending, checkErr := localPendingSubmission(ctx, tx, scope, n)
+	if checkErr != nil {
+		return checkErr
+	}
+	uncertainReceived := n.State == "received" && !localPending
+	localPending = localPending && options.LocalPending
+	if mirrorMissing && n.State != "queued" && n.State != "unknown" && n.State != "failed" && !localPending && !uncertainReceived {
 		return nil
 	}
-	card := cards.QueueInput(n.State, n.ActionToken, n.QueueID, n.Revision)
+	view := cards.QueueView{State: n.State, Token: n.ActionToken, QueueID: n.QueueID, Revision: n.Revision, QueueOrdinal: n.QueueOrdinal, LocalPending: localPending}
+	if uncertainReceived {
+		view.State = "unknown"
+	}
+	if n.State == "queued" && !options.Offline {
+		var active int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_controls WHERE host_id=? AND app_id=? AND thread_id=? AND native_status='inProgress' AND kind='stop' AND state='available'`, scope.HostID, scope.AppID, scope.ThreadID).Scan(&active); err != nil {
+			return err
+		}
+		view.Active = active == 1
+		if !view.Active {
+			var status string
+			err := tx.QueryRowContext(ctx, `SELECT native_status FROM task_controls WHERE host_id=? AND app_id=? AND thread_id=? ORDER BY rowid DESC LIMIT 1`, scope.HostID, scope.AppID, scope.ThreadID).Scan(&status)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			view.Stopped = status == "interrupted"
+		}
+	}
+	card := cards.QueueInputView(view)
+	if options.Offline && n.State == "queued" {
+		card = cards.Progress("Codex 连接已断开 · 队列已保留", "重新连接后核验队列；原生操作暂不可用。")
+	}
 	terminal := n.State == "consumed" || n.State == "steered" || n.State == "removed" || n.State == "failed"
-	if errors.Is(err, sql.ErrNoRows) {
+	if mirrorMissing {
 		_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,parent_message_id) VALUES(?,?,?,?,'progress',?,?,?)`, scope.HostID, scope.ThreadID, key, key, card, terminal, n.MessageID)
 		if err == nil {
 			_, err = tx.ExecContext(ctx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, scope.HostID, scope.ThreadID, key)
@@ -63,5 +108,5 @@ func (s *Store) StageQueueCard(ctx context.Context, scope SubmissionScope, recei
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }

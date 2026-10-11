@@ -2,7 +2,7 @@
 
 版本：2026-10-12 / 配置 schema v1。对象：用户和负责配置的 Agent。
 
-本指南自包含，目标是在用户提供少量信息后，由 Agent 检测环境、生成配置、安装用户服务并验证。**M0 真实联调已通过，当前整合 M1–M3；development 版已有 serve、setup plan / apply、service 和只读 status，但一期发布仍待验收。本文安装流程是正式发布契约。** Agent 必须检查 version 的 `phase1_released` 与具体 capabilities：开发版可做 plan，正式 apply / install / start 会拒绝，setup pair 与实时实例健康尚未接入。命令存在不代表可正式安装；缺少已验收版本时完成只读环境检查并报告前置条件，不能假装配置完成。开发任务另见开发手册，不在一次配置任务里默认编写整个产品。
+本指南自包含，目标是在用户提供少量信息后，由 Agent 检测环境、生成配置、安装用户服务并验证。**M0 真实联调已通过，当前整合 M1–M3；development 版已有 serve、setup plan / apply、service 和实时 / 只读 status，但一期发布仍待验收。本文安装流程是正式发布契约。** Agent 必须检查 version 的 `phase1_released` 与具体 capabilities：开发版可做 plan，正式 apply / install / start 会拒绝，setup pair 尚未接入。status 实时健康只对提供管理通道的新版运行实例有效，旧 M0 返回只读快照和 pending。命令存在不代表可正式安装；缺少已验收版本时完成只读环境检查并报告前置条件，不能假装配置完成。开发任务另见开发手册，不在一次配置任务里默认编写整个产品。
 
 ## 用户直接交给 Agent 的提示词
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -256,5 +257,69 @@ func TestServiceButtonsRequireReconciliationInCurrentGeneration(t *testing.T) {
 	s.nativeConnected.Store(false)
 	if s.actionAvailable("thread") {
 		t.Fatal("disconnected generation retained actionable controls")
+	}
+}
+
+func TestServiceOfflineNewInputCanCancelBeforeNativeRecovery(t *testing.T) {
+	db, cfg, root := serviceFixture(t)
+	g := &serviceGateway{runtimeGateway: &runtimeGateway{}, listening: make(chan struct{})}
+	native := serviceTestNative(root)
+	var reconnect atomic.Bool
+	var connects atomic.Int32
+	s := &Service{Config: cfg, Store: db, Gateway: g, BotID: "ou_bot", RetryInterval: 2 * time.Second,
+		Connect: func(context.Context) (ServiceNative, error) {
+			connects.Add(1)
+			if !reconnect.Load() {
+				return nil, errors.New("fixture offline")
+			}
+			return native, nil
+		}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	<-g.listening
+	runtimeWait(t, func() bool { return connects.Load() >= 1 })
+	if err := g.message(ctx, receiverMessage(t, "chat", "ou_operator", "local-pending", "group", true)); err != nil {
+		t.Fatal(err)
+	}
+	scope := store.SubmissionScope{HostID: "host", AppID: cfg.Feishu.AppID, ThreadID: "thread"}
+	var queued store.Submission
+	var card store.Mirror
+	runtimeWait(t, func() bool {
+		ns, err := db.Submissions(ctx, scope)
+		if err != nil || len(ns) != 1 {
+			return false
+		}
+		queued = ns[0]
+		card, err = db.Mirror(ctx, "host", "thread", store.QueueCardKey(queued.ID))
+		return err == nil && card.RemoteID != "" && card.DeliveredRevision == card.Revision && strings.Contains(card.Card, "cancel_pending")
+	})
+	if card.ParentMessageID != "local-pending" || strings.Contains(card.Card, queued.Body) {
+		t.Fatal("offline card lost original parent or echoed body", card)
+	}
+	event := receiverAction(t, "ou_operator", card.RemoteID, queued.ActionToken, "", queued.Revision)
+	event.Event.Action.Value["action"] = "cancel_pending"
+	if reply, err := g.action(ctx, event); err != nil || reply.Toast == nil || reply.Toast.Type == "error" {
+		t.Fatal("offline cancellation failed", reply, err)
+	}
+	runtimeWait(t, func() bool {
+		ns, err := db.Submissions(ctx, scope)
+		m, mirrorErr := db.Mirror(ctx, "host", "thread", store.QueueCardKey(queued.ID))
+		return err == nil && len(ns) == 1 && ns[0].State == "removed" && mirrorErr == nil && m.RemoteID == card.RemoteID && m.Terminal && m.DeliveredRevision == m.Revision
+	})
+	reconnect.Store(true)
+	runtimeWait(t, func() bool { return s.actionAvailable("thread") && native.queueReads.Load() > 0 })
+	if native.adds.Load() != 0 || g.listens.Load() != 1 {
+		t.Fatal("cancelled input submitted or second receiver created")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("offline/native workers not joined")
 	}
 }

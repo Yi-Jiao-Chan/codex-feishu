@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、M0 verify / m0-listen、serve、setup plan / apply、service 和只读 status。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对、实时健康通道、已有通知规则的向导更新、迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、M0 verify / m0-listen、serve、setup plan / apply、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对、完整 doctor / verify、已有通知规则的向导更新、迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)及[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
 
 ## 命令表
 
@@ -77,7 +77,9 @@ Linux 首选 systemd --user，ExecStart 使用绝对二进制路径和配置路�
 
 运行中 status/verify/pair 复用现有实例，不另开竞争正式事件的 ws 连接。可以通过仅同用户可访问的本机 Unix 控制通道查询健康与提交测试/配对请求，限制为这些管理用例，不提供额外网络执行 API。
 
-当前 status 只读检查用户服务、daemon 和数据库计数；可读 M0 schema 1 而不迁移。管理通道未接入，故实时连接状态为 unknown，必需检查 pending、退出码 5。systemd active、daemon running 或持久记录可读均不能代替实时桥健康证明。
+当前新版 serve 提供 Linux Unix socket 管理通道，私有目录 0700、socket 0600，客户端和服务端均核验 SO_PEERCRED 的系统用户；只允许健康方法，不提供输入或执行 API。请求绑定物理配置路径与当前完整配置摘要，配置已改变而服务未重启时拒绝报告生效。消息大小、并发连接和等待均有上限；退出关闭全部管理连接，清理只删除自己的 socket。
+
+status 优先从匹配的运行实例读取真实 receiver ready、原生 reader 生命周期、当前代际已核验绑定数及聚合日志；未决 / 未知变更不报告全部健康。前台运行不要求已经安装 systemd unit；用户服务及注销常驻另列事实，安装向导仍须验证其生命周期。旧 M0 没有管理通道，退回只读检查用户服务、daemon 和数据库计数，可读 schema 1 而不迁移；实时连接 unknown、必需项 pending、退出码 5。systemd active、daemon running 或持久记录可读均不能代替实时桥健康证明。
 
 检测 user manager 与注销后的常驻能力；服务在当前 SSH 中 active 不能证明退出 SSH 后仍在。若 linger/现有 supervisor 条件不足，输出具体系统阻塞，不能用一次后台 nohup 宣称完整常驻。工具不自行申请 sudo、修改系统级服务或暴露 Codex 网络端口。
 

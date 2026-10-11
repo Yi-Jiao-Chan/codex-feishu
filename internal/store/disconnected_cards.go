@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"codex-feishu/internal/cards"
 )
@@ -70,10 +71,24 @@ func (s *Store) StageDisconnectedCards(ctx context.Context, scope SubmissionScop
 	rows.Close()
 	card := cards.Progress(status, "重新连接后恢复同步；当前操作暂不可用。")
 	for _, m := range selected {
-		if m.Card == card {
+		overlay := card
+		if strings.HasPrefix(m.Key, "ui:queue:") {
+			n, err := readSubmission(ctx, tx, scope, strings.TrimPrefix(m.Key, "ui:queue:"))
+			if err != nil {
+				return err
+			}
+			localPending, err := localPendingSubmission(ctx, tx, scope, n)
+			if err != nil {
+				return err
+			}
+			if localPending {
+				overlay = cards.QueueInputView(cards.QueueView{State: n.State, Token: n.ActionToken, Revision: n.Revision, LocalPending: true})
+			}
+		}
+		if m.Card == overlay {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, card, scope.HostID, scope.ThreadID, m.Key); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, overlay, scope.HostID, scope.ThreadID, m.Key); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, scope.HostID, scope.ThreadID, m.Key); err != nil {

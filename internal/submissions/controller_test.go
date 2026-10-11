@@ -893,3 +893,36 @@ func TestUnknownAddRequiresExactClientIDAndDefiniteRejectionIsTerminal(t *testin
 		})
 	}
 }
+
+func TestLocallyCancelledReceiptNeverDispatchesAfterReconnect(t *testing.T) {
+	c, f, path := fixture(t, true)
+	r := claim(t, c, "cancel-before-reconnect")
+	ctx := context.Background()
+	if e := c.Store.StageSubmissions(ctx, c.scope()); e != nil {
+		t.Fatal(e)
+	}
+	if e := c.Store.StageQueueCardWithOptions(ctx, c.scope(), r.ID, store.QueueCardOptions{LocalPending: true, Offline: true}); e != nil {
+		t.Fatal(e)
+	}
+	m, e := c.Store.Mirror(ctx, c.HostID, c.ThreadID, store.QueueCardKey(r.ID))
+	if e != nil {
+		t.Fatal(e)
+	}
+	attempt, ok, e := c.Store.ClaimMirror(ctx, c.HostID, c.ThreadID, m.Key, m.Revision, 5000)
+	if e != nil || !ok {
+		t.Fatal(e)
+	}
+	if e = c.Store.FinishMirrorAttempt(ctx, attempt.ID, "confirmed", "actual-card"); e != nil {
+		t.Fatal(e)
+	}
+	n := view(t, c, r.ID)
+	if _, e = c.Store.CancelPendingSubmission(ctx, c.scope(), "operator", []string{"operator"}, n.ChatID, "actual-card", n.ActionToken, n.Revision); e != nil {
+		t.Fatal(e)
+	}
+	c = reopen(t, c, path)
+	tick(t, c)
+	tick(t, c)
+	if f.addCalls != 0 || f.deleteCalls != 0 || f.steerCalls != 0 || f.starts != 0 || view(t, c, r.ID).State != "removed" {
+		t.Fatal("cancelled receipt reached native execution")
+	}
+}

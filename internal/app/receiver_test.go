@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -184,5 +185,88 @@ func TestReceiverChecksActualCardAndExactQueueRevision(t *testing.T) {
 	actions, err = db.SubmissionActions(ctx, scope)
 	if err != nil || len(actions) != 1 || actions[0].QueueID != "native-q" || actions[0].State != "ready" {
 		t.Fatal("callback did not persist exactly one original-queue action", err)
+	}
+}
+
+func TestReceiverOfflineLocalCancelRequiresActualDeliveredCardAndCAS(t *testing.T) {
+	r, db := receiverFixture(t)
+	ctx := context.Background()
+	r.ActionAllowed = func(string) bool { return false }
+	if e := r.Message(ctx, receiverMessage(t, "chat", "ou_operator", "original", "group", true)); e != nil {
+		t.Fatal(e)
+	}
+	f := Feedback{Store: db, HostID: "host", AppID: "app"}
+	if e := f.StageReceived(ctx, "thread"); e != nil {
+		t.Fatal(e)
+	}
+	scope := store.SubmissionScope{HostID: "host", AppID: "app", ThreadID: "thread"}
+	ns, e := db.Submissions(ctx, scope)
+	if e != nil || len(ns) != 1 {
+		t.Fatal(e)
+	}
+	n := ns[0]
+	m, e := db.Mirror(ctx, "host", "thread", store.QueueCardKey(n.ID))
+	if e != nil {
+		t.Fatal(e)
+	}
+	event := receiverAction(t, "ou_operator", "actual-card", n.ActionToken, "", n.Revision)
+	event.Event.Action.Value["action"] = "cancel_pending"
+	if _, e := r.Action(ctx, event); e != nil {
+		t.Fatal(e)
+	}
+	actions, e := db.SubmissionActions(ctx, scope)
+	if e != nil || len(actions) != 0 {
+		t.Fatal("unconfirmed card canceled", e)
+	}
+	a, ok, e := db.ClaimMirror(ctx, "host", "thread", m.Key, m.Revision, 5000)
+	if e != nil || !ok {
+		t.Fatal(e)
+	}
+	if e = db.FinishMirrorAttempt(ctx, a.ID, "confirmed", "actual-card"); e != nil {
+		t.Fatal(e)
+	}
+	for _, variant := range []string{"operator", "card", "token", "revision", "queue"} {
+		invalid := receiverAction(t, "ou_operator", "actual-card", n.ActionToken, "", n.Revision)
+		invalid.Event.Action.Value["action"] = "cancel_pending"
+		switch variant {
+		case "operator":
+			invalid.Event.Operator.OpenID = "outsider"
+		case "card":
+			invalid.Event.Context.OpenMessageID = "other"
+		case "token":
+			invalid.Event.Action.Value["token"] = "other"
+		case "revision":
+			invalid.Event.Action.Value["revision"] = n.Revision + 1
+		case "queue":
+			invalid.Event.Action.Value["queue_id"] = "native"
+		}
+		if _, e := r.Action(ctx, invalid); e != nil {
+			t.Fatal(e)
+		}
+		actions, e = db.SubmissionActions(ctx, scope)
+		if e != nil || len(actions) != 0 {
+			t.Fatalf("%s claimed local cancel %v", variant, e)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		response, e := r.Action(ctx, event)
+		if e != nil || response.Toast.Content != "已取消本地待提交消息" {
+			t.Fatal("offline cancel unavailable", e)
+		}
+	}
+	ns, e = db.Submissions(ctx, scope)
+	if e != nil || ns[0].State != "removed" {
+		t.Fatal("local cancel did not commit", e)
+	}
+	actions, e = db.SubmissionActions(ctx, scope)
+	if e != nil || len(actions) != 1 || actions[0].Stage != "local" {
+		t.Fatal("replay duplicated local action", e)
+	}
+	attempts, e := db.SubmissionAttempts(ctx, scope)
+	if e != nil || len(attempts) != 0 {
+		t.Fatal("local cancellation reached native journal", e)
+	}
+	if _, ok, e := db.ClaimSubmissionAttempt(ctx, scope, n.ID, "", "add"); ok || !errors.Is(e, store.ErrSubmissionStale) {
+		t.Fatal("actor submitted canceled message", ok, e)
 	}
 }

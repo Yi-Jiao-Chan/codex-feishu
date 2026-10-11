@@ -140,6 +140,24 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 		r.wake(thread)
 		return respond("info", "已收到，正在处理"), nil
 	}
+	if kind == "cancel_pending" && token != "" && queue == "" && validRevision {
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+		defer cancel()
+		b, err := r.Store.BindingByChat(ctx, r.Config.Host.ID, a.Context.OpenChatID)
+		if err != nil {
+			return respond("info", "会话已失效"), nil
+		}
+		scope := store.SubmissionScope{HostID: r.Config.Host.ID, AppID: r.Config.Feishu.AppID, ThreadID: b.ThreadID}
+		_, err = r.Store.CancelPendingSubmission(ctx, scope, a.Operator.OpenID, r.Config.Access.OperatorOpenIDs, a.Context.OpenChatID, a.Context.OpenMessageID, token, revision)
+		if err != nil {
+			if errors.Is(err, store.ErrSubmissionStale) || errors.Is(err, store.ErrConflict) {
+				return respond("info", "状态已更新，请查看最新卡片"), nil
+			}
+			return respond("error", "保存操作失败，请稍后重试"), err
+		}
+		r.wake(b.ThreadID)
+		return respond("info", "已取消本地待提交消息"), nil
+	}
 	if token == "" || queue == "" || !validRevision || kind != "steer" && kind != "remove" {
 		return respond("info", "卡片已更新，请使用最新操作"), nil
 	}

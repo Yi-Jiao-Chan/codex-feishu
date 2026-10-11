@@ -305,6 +305,13 @@ func (s *Store) ClaimSubmissionAction(ctx context.Context, scope SubmissionScope
 			return SubmissionAction{}, ErrSubmissionBusy
 		}
 	}
+	if n.State == "received" {
+		if safe, err := localPendingSubmission(ctx, tx, scope, n); err != nil {
+			return SubmissionAction{}, err
+		} else if !safe {
+			return SubmissionAction{}, ErrSubmissionStale
+		}
+	}
 	a = SubmissionAction{ID: ID(), ReceiptID: n.ID, Token: n.ActionToken, Kind: kind, Stage: "prepare", State: "ready", QueueID: queueID, ClientID: n.ClientID, Revision: revision}
 	if n.State == "received" {
 		a.State, a.Stage, a.Result = "confirmed", "local", "removed"

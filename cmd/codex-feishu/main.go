@@ -86,7 +86,7 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	if command == "version" {
-		emit(output{Command: command, OK: true, State: "phase1-development", Data: map[string]any{"version": "0.0.1-dev", "commit": commit, "config_schema": 1, "commands": []string{"version", "doctor", "verify", "m0-listen", "serve", "setup", "service", "status"}, "phase1_released": phase1Released, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "m0_app_ui_verified": true, "m0_feishu_verified": true, "phase1_service_ui_verified": false, "capabilities": map[string]any{"setup_plan": true, "setup_apply": true, "setup_pair": false, "status_live_instance": false, "status_readonly_snapshot": true}}})
+		emit(output{Command: command, OK: true, State: "phase1-development", Data: map[string]any{"version": "0.0.1-dev", "commit": commit, "config_schema": 1, "commands": []string{"version", "doctor", "verify", "m0-listen", "serve", "setup", "service", "status"}, "phase1_released": phase1Released, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "m0_app_ui_verified": true, "m0_feishu_verified": true, "phase1_service_ui_verified": false, "capabilities": map[string]any{"setup_plan": true, "setup_apply": true, "setup_pair": false, "status_live_instance": true, "status_readonly_snapshot": true}}})
 		return 0
 	}
 	if command != "doctor" && command != "verify" && command != "m0-listen" {
