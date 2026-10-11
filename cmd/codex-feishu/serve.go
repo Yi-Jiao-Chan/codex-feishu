@@ -13,6 +13,7 @@ import (
 	"codex-feishu/internal/control"
 	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/pairing"
+	"codex-feishu/internal/setup"
 	"codex-feishu/internal/store"
 )
 
@@ -29,6 +30,11 @@ func runServe(ctx context.Context, args []string) int {
 		emit(output{Command: "serve", State: "config-invalid", Checks: []check{{"config", "fail", true, err.Error()}}})
 		return 2
 	}
+	beforeIdentity, err := control.Identity(*path, cfg)
+	if err != nil {
+		emit(output{Command: "serve", State: "config-identity-invalid"})
+		return 6
+	}
 	// The application lock is independent of database choice. Acquire both
 	// before opening/migrating the database or starting a Feishu ws receiver.
 	appLock, err := store.AcquireApplication(cfg.Feishu.AppID)
@@ -43,6 +49,16 @@ func runServe(ctx context.Context, args []string) int {
 		return 6
 	}
 	defer dbLock.Close()
+	current, err := validateLockedServeConfig(*path, beforeIdentity)
+	if err != nil {
+		state, code := "configuration-changed-before-start", 6
+		if errors.Is(err, setup.ErrApplyPending) {
+			state, code = "setup-recovery-pending", 5
+		}
+		emit(output{Command: "serve", State: state, NextSteps: []string{"complete or recover the original setup transaction before starting the bridge; no connections or migration started"}})
+		return code
+	}
+	cfg = current
 	secret, err := cfg.Secret()
 	if err != nil {
 		emit(output{Command: "serve", State: "secret-unavailable"})
@@ -129,4 +145,21 @@ func runServe(ctx context.Context, args []string) int {
 		return 7
 	}
 	return 0
+}
+
+// The caller holds both receiver locks. Never connect or migrate using a
+// snapshot read while setup still owned those locks, or an unfinished journal.
+func validateLockedServeConfig(path string, identity string) (config.Config, error) {
+	current, err := config.Load(path)
+	if err != nil {
+		return config.Config{}, control.ErrIdentity
+	}
+	currentIdentity, err := control.Identity(path, current)
+	if err != nil || currentIdentity != identity {
+		return config.Config{}, control.ErrIdentity
+	}
+	if err := setup.CheckApplyReady(path); err != nil {
+		return config.Config{}, err
+	}
+	return current, nil
 }

@@ -137,7 +137,7 @@ func TestPreparedApplyJournalReconcilesAfterRename(t *testing.T) {
 	if err := configDirectory(filepath.Dir(paths.ConfigFile)); err != nil {
 		t.Fatal(err)
 	}
-	journal := applyJournal{PlanID: plan.ID, SourceDigest: plan.sourceDigest, BeforeDigest: "missing", AfterDigest: digest(plan.content), State: "prepared"}
+	journal := applyJournal{PlanID: plan.ID, SourceDigest: plan.legacySourceDigest, BeforeDigest: "missing", AfterDigest: digest(plan.content), State: "prepared"}
 	if err := atomicFile(paths.ConfigFile+".setup-state.json", encoded(journal)); err != nil {
 		t.Fatal(err)
 	}
@@ -252,14 +252,19 @@ func TestExistingOffPolicyIsPreservedAndExplicitQuietIsSeparate(t *testing.T) {
 	if err != nil || len(preview.PolicyChanges) != 1 || preview.PolicyChanges[0].After.Enabled {
 		t.Fatal("explicit quiet change was not isolated from off", err)
 	}
-	before, _ := os.ReadFile(paths.ConfigFile)
-	if _, err := p.Apply(ctx, in, paths, preview.ID); !errors.Is(err, ErrPolicyUpdatePending) {
-		t.Fatal("unimplemented rule apply claimed success", err)
+	result, err := p.Apply(ctx, in, paths, preview.ID)
+	if err != nil || !result.Changed {
+		t.Fatal("explicit policy update did not apply", err)
 	}
-	after, _ := os.ReadFile(paths.ConfigFile)
-	if string(after) != string(before) {
-		t.Fatal("policy pending path partially replaced config")
+	current, err := s.NotificationPolicy(ctx, in.Feishu.AppID, *in.Identity.OwnerOpenID)
+	if err != nil || current.Enabled || current.QuietStart != "23:00" || current.QuietEnd != "08:00" || current.Revision != 1 {
+		t.Fatal("off policy was overwritten", current, err)
 	}
+	cfg, err := config.Load(paths.ConfigFile)
+	if err != nil || cfg.Notifications.QuietHours != quiet {
+		t.Fatal("configuration and explicit policy differ", err)
+	}
+
 }
 
 func TestDevelopmentArtifactCanPreviewButCannotApply(t *testing.T) {

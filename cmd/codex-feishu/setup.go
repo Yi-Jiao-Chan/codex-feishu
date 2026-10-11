@@ -54,7 +54,7 @@ func runSetup(ctx context.Context, args []string) int {
 			checks = append(checks, check{"release.acceptance", "pending", true, "phase1 acceptance remains incomplete"})
 		}
 		if len(plan.PolicyChanges) > 0 {
-			checks = append(checks, check{"setup.notification_apply", "pending", true, "existing policy changes are previewed separately and not applied"})
+			checks = append(checks, check{"setup.notification_apply", "pass", true, "explicit existing policy changes isolated in the plan; apply uses locked revision CAS and a recoverable journal"})
 		}
 		emit(output{Command: "setup", OK: plan.CanApply, State: state, Data: plan, PlanID: plan.ID, Paths: plan.Paths, Checks: checks, NextSteps: plan.NextSteps})
 		return code
@@ -76,8 +76,8 @@ func setupFailure(err error) int {
 		state = "needs-identity"
 	case errors.Is(err, setup.ErrUnreleased):
 		state = "release-acceptance-pending"
-	case errors.Is(err, setup.ErrPolicyUpdatePending):
-		state = "notification-apply-pending"
+	case errors.Is(err, setup.ErrApplyPending):
+		state, code = "setup-recovery-pending", 5
 	}
 	emit(output{Command: "setup", State: state, Checks: []check{{"setup", "fail", true, err.Error()}}})
 	return code

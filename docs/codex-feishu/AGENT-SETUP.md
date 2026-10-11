@@ -150,6 +150,10 @@ CLI 已通过能力检查且 plan 无必需缺项时：
 
 逐步检查退出码，不用 shell 链把后续步骤在失败后继续跑。setup 生成正式 TOML，备份现有配置并原子写入；目录 0700，配置/secret 0600。保留原 host_id、数据库和绑定。重复配置差异为空时 no-op，不换身份、不清空历史、不重建群。
 
+重配已有部署时，先读 plan 的现有通知规则与独立差异。省略 quiet / timezone 保留有效规则；只有用户明确要求清除免打扰时才传 `quiet_hours: ""`。更新仅影响 owner 的明确字段，保留关闭 @ 与 snooze，其他接收者保持原值。已有规则更新需当前 schema 9；旧 M0 数据库不能由配置任务顺手迁移。
+
+若 apply 返回 `setup-recovery-pending` / 退出 5，暂停启动步骤，保留原向导输入、原 plan_id、二进制、密钥、备份与事务文件，重跑原 apply 恢复。不要创建新计划覆盖未完成事务、删除日志或改用备份配置启动。服务会检查同一物理数据库的未完成部署事务，在建立连接前拒绝启动。兼容版本 daemon 重启后的 socket 变化允许重新发现。身份、二进制、密钥或实际规则另有变化时报告具体冲突，不能强行覆盖用户后续命令。
+
 doctor 是只读检查，不自动发送消息。基础失败立即停止对应后续动作；状态未知保存诊断而不重复 apply / 建群 / 发消息。service install 只操作本工具的用户服务，不重启 Codex，不修改原权限，不开放公网端口。
 
 安装前的 `prerequisites-ready-bridge-not-observed` 仅表示前置条件通过，允许继续安装；它不表示服务已运行。启动后必须使用 `--require-running` 并检查必需项：连接、绑定恢复、初始历史基线和远端结果待核验都不能略过。`version` 的 `data.feishu_permissions_manifest` 已内嵌 API、准确权限、OR 替代关系、官方来源和实测方法，直接读取即可，不依赖当前目录下存在仓库。`documented_permission_satisfied=pass` 只表示文档要求的授权满足；`runtime_observed=unknown` 和真实 UI 待验收仍须进入 G 步骤。

@@ -2,11 +2,11 @@ package setup
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"codex-feishu/internal/store"
 )
@@ -22,7 +22,12 @@ type ApplyResult struct {
 // The journal precedes config replacement. A crash after rename can be
 // reconciled from its expected bytes without applying an old plan twice.
 type applyJournal struct {
+	Version                                                            int
 	PlanID, SourceDigest, BeforeDigest, AfterDigest, BackupFile, State string
+	HostID, AppID, DatabaseFile                                        string
+	PolicyChanges                                                      []PolicyChange
+	ExistingPolicies                                                   []PolicyView
+	DatabaseSchema                                                     int
 }
 
 func atomicFile(path string, body []byte) error {
@@ -78,7 +83,7 @@ func configDirectory(path string) error {
 }
 
 func (p Planner) Apply(ctx context.Context, in Input, paths Paths, planID string) (ApplyResult, error) {
-	if planID == "" {
+	if !validDigest(planID) {
 		return ApplyResult{}, ErrStalePlan
 	}
 	target, err := canonicalTarget(paths.ConfigFile)
@@ -107,37 +112,16 @@ func (p Planner) Apply(ctx context.Context, in Input, paths Paths, planID string
 	if !plan.Environment.Artifact.Released {
 		return ApplyResult{}, ErrUnreleased
 	}
-	if len(plan.PolicyChanges) > 0 {
-		return ApplyResult{}, ErrPolicyUpdatePending
+	result := ApplyResult{PlanID: planID, ConfigFile: target, State: "configuration-applied"}
+	old, found, err := readApplyJournal(target)
+	if err != nil {
+		return result, err
 	}
-	result := ApplyResult{PlanID: planID, ConfigFile: plan.Paths.ConfigFile, State: "configuration-applied"}
-	journalPath := target + ".setup-state.json"
-	if info, err := os.Lstat(journalPath); err == nil && !info.Mode().IsRegular() {
-		return result, errors.New("setup journal must be regular")
+	if found && old.State == "prepared" && old.PlanID != planID {
+		return result, ErrApplyPending
 	}
-	var old applyJournal
-	if b, err := regularFile(journalPath, false); err == nil {
-		if json.Unmarshal(b, &old) != nil {
-			return result, errors.New("setup journal is invalid; preserve it for recovery")
-		}
-		if old.PlanID == planID && old.SourceDigest == plan.sourceDigest && old.AfterDigest == plan.previousDigest {
-			old.State = "applied"
-			if err := atomicFile(journalPath, encoded(old)); err != nil {
-				return result, err
-			}
-			result.State, result.BackupFile = "configuration-unchanged", old.BackupFile
-			return result, nil
-		}
-	} else if _, statErr := os.Lstat(journalPath); !errors.Is(statErr, os.ErrNotExist) {
-		return result, errors.New("setup journal unavailable")
-	}
-	if plan.ID != planID {
-		return result, ErrStalePlan
-	}
-	if !plan.Changed {
-		result.State = "configuration-unchanged"
-		return result, nil
-	}
+	// All replay/recovery and policy-only updates acquire both bridge locks.
+	// No early journal shortcut may finalize a transaction beside a live bridge.
 	applicationLock, err := store.AcquireApplication(plan.Config.Feishu.AppID)
 	if err != nil {
 		return result, errors.New("stop this application's running bridge before changing configuration")
@@ -148,43 +132,173 @@ func (p Planner) Apply(ctx context.Context, in Input, paths Paths, planID string
 		return result, errors.New("stop the running bridge before changing configuration")
 	}
 	defer databaseLock.Close()
-	journal := applyJournal{PlanID: planID, SourceDigest: plan.sourceDigest, BeforeDigest: plan.previousDigest, AfterDigest: digest(plan.content), State: "prepared"}
-	if plan.previousDigest != "missing" {
-		journal.BackupFile = target + ".backup." + planID[:16]
-		if b, err := regularFile(journal.BackupFile, false); err == nil {
-			if digest(b) != plan.previousDigest {
-				return result, errors.New("existing setup backup conflicts with this plan")
+	// Rebuild within receiver locks; the preview was not a write reservation.
+	plan, err = p.Build(ctx, in, paths)
+	if err != nil {
+		return result, err
+	}
+	if !plan.Environment.Artifact.Released {
+		return result, ErrUnreleased
+	}
+	if err := checkDeploymentApply(plan.Config, target, planID); err != nil {
+		return result, err
+	}
+	journal := applyJournal{Version: 1, PlanID: planID, SourceDigest: plan.sourceDigest, BeforeDigest: plan.previousDigest, AfterDigest: digest(plan.content), HostID: plan.Config.Host.ID, AppID: plan.Config.Feishu.AppID, DatabaseFile: plan.Config.Storage.DatabaseFile, PolicyChanges: plan.PolicyChanges, ExistingPolicies: plan.ExistingPolicies, DatabaseSchema: plan.DatabaseSchema, State: "prepared"}
+	replay := found && old.PlanID == planID
+	if replay {
+		if err := validateJournalPlan(old, plan, in); err != nil {
+			return result, err
+		}
+		journal = old
+	} else {
+		if plan.ID != planID {
+			return result, ErrStalePlan
+		}
+		if !plan.Changed {
+			result.State = "configuration-unchanged"
+			return result, nil
+		}
+	}
+	var db *store.Store
+	beforePolicies := true
+	if len(journal.PolicyChanges) > 0 {
+		db, err = store.OpenExisting(ctx, journal.DatabaseFile, store.SchemaVersion)
+		if err != nil {
+			return result, errors.New("policy update requires a private existing current-schema database; nothing migrated")
+		}
+		defer db.Close()
+		beforePolicies, err = journalPolicyState(ctx, db, journal)
+		if err != nil {
+			return result, ErrStalePlan
+		}
+		if replay && journal.State == "applied" && beforePolicies {
+			return result, ErrStalePlan
+		}
+	}
+	currentDigest := plan.previousDigest
+	if replay && journal.State == "applied" {
+		if currentDigest != journal.AfterDigest {
+			return result, ErrStalePlan
+		}
+		result.State, result.BackupFile = "configuration-unchanged", journal.BackupFile
+		if _, found, err := readDeploymentApply(plan.Config.Storage.DatabaseFile); err != nil {
+			return result, err
+		} else if found {
+			if err := clearDeploymentApply(plan.Config.Storage.DatabaseFile); err != nil {
+				return result, err
 			}
-		} else if _, statErr := os.Lstat(journal.BackupFile); !errors.Is(statErr, os.ErrNotExist) {
-			return result, errors.New("setup backup unavailable")
-		} else if err := atomicFile(journal.BackupFile, plan.previous); err != nil {
+		}
+		return result, nil
+	}
+	if !replay {
+		if journal.BeforeDigest != "missing" && journal.BeforeDigest != journal.AfterDigest {
+			journal.BackupFile = target + ".backup." + planID[:16]
+			if b, err := regularFile(journal.BackupFile, false); err == nil {
+				if digest(b) != journal.BeforeDigest {
+					return result, errors.New("existing setup backup conflicts with this plan")
+				}
+			} else if _, statErr := os.Lstat(journal.BackupFile); !errors.Is(statErr, os.ErrNotExist) {
+				return result, errors.New("setup backup unavailable")
+			} else if err := atomicFile(journal.BackupFile, plan.previous); err != nil {
+				return result, err
+			}
+		}
+		// Retire a completed pointer before replacing its referenced journal.
+		marker, exists, err := readDeploymentApply(journal.DatabaseFile)
+		if err != nil {
+			return result, err
+		}
+		if exists && deploymentApplyComplete(marker) {
+			if err := clearDeploymentApply(journal.DatabaseFile); err != nil {
+				return result, err
+			}
+		}
+		if db != nil {
+			physical, err := deploymentDatabasePath(journal.DatabaseFile)
+			if err != nil {
+				return result, ErrApplyPending
+			}
+			marker := deploymentApply{Version: 1, ConfigFile: target, PlanID: planID, HostID: journal.HostID, AppID: journal.AppID, DatabaseFile: physical}
+			if err := atomicFile(physical+".setup-state.json", encoded(marker)); err != nil {
+				return result, ErrApplyPending
+			}
+			if err := p.applyCheckpoint(ctx, "deployment"); err != nil {
+				return result, ErrApplyPending
+			}
+		}
+		if err := atomicFile(target+".setup-state.json", encoded(journal)); err != nil {
 			return result, err
 		}
 	}
-	if err := atomicFile(journalPath, encoded(journal)); err != nil {
-		return result, err
+	if err := p.applyCheckpoint(ctx, "prepared"); err != nil {
+		return result, ErrApplyPending
 	}
-	if err := ctx.Err(); err != nil {
-		return result, err
-	}
-	current, readErr := regularFile(target, false)
-	currentDigest := digest(current)
-	if readErr != nil {
-		if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
-			return result, ErrStalePlan
-		}
-		currentDigest = "missing"
-	}
-	if currentDigest != plan.previousDigest {
+	// A current after-policy with a before-config cannot be produced by this
+	// protocol; reject outside edits instead of inventing a recovery order.
+	if !beforePolicies && currentDigest != journal.AfterDigest {
 		return result, ErrStalePlan
 	}
-	if err := atomicFile(target, plan.content); err != nil {
-		return result, err
+	if currentDigest == journal.BeforeDigest && currentDigest != journal.AfterDigest {
+		latest, readErr := regularFile(target, false)
+		latestDigest := digest(latest)
+		if readErr != nil {
+			if _, statErr := os.Lstat(target); !errors.Is(statErr, os.ErrNotExist) {
+				return result, ErrStalePlan
+			}
+			latestDigest = "missing"
+		}
+		if latestDigest != currentDigest {
+			return result, ErrStalePlan
+		}
+		if err := atomicFile(target, plan.content); err != nil {
+			return result, ErrApplyPending
+		}
+		result.Changed = true
+	} else if currentDigest != journal.AfterDigest {
+		return result, ErrStalePlan
+	}
+	if err := p.applyCheckpoint(ctx, "configuration"); err != nil {
+		return result, ErrApplyPending
+	}
+	if db != nil {
+		changes := make([]store.NotificationPolicyChange, 0, len(journal.PolicyChanges))
+		for _, change := range journal.PolicyChanges {
+			changes = append(changes, store.NotificationPolicyChange{OpenID: change.OpenID, Before: change.Before, After: change.After})
+		}
+		changed, err := db.ApplyNotificationPolicies(ctx, journal.HostID, journal.AppID, changes, time.Now())
+		if err != nil {
+			return result, ErrApplyPending
+		}
+		result.Changed = result.Changed || changed
+	}
+	if err := p.applyCheckpoint(ctx, "policies"); err != nil {
+		return result, ErrApplyPending
 	}
 	journal.State = "applied"
-	result.Changed, result.BackupFile = true, journal.BackupFile
-	if err := atomicFile(journalPath, encoded(journal)); err != nil {
-		return result, errors.New("configuration saved; repeat the same plan to reconcile its journal")
+	if err := atomicFile(target+".setup-state.json", encoded(journal)); err != nil {
+		return result, ErrApplyPending
+	}
+	if err := p.applyCheckpoint(ctx, "applied"); err != nil {
+		return result, ErrApplyPending
+	}
+	if db != nil {
+		if err := clearDeploymentApply(journal.DatabaseFile); err != nil {
+			return result, err
+		}
+	}
+	result.BackupFile = journal.BackupFile
+	if !result.Changed {
+		result.State = "configuration-unchanged"
 	}
 	return result, nil
+}
+
+func (p Planner) applyCheckpoint(ctx context.Context, stage string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if p.checkpoint != nil {
+		return p.checkpoint(stage)
+	}
+	return nil
 }

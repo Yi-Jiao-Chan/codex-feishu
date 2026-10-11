@@ -21,14 +21,15 @@ import (
 )
 
 var (
-	ErrNeedsIdentity       = errors.New("owner identity is required; use pairing first")
-	ErrStalePlan           = errors.New("setup plan is stale; preview again")
-	ErrUnreleased          = errors.New("artifact has not completed phase1 release acceptance")
-	ErrPolicyUpdatePending = errors.New("existing notification changes require the pending managed-policy apply path")
+	ErrNeedsIdentity = errors.New("owner identity is required; use pairing first")
+	ErrStalePlan     = errors.New("setup plan is stale; preview again")
+	ErrUnreleased    = errors.New("artifact has not completed phase1 release acceptance")
+	ErrApplyPending  = errors.New("setup transaction needs recovery with the original input and plan; preserve its journal")
 )
 
 type Planner struct {
-	Probe func(context.Context, string) (Environment, error)
+	Probe      func(context.Context, string) (Environment, error)
+	checkpoint func(string) error // Local fault injection, never enabled by CLI.
 }
 
 type PolicyView struct {
@@ -55,6 +56,7 @@ type Plan struct {
 	content                      []byte
 	previous                     []byte
 	previousDigest, sourceDigest string
+	legacySourceDigest           string
 }
 
 func digest(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
@@ -264,15 +266,20 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	}
 	// Input authorization and the inspected artifact/credentials are included.
 	// No secret value or fingerprint is exposed in the returned JSON plan.
-	plan.sourceDigest = digest(encoded([]any{in, digest(artifactBytes), digest([]byte(secret)), plan.Environment, plan.Paths, plan.ExistingPolicies}))
-	plan.ID = digest(encoded([]any{plan.sourceDigest, plan.previousDigest, digest(plan.content), plan.PolicyChanges}))
-	plan.Changed = !reflect.DeepEqual(plan.previous, plan.content)
-	plan.CanApply = plan.Environment.Artifact.Released && len(plan.PolicyChanges) == 0
+	stableEnvironment := plan.Environment
+	// endpoint=auto rediscovers the daemon after a restart. The transient socket
+	// is diagnostic context, not authorization to change configuration or policy.
+	stableEnvironment.Daemon.SocketPath = ""
+	plan.sourceDigest = digest(encoded([]any{in, digest(artifactBytes), digest([]byte(secret)), stableEnvironment, plan.Paths}))
+	plan.legacySourceDigest = digest(encoded([]any{in, digest(artifactBytes), digest([]byte(secret)), plan.Environment, plan.Paths, plan.ExistingPolicies}))
+	plan.ID = digest(encoded([]any{plan.sourceDigest, plan.previousDigest, digest(plan.content), plan.ExistingPolicies, plan.PolicyChanges, plan.DatabaseSchema}))
+	plan.Changed = !reflect.DeepEqual(plan.previous, plan.content) || len(plan.PolicyChanges) > 0
+	plan.CanApply = plan.Environment.Artifact.Released
 	if !plan.Environment.Artifact.Released {
 		plan.NextSteps = append(plan.NextSteps, "phase1 acceptance is pending; this is a development preview")
 	}
 	if len(plan.PolicyChanges) > 0 {
-		plan.NextSteps = append(plan.NextSteps, "explicit existing policy changes need managed policy apply; no defaults overwrite them")
+		plan.NextSteps = append(plan.NextSteps, "explicit existing policy changes apply with revision CAS and a recoverable configuration journal; off and snooze remain unchanged")
 	}
 	plan.NextSteps = append(plan.NextSteps, "apply configuration only; service installation/start and authorized verification are separate")
 	plan.Verification = in.Verification
@@ -334,5 +341,9 @@ func (p *Plan) readPolicies(ctx context.Context, in Input) error {
 		}
 		p.PolicyChanges = append(p.PolicyChanges, PolicyChange{OpenID: user, Before: policy, After: next})
 	}
+	if len(p.PolicyChanges) > 0 && version != store.SchemaVersion {
+		return errors.New("notification updates require reviewed migration to the current audited schema")
+	}
+
 	return nil
 }
