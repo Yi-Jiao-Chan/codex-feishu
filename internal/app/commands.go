@@ -156,7 +156,8 @@ func (c Commands) Handle(ctx context.Context, in InboundCommand) error {
 }
 
 // DispatchOne replies to the original command message only. Its UUID and card
-// are committed before the gateway call; unknown and rejected work stays frozen.
+// are committed before the gateway call. Only definite rate-limit rejections
+// reopen delivery; unknown and permanent rejections stay frozen.
 func (c Commands) DispatchOne(ctx context.Context, gateway messages.MessageGateway) (bool, error) {
 	if c.Store == nil || gateway == nil {
 		return false, errors.New("command delivery requires storage and gateway")
@@ -166,6 +167,18 @@ func (c Commands) DispatchOne(ctx context.Context, gateway messages.MessageGatew
 		return false, err
 	}
 	remoteID, sendErr := gateway.ReplyCard(ctx, r.MessageID, r.Card, r.ID)
+	var limited *feishu.RateLimited
+	if errors.As(sendErr, &limited) {
+		at := c.now().UnixMilli()
+		if at < r.DispatchedAtMS {
+			at = r.DispatchedAtMS
+		}
+		delay := limited.RetryAfter.Milliseconds()
+		if delay < 1000 {
+			delay = 1000
+		}
+		return true, c.Store.DeferCommandReplyAttempt(ctx, r.ID, at, delay)
+	}
 	state := "confirmed"
 	if sendErr != nil || remoteID == "" {
 		state, remoteID = "unknown", ""

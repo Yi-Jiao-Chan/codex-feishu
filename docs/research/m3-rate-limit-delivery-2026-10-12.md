@@ -30,7 +30,7 @@
 
 ## 仍需完成
 
-命令回复及 App 待处理提醒的持久限流恢复尚需分别接入；reaction 和建群已完成下述隔离实现。unknown 的远端读回核验、真实 M0 迁移接管、受控 verify、用户服务真实安装与一期验收也仍 pending。`phase1_released=false` 保持不变，不能把新 capability 当作整个一期发布通过。
+App 待处理提醒的持久限流恢复尚需接入；reaction、建群及命令回复已完成下述隔离实现。unknown 的远端读回核验、真实 M0 迁移接管、受控 verify、用户服务真实安装与一期验收也仍 pending。`phase1_released=false` 保持不变，不能把新 capability 当作整个一期发布通过。
 
 ## Reaction 的持久限流恢复
 
@@ -57,3 +57,15 @@ Manager 在 waiting 阶段先读本地 deadline，不 Attach 或调用创建 API
 隔离测试覆盖响应时钟、重启保留等待、原请求参数/UUID、SQL 故障回滚、unknown 不重开、并发到期唯一领取、stale attempt 和意图级 API 不能覆盖新 dispatch、授权变化/排除、backoff 与溢出、schema 12 旧未决数据，以及真实组合 runtime 在限流期间保存最终结果、无新输入到期重试和绑定后补齐。独立只读审查定位并修复竞争分类与兼容接口覆盖的问题；没有访问实际 M0、native 或飞书。
 
 本轮 `go test -race ./... -count=1` 通过，之后针对缺失 exact ID、成员授权和事件唤醒的修正分别重跑 store / bindings / app；关闭补偿扫描的定时器恢复测试连续 10 次通过，`go vet ./...` 和 `git diff --check` 通过。真实 M0 未切换，整个一期仍待部署与 UI 验收。
+
+## 命令确认回复的持久限流恢复
+
+schema 14 新增 `command_reply_attempts` / `command_reply_throttles`。原命令效果、去重记录与回复卡仍在一个事务创建；投递领取先确认 logical reply 状态更新成功，再保存本次原卡、原消息/目标/用户/线程身份、UUID 和时间。网关继续只调用原消息的 reply API，不退化为 send 或 PATCH。
+
+只有 typed RateLimited 才同时保存 rejected attempt、响应接收后 deadline/退避次数、生成下一 UUID 并重新开放该回复。新的领取再次检查时间，原卡和引用关系不改；历史 attempt 不改 UUID 或正文。重复 deferral 不改变等待；暂停中的早期回复不挡住后续已可投递命令。成功/永久拒绝清除等待，未知结果保持冻结；schema 13 旧未决回复没有新 attempt 时不补造证据，恢复为 unknown，保留原 UUID 供权威 readback。
+
+重放入站命令仍查原 app/message 去重记录，不重做任何效果。测试覆盖：旧 off 回复恢复时保留随后 on 的规则与审计；旧 mute 恢复时保留 unmute；stop 消息重复五次和回复重试仅保留一个原生 action。回复收到限流不重做控制 RPC。unknown 即使在已限流重试之后产生，也不继续发下一次。
+
+隔离故障测试覆盖 SQL 失败/忽略领取时不发请求、deferral/confirmation 原子回滚、并发唯一领取、重启保留 response-time floor、冻结 body / parent 与新 UUID、旧结果不能确认新 attempt、持久指数退避/平台下限/溢出、旧 schema 迁移，以及状态的 deferred / attempt 计数。gateway allowlist 不扩大。未访问真实 M0 或发送飞书消息；App 待处理提醒、unknown 远端核验和正式部署仍待完成。
+
+命令回复的最终组合通过 `go test -race ./... -count=1`、`go vet ./...` 与 `git diff --check`。额外注入零行 proof write，验证命令效果/领取/等待/确认均回滚；批量恢复独立处理零至多条记录。未执行真实部署，一期 release 标志仍为 false。

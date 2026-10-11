@@ -40,13 +40,13 @@ type CommandRequest struct {
 type CommandReply struct {
 	ID, HostID, AppID, MessageID, ChatID, ChatType, UserID, ThreadID string
 	Kind, Card, State, RemoteID                                      string
-	CreatedAtMS                                                      int64
+	CreatedAtMS, DispatchedAtMS                                      int64
 }
 
-const commandColumns = `attempt_id,host_id,app_id,message_id,chat_id,chat_type,user_id,thread_id,kind,card_json,state,remote_id,created_at_ms`
+const commandColumns = `attempt_id,host_id,app_id,message_id,chat_id,chat_type,user_id,thread_id,kind,card_json,state,remote_id,created_at_ms,dispatched_at_ms`
 
 func scanCommandReply(row rowScanner) (r CommandReply, err error) {
-	err = row.Scan(&r.ID, &r.HostID, &r.AppID, &r.MessageID, &r.ChatID, &r.ChatType, &r.UserID, &r.ThreadID, &r.Kind, &r.Card, &r.State, &r.RemoteID, &r.CreatedAtMS)
+	err = row.Scan(&r.ID, &r.HostID, &r.AppID, &r.MessageID, &r.ChatID, &r.ChatType, &r.UserID, &r.ThreadID, &r.Kind, &r.Card, &r.State, &r.RemoteID, &r.CreatedAtMS, &r.DispatchedAtMS)
 	return
 }
 
@@ -162,7 +162,7 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 	if len(r.Card) > cards.DefaultMaxCardBytes {
 		return CommandReply{}, false, errors.New("command result exceeds card limit")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO command_replies(app_id,message_id,host_id,chat_id,chat_type,user_id,thread_id,kind,attempt_id,card_json,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,'ready',?)`, r.AppID, r.MessageID, r.HostID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.ID, r.Card, r.CreatedAtMS)
+	err = commandWriteOne(ctx, tx, `INSERT INTO command_replies(app_id,message_id,host_id,chat_id,chat_type,user_id,thread_id,kind,attempt_id,card_json,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,'ready',?)`, r.AppID, r.MessageID, r.HostID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.ID, r.Card, r.CreatedAtMS)
 	if err != nil {
 		return CommandReply{}, false, err
 	}
@@ -288,7 +288,7 @@ func (s *Store) ClaimCommandReply(ctx context.Context, host string, nowMS int64)
 		return CommandReply{}, false, err
 	}
 	defer tx.Rollback()
-	r, err := scanCommandReply(tx.QueryRowContext(ctx, `SELECT `+commandColumns+` FROM command_replies WHERE host_id=? AND state='ready' ORDER BY rowid LIMIT 1`, host))
+	r, err := scanCommandReply(tx.QueryRowContext(ctx, `SELECT `+commandColumns+` FROM command_replies WHERE host_id=? AND state='ready' AND NOT EXISTS(SELECT 1 FROM command_reply_throttles t WHERE t.app_id=command_replies.app_id AND t.message_id=command_replies.message_id AND t.next_retry_at_ms>?) AND NOT EXISTS(SELECT 1 FROM command_reply_attempts a WHERE a.app_id=command_replies.app_id AND a.message_id=command_replies.message_id AND a.state IN ('dispatching','unknown')) ORDER BY rowid LIMIT 1`, host, nowMS))
 	if errors.Is(err, sql.ErrNoRows) {
 		return CommandReply{}, false, nil
 	}
@@ -298,19 +298,23 @@ func (s *Store) ClaimCommandReply(ctx context.Context, host string, nowMS int64)
 	if err := directoryDeployment(ctx, tx, host, r.AppID); err != nil {
 		return CommandReply{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE command_replies SET state='dispatching',dispatched_at_ms=? WHERE attempt_id=? AND state='ready'`, nowMS, r.ID)
+	err = commandWriteOne(ctx, tx, `UPDATE command_replies SET state='dispatching',dispatched_at_ms=? WHERE attempt_id=? AND state='ready'`, nowMS, r.ID)
 	if err != nil {
+		return CommandReply{}, false, err
+	}
+	if err := commandWriteOne(ctx, tx, `INSERT INTO command_reply_attempts(attempt_id,host_id,app_id,message_id,chat_id,chat_type,user_id,thread_id,kind,card_json,created_at_ms,dispatched_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'dispatching')`, r.ID, r.HostID, r.AppID, r.MessageID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.Card, r.CreatedAtMS, nowMS); err != nil {
 		return CommandReply{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return CommandReply{}, false, err
 	}
+	r.DispatchedAtMS = nowMS
 	r.State = "dispatching"
 	return r, true, nil
 }
 
 func (s *Store) FinishCommandReply(ctx context.Context, attemptID, state, remoteID string) error {
-	if state != "confirmed" && state != "unknown" && state != "rejected" || state == "confirmed" && remoteID == "" || state != "confirmed" && remoteID != "" {
+	if attemptID == "" || state != "confirmed" && state != "unknown" && state != "rejected" || state == "confirmed" && remoteID == "" || state != "confirmed" && remoteID != "" {
 		return errors.New("invalid command reply evidence")
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -318,7 +322,21 @@ func (s *Store) FinishCommandReply(ctx context.Context, attemptID, state, remote
 		return err
 	}
 	defer tx.Rollback()
+	a, err := s.commandReplyAttempt(ctx, tx, attemptID)
+	legacy := errors.Is(err, sql.ErrNoRows)
+	if err != nil && !legacy {
+		return err
+	}
+	if !legacy && (a.State == "confirmed" || a.State == "rejected") {
+		if a.State == state && a.RemoteID == remoteID {
+			return nil
+		}
+		return ErrConflict
+	}
 	r, err := scanCommandReply(tx.QueryRowContext(ctx, `SELECT `+commandColumns+` FROM command_replies WHERE attempt_id=?`, attemptID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrConflict
+	}
 	if err != nil {
 		return err
 	}
@@ -331,8 +349,18 @@ func (s *Store) FinishCommandReply(ctx context.Context, attemptID, state, remote
 	if r.State != "dispatching" && r.State != "unknown" {
 		return ErrConflict
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE command_replies SET state=?,remote_id=? WHERE attempt_id=?`, state, remoteID, attemptID)
-	if err != nil {
+	if !legacy {
+		if a.AppID != r.AppID || a.MessageID != r.MessageID || a.HostID != r.HostID || a.State != "dispatching" && a.State != "unknown" {
+			return ErrConflict
+		}
+		if err := commandWriteOne(ctx, tx, `UPDATE command_reply_attempts SET state=?,remote_id=? WHERE attempt_id=?`, state, remoteID, attemptID); err != nil {
+			return err
+		}
+	}
+	if err := commandWriteOne(ctx, tx, `UPDATE command_replies SET state=?,remote_id=? WHERE attempt_id=?`, state, remoteID, attemptID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM command_reply_throttles WHERE app_id=? AND message_id=?`, r.AppID, r.MessageID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -342,6 +370,16 @@ func (s *Store) RecoverCommandDispatches(ctx context.Context, host string) error
 	if host == "" {
 		return errors.New("command deployment required")
 	}
-	_, err := s.DB.ExecContext(ctx, `UPDATE command_replies SET state='unknown' WHERE host_id=? AND state='dispatching'`, host)
-	return err
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE command_reply_attempts SET state='unknown' WHERE host_id=? AND state='dispatching'`, host); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE command_replies SET state='unknown' WHERE host_id=? AND state='dispatching'`, host); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

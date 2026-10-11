@@ -8,7 +8,7 @@ schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输�
 
 完整历史到公开镜像的转换已实现，并通过真实 daemon 只读探针，后续已接入正式 `serve` 的开发实现。现有 M0 listener 未切换到这些新表；未知请求的远程核验和完整一期真实部署仍待完成，不能据此认定一期已支持生产恢复。基础验证记录见[投递基础](../research/m1-mirror-outbox-foundation-2026-10-12.md)、[历史同步与规则](../research/m1-history-sync-and-rules-2026-10-12.md)。
 
-后续整合状态：正式 serve、通知安排与投递决策已有开发实现；schema 10 新增 `outbound_throttles`，为正式镜像、过程、队列卡的明确限流拒绝记录持久等待下限及退避次数。拒绝 attempt 保持不可变，下一次 claim 使用最新正文并重新核验提醒；unknown 不进入重发路径。该机制已通过隔离故障测试，现有 M0 未迁移；命令回复等其他操作的限流与 unknown 读回核验仍待补齐，详见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)。
+后续整合状态：正式 serve、通知安排与投递决策已有开发实现；schema 10 新增 `outbound_throttles`，为正式镜像、过程、队列卡的明确限流拒绝记录持久等待下限及退避次数。拒绝 attempt 保持不可变，下一次 claim 使用最新正文并重新核验提醒；unknown 不进入重发路径。该机制已通过隔离故障测试，现有 M0 未迁移；App 待处理提醒的限流与 unknown 读回核验仍待补齐，详见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)。
 
 ## SQLite 结构
 
@@ -17,6 +17,8 @@ schema 11 新增 `legacy_adoptions`。schema 1 须经显式接管，不能由普
 schema 12 新增 `reaction_throttles`：reaction 的明确限流拒绝保存原操作日志和等待时间，下一 revision 依据最新输入状态领取。旧 reaction 的成功删除与 ID 清除在同一事务确认，后续 add 被拒绝时不再删除旧 ID。changing/unknown 不进入重试，reaction 失败不触发原生输入重试；status 的 `reactions.deferred` 表示等待或到期尚未完成的反馈。详见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)。
 
 schema 13 新增 `group_attempts` 与 `group_throttles`：建群请求引用原意图中冻结的名称、owner 和成员。每次领取记录独立 attempt，平台 UUID 沿用 intent ID；明确限流在同一事务保存 rejected attempt 和等待后 ready。未知请求不重发，旧 schema 的未决意图也不补造请求证据。到期重新核验目录/分类并领取，保存 confirmed chat ID 后再单独绑定；诊断提供 `group_intents.deferred` 和 `group_attempts` 聚合计数。
+
+schema 14 新增 `command_reply_attempts` 与 `command_reply_throttles`：确认回复的每次实际请求先保存原卡、原消息关系及 UUID；明确限流只重开回复，不重新执行命令。下一次使用新 UUID，保留 rejected 的原 attempt；未到期的回复不阻塞其他命令。unknown 和旧版未决回复不自动重发，status 提供 `command_replies.deferred` 与 attempt 聚合计数。
 
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 

@@ -16,6 +16,7 @@ type PersistentHealth struct {
 	OutboundAttempts map[string]int64 `json:"outbound_attempts"`
 	NativeActions    map[string]int64 `json:"native_actions"`
 	NativeAttempts   map[string]int64 `json:"native_attempts"`
+	CommandAttempts  map[string]int64 `json:"command_reply_attempts"`
 	CommandReplies   map[string]int64 `json:"command_replies"`
 	Reactions        map[string]int64 `json:"reactions"`
 	GroupAttempts    map[string]int64 `json:"group_attempts"`
@@ -31,7 +32,7 @@ type PersistentHealth struct {
 func (s *Store) Health(ctx context.Context, schema int, host, app string) (PersistentHealth, error) {
 	h := PersistentHealth{Schema: schema, LegacyM0: schema == 1,
 		Inputs: map[string]int64{}, Outbound: map[string]int64{}, OutboundAttempts: map[string]int64{}, NativeActions: map[string]int64{}, NativeAttempts: map[string]int64{},
-		CommandReplies: map[string]int64{}, Reactions: map[string]int64{}, GroupAttempts: map[string]int64{}, GroupIntents: map[string]int64{}, TaskControls: map[string]int64{}, TaskClaims: map[string]int64{}, Requests: map[string]int64{}, ReminderAttempts: map[string]int64{}}
+		CommandAttempts: map[string]int64{}, CommandReplies: map[string]int64{}, Reactions: map[string]int64{}, GroupAttempts: map[string]int64{}, GroupIntents: map[string]int64{}, TaskControls: map[string]int64{}, TaskClaims: map[string]int64{}, Requests: map[string]int64{}, ReminderAttempts: map[string]int64{}}
 	count := func(query string, args ...any) (int64, error) {
 		var n int64
 		err := s.DB.QueryRowContext(ctx, query, args...).Scan(&n)
@@ -155,6 +156,15 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 		}
 		if err := countStates(h.TaskClaims, []string{"ready", "pending", "unknown", "rejected", "confirmed"}, `SELECT COUNT(*) FROM task_control_claims WHERE host_id=? AND app_id=? AND state=?`, host, app); err != nil {
 			return h, err
+		}
+	}
+	if schema >= 14 {
+		if err := countStates(h.CommandAttempts, attemptStates, `SELECT COUNT(*) FROM command_reply_attempts WHERE host_id=? AND app_id=? AND state=?`, host, app); err != nil {
+			return h, err
+		}
+		h.CommandReplies["deferred"], err = count(`SELECT COUNT(*) FROM command_reply_throttles t JOIN command_replies r USING(app_id,message_id) WHERE r.host_id=? AND r.app_id=?`, host, app)
+		if err != nil {
+			return h, errors.New("command retry health unavailable")
 		}
 	}
 	if schema >= 9 {
