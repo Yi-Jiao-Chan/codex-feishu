@@ -242,16 +242,23 @@ func (s *Store) ClaimRequestReminder(ctx context.Context, host, app, thread stri
 	if err = requestScope(ctx, tx, host, app); err != nil {
 		return a, false, err
 	}
-	var busy int
-	if err = tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM app_requests WHERE host_id=? AND thread_id=? AND reminder_state='dispatching')+(SELECT COUNT(*) FROM outbound WHERE host_id=? AND thread_id=? AND state='dispatching')`, host, thread, host, thread).Scan(&busy); err != nil || busy != 0 {
+	if err := pruneRequestReminderEligibility(ctx, tx, host, app, thread, nowMS, options); err != nil {
 		return a, false, err
+	}
+
+	var busy int
+	if err = tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM app_requests WHERE host_id=? AND thread_id=? AND reminder_state='dispatching')+(SELECT COUNT(*) FROM outbound WHERE host_id=? AND thread_id=? AND state='dispatching')`, host, thread, host, thread).Scan(&busy); err != nil {
+		return a, false, err
+	}
+	if busy != 0 {
+		return RequestReminderAttempt{}, false, tx.Commit()
 	}
 	var parentKey string
 	var eventAt int64
 	var replay bool
-	err = tx.QueryRowContext(ctx, `SELECT request_key,parent_key,parent_message_id,event_at,replay FROM app_requests WHERE host_id=? AND app_id=? AND thread_id=? AND state='pending' AND confirmed_pending=1 AND reminder_state='ready' ORDER BY created_at_ms,request_key LIMIT 1`, host, app, thread).Scan(&a.Key, &parentKey, &a.ParentMessageID, &eventAt, &replay)
+	err = tx.QueryRowContext(ctx, `SELECT request_key,parent_key,parent_message_id,event_at,replay FROM app_requests WHERE host_id=? AND app_id=? AND thread_id=? AND state='pending' AND confirmed_pending=1 AND reminder_state='ready' AND (parent_key='' AND parent_message_id<>'' OR EXISTS(SELECT 1 FROM mirrors m WHERE m.host_id=app_requests.host_id AND m.thread_id=app_requests.thread_id AND m.mirror_key=app_requests.parent_key AND m.kind='human' AND m.remote_id<>'')) AND NOT EXISTS(SELECT 1 FROM request_reminder_throttles t WHERE t.host_id=app_requests.host_id AND t.app_id=app_requests.app_id AND t.thread_id=app_requests.thread_id AND t.request_key=app_requests.request_key AND t.next_retry_at_ms>?) AND NOT EXISTS(SELECT 1 FROM request_reminder_attempts old WHERE old.host_id=app_requests.host_id AND old.app_id=app_requests.app_id AND old.thread_id=app_requests.thread_id AND old.request_key=app_requests.request_key AND old.state IN ('dispatching','unknown')) ORDER BY created_at_ms,request_key LIMIT 1`, host, app, thread, nowMS).Scan(&a.Key, &parentKey, &a.ParentMessageID, &eventAt, &replay)
 	if errors.Is(err, sql.ErrNoRows) {
-		return RequestReminderAttempt{}, false, nil
+		return RequestReminderAttempt{}, false, tx.Commit()
 	}
 	if err != nil {
 		return a, false, err
@@ -324,7 +331,7 @@ func (s *Store) ClaimRequestReminder(ctx context.Context, host, app, thread stri
 		} else {
 			selected = append(selected, id)
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE request_mentions SET state=?,reason=?,policy_revision=? WHERE host_id=? AND app_id=? AND thread_id=? AND request_key=? AND open_id=?`, state, reason, revision, host, app, thread, a.Key, id); err != nil {
+		if err = reminderWriteOne(ctx, tx, `UPDATE request_mentions SET state=?,reason=?,policy_revision=? WHERE host_id=? AND app_id=? AND thread_id=? AND request_key=? AND open_id=?`, state, reason, revision, host, app, thread, a.Key, id); err != nil {
 			return a, false, err
 		}
 	}
@@ -346,12 +353,17 @@ func (s *Store) ClaimRequestReminder(ctx context.Context, host, app, thread stri
 		return RequestReminderAttempt{}, false, tx.Commit()
 	}
 	a.ID, a.HostID, a.AppID, a.ThreadID, a.CreatedAtMS, a.State = ID(), host, app, thread, nowMS, "dispatching"
-	_, err = tx.ExecContext(ctx, `INSERT INTO request_reminder_attempts(attempt_id,host_id,app_id,thread_id,request_key,chat_id,parent_message_id,card_json,created_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,'dispatching')`, a.ID, host, app, thread, a.Key, a.ChatID, a.ParentMessageID, a.Card, nowMS)
+	err = reminderWriteOne(ctx, tx, `INSERT INTO request_reminder_attempts(attempt_id,host_id,app_id,thread_id,request_key,chat_id,parent_message_id,card_json,created_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,'dispatching')`, a.ID, host, app, thread, a.Key, a.ChatID, a.ParentMessageID, a.Card, nowMS)
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE app_requests SET reminder_state='dispatching' WHERE host_id=? AND app_id=? AND thread_id=? AND request_key=?`, host, app, thread, a.Key)
+		err = reminderWriteOne(ctx, tx, `UPDATE app_requests SET reminder_state='dispatching' WHERE host_id=? AND app_id=? AND thread_id=? AND request_key=?`, host, app, thread, a.Key)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE request_mentions SET state='dispatching',attempt_id=? WHERE host_id=? AND app_id=? AND thread_id=? AND request_key=? AND state='eligible'`, a.ID, host, app, thread, a.Key)
+		for _, id := range selected {
+			err = reminderWriteOne(ctx, tx, `UPDATE request_mentions SET state='dispatching',attempt_id=? WHERE host_id=? AND app_id=? AND thread_id=? AND request_key=? AND open_id=? AND state='eligible'`, a.ID, host, app, thread, a.Key, id)
+			if err != nil {
+				break
+			}
+		}
 	}
 	if err != nil {
 		return RequestReminderAttempt{}, false, err
@@ -379,13 +391,20 @@ func (s *Store) FinishRequestReminder(ctx context.Context, id, state, remote str
 		}
 		return ErrConflict
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE request_reminder_attempts SET state=?,remote_id=? WHERE attempt_id=?`, state, remote, id); err != nil {
+	if err = reminderWriteOne(ctx, tx, `UPDATE request_reminder_attempts SET state=?,remote_id=? WHERE attempt_id=?`, state, remote, id); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE app_requests SET reminder_state=? WHERE host_id=? AND app_id=? AND thread_id=? AND request_key=?`, state, host, app, thread, key); err != nil {
+	if err = reminderWriteOne(ctx, tx, `UPDATE app_requests SET reminder_state=? WHERE host_id=? AND app_id=? AND thread_id=? AND request_key=?`, state, host, app, thread, key); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE request_mentions SET state=? WHERE attempt_id=? AND state IN ('dispatching','unknown')`, state, id); err != nil {
+	var selected int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_mentions WHERE attempt_id=? AND state IN ('dispatching','unknown')`, id).Scan(&selected); err != nil {
+		return err
+	}
+	if err = reminderWriteCount(ctx, tx, selected, `UPDATE request_mentions SET state=? WHERE attempt_id=? AND state IN ('dispatching','unknown')`, state, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM request_reminder_throttles WHERE host_id=? AND app_id=? AND thread_id=? AND request_key=?`, host, app, thread, key); err != nil {
 		return err
 	}
 	return tx.Commit()

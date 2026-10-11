@@ -311,7 +311,7 @@ func prepareMirrorMentions(ctx context.Context, tx *sql.Tx, m Mirror, a *MirrorA
 		}
 		var revision int64
 		if reason == "" {
-			reason, revision, err = mentionPolicyReason(ctx, tx, app, d.OpenID, time.UnixMilli(a.CreatedAtMS))
+			reason, revision, err = mentionPolicyWindowReason(ctx, tx, app, d.OpenID, m.EventAt*1000, a.CreatedAtMS)
 			if err != nil {
 				return nil, err
 			}

@@ -30,7 +30,7 @@
 
 ## 仍需完成
 
-App 待处理提醒的持久限流恢复尚需接入；reaction、建群及命令回复已完成下述隔离实现。unknown 的远端读回核验、真实 M0 迁移接管、受控 verify、用户服务真实安装与一期验收也仍 pending。`phase1_released=false` 保持不变，不能把新 capability 当作整个一期发布通过。
+App 待处理提醒、reaction、建群及命令回复已完成下述持久限流隔离实现。unknown 的远端读回核验、真实 M0 迁移接管、受控 verify、用户服务真实安装与一期验收也仍 pending。`phase1_released=false` 保持不变，不能把新 capability 当作整个一期发布通过。
 
 ## Reaction 的持久限流恢复
 
@@ -66,6 +66,18 @@ schema 14 新增 `command_reply_attempts` / `command_reply_throttles`。原命�
 
 重放入站命令仍查原 app/message 去重记录，不重做任何效果。测试覆盖：旧 off 回复恢复时保留随后 on 的规则与审计；旧 mute 恢复时保留 unmute；stop 消息重复五次和回复重试仅保留一个原生 action。回复收到限流不重做控制 RPC。unknown 即使在已限流重试之后产生，也不继续发下一次。
 
-隔离故障测试覆盖 SQL 失败/忽略领取时不发请求、deferral/confirmation 原子回滚、并发唯一领取、重启保留 response-time floor、冻结 body / parent 与新 UUID、旧结果不能确认新 attempt、持久指数退避/平台下限/溢出、旧 schema 迁移，以及状态的 deferred / attempt 计数。gateway allowlist 不扩大。未访问真实 M0 或发送飞书消息；App 待处理提醒、unknown 远端核验和正式部署仍待完成。
+隔离故障测试覆盖 SQL 失败/忽略领取时不发请求、deferral/confirmation 原子回滚、并发唯一领取、重启保留 response-time floor、冻结 body / parent 与新 UUID、旧结果不能确认新 attempt、持久指数退避/平台下限/溢出、旧 schema 迁移，以及状态的 deferred / attempt 计数。gateway allowlist 不扩大。未访问真实 M0 或发送飞书消息；unknown 远端核验和正式部署仍待完成。
 
 命令回复的最终组合通过 `go test -race ./... -count=1`、`go vet ./...` 与 `git diff --check`。额外注入零行 proof write，验证命令效果/领取/等待/确认均回滚；批量恢复独立处理零至多条记录。未执行真实部署，一期 release 标志仍为 false。
+
+## App 待处理提醒与完整等待区间审计
+
+schema 15 的 `request_reminder_throttles` 保存请求身份、被拒 attempt、响应接收后的等待下限和退避次数。只有 typed RateLimited 的明确拒绝重新开放已选接收者；冻结的原卡、引用关系和 UUID 保留在原 attempt，新领取使用新 UUID，重新渲染实际仍符合资格的成员。unknown / 永久拒绝不重开。SQL 领取、保存等待与确认都检查 proof write，零行和部分更新回滚。
+
+暂停期间先做本地资格清理，不读取群成员或提交原生请求。到期先要求请求仍 pending、原输入父消息已确认、当前连接重新确认 pending，再读取成员并在事务内重复检查。RPC 中已解决的请求在明确拒绝后直接 suppressed；恢复不编造原生 pending，也不替用户回答审批 / 问答。提醒卡只含固定提示，不保存 native 命令、问题或答案。状态只输出聚合 `requests.reminder_deferred` 与原有 attempts，终止的提醒不算待重试。
+
+免打扰审计也用于最终消息的提醒：不能因平台长等待或离线跨过整个 quiet，而早晨恢复后补发旧 @。按持久策略 revision 将事件至今分段核验，覆盖 off→on、已到期 snooze、后来移除的 quiet、同毫秒 revision 和缺失历史。正文仍投递。固定策略区间按 IANA ZoneBounds 计算下一 quiet 起点，保持纳秒端点和实际时区跳变，不用 UnixNano 或逐日扫描；隔离领域测试覆盖 NY gap/fold、Lord Howe、Apia 跳日、历史秒级 offset、跨世纪和未来闰年末尾。
+
+新增隔离测试覆盖 response clock / server floor / 指数退避 / 溢出、持久重启和 live replay、过期前不读成员、新 UUID 与原引用、旧 A 不能确认 B、请求在 RPC/成员读取中解决、整个 quiet/off→on/已到期 snooze、不恢复原已排除目标、新成员快照删减 @、部分 proof write 回滚、schema 14 遗留 dispatching 保持 unknown，以及 delayed final 正文继续同步。真实 M0 二进制、进程与 schema 1 数据库保持原状；这不是一期发布或真实审批 UI 验收。
+
+最终组合通过 `go test -race ./... -count=1`、`go vet ./...` 和 `git diff --check`。独立只读审查确认 attempt 隔离、resolution / restart 和完整静默窗口边界，相关 store / app 定向测试均通过。仅本地开发版构建，未发送真实飞书请求、提交原生输入或替换原 M0。

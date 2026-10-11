@@ -262,6 +262,11 @@ func (t *RequestTracker) DispatchOne(ctx context.Context, thread string) (bool, 
 	if t.Store == nil || t.Gateway == nil {
 		return false, nil
 	}
+	preparedAt := t.now().UnixMilli()
+	ready, err := t.Store.PrepareRequestRemindersAt(ctx, t.HostID, t.AppID, thread, preparedAt, t.Options)
+	if err != nil || !ready {
+		return false, err
+	}
 	options := t.Options
 	options.ChatID, options.MemberIDs = "", nil
 	b, err := t.Store.Binding(ctx, t.HostID, thread)
@@ -277,11 +282,17 @@ func (t *RequestTracker) DispatchOne(ctx context.Context, thread string) (bool, 
 			options.ChatID, options.MemberIDs = b.ChatID, members
 		}
 	}
-	a, claimed, err := t.Store.ClaimRequestReminder(ctx, t.HostID, t.AppID, thread, t.now().UnixMilli(), options)
+	a, claimed, err := t.Store.ClaimRequestReminder(ctx, t.HostID, t.AppID, thread, max(preparedAt, t.now().UnixMilli()), options)
 	if err != nil || !claimed {
 		return false, err
 	}
 	remote, sendErr := t.Gateway.ReplyCard(ctx, a.ParentMessageID, a.Card, a.ID)
+	var limited *feishu.RateLimited
+	if errors.As(sendErr, &limited) {
+		at := max(a.CreatedAtMS, t.now().UnixMilli())
+		delay := max(int64(1000), limited.RetryAfter.Milliseconds())
+		return true, t.Store.DeferRequestReminder(ctx, a.ID, at, delay)
+	}
 	state := "confirmed"
 	if sendErr != nil || remote == "" {
 		state = "unknown"

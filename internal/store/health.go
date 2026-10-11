@@ -186,5 +186,11 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 			return h, err
 		}
 	}
+	if schema >= 15 {
+		h.Requests["reminder_deferred"], err = count(`SELECT COUNT(*) FROM request_reminder_throttles t JOIN app_requests r USING(host_id,app_id,thread_id,request_key) WHERE r.host_id=? AND r.app_id=? AND r.state='pending' AND r.reminder_state='ready'`, host, app)
+		if err != nil {
+			return h, errors.New("reminder retry health unavailable")
+		}
+	}
 	return h, nil
 }
