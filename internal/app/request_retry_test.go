@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -77,7 +78,7 @@ func TestRequestReminderRetryUsesResponseClockAndSkipsMembershipDuringWait(t *te
 	if sent, err := tr.DispatchOne(ctx, "thread"); !sent || err != nil {
 		t.Fatal(sent, err)
 	}
-	if g.memberCalls != 2 || g.calls != 2 || g.uuid == oldID || g.card != oldCard || g.parent != "original-input" {
+	if g.memberCalls != 2 || g.calls != 2 || g.uuid == oldID || !sameVisibleTestCard(t, tr.Store, g.uuid, g.card, oldID, oldCard) || g.parent != "original-input" {
 		t.Fatal("invalid retry evidence", g)
 	}
 	if sent, err := tr.DispatchOne(ctx, "thread"); sent || err != nil || g.memberCalls != 2 {
@@ -199,4 +200,28 @@ func TestRequestReminderClaimsAfterMembershipIOAndPersistsProofBeforeSending(t *
 			}
 		})
 	}
+}
+
+func sameVisibleTestCard(t *testing.T, s *store.Store, aID, aCard, bID, bCard string) bool {
+	t.Helper()
+	strip := func(id, raw string) string {
+		marker, err := s.CardRequestMarker(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The helper adds exactly one free top-level markdown ID; remove only it.
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range doc["body"].(map[string]any)["elements"].([]any) {
+			el := v.(map[string]any)
+			if el["element_id"] == marker {
+				delete(el, "element_id")
+			}
+		}
+		encoded, _ := json.Marshal(doc)
+		return string(encoded)
+	}
+	return strip(aID, aCard) == strip(bID, bCard)
 }

@@ -2,13 +2,9 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base32"
 	"errors"
 	"math"
-
-	"codex-feishu/internal/cards"
 )
 
 const MirrorReadbackSchema = `
@@ -23,10 +19,8 @@ CREATE TABLE IF NOT EXISTS outbound_request_markers (
 // database. A collision aborts claim before any remote write. Old unmarked
 // attempts keep their original documents and do not acquire invented proof.
 func freezeMirrorRequestMarker(ctx context.Context, tx *sql.Tx, a *MirrorAttempt) error {
-	hash := sha256.Sum256([]byte(a.ID))
-	marker := "c" + base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(hash[:])[:19]
-	card, marked, err := cards.WithRequestMarker(a.Card, marker)
-	if err != nil || !marked {
+	card, marker, err := freezeCardRequestMarker(ctx, tx, "mirror", a.ID, a.Card)
+	if err != nil || marker == "" {
 		return err
 	}
 	if err := mirrorWriteOne(ctx, tx, `INSERT INTO outbound_request_markers(marker,attempt_id) VALUES(?,?)`, marker, a.ID); err != nil {

@@ -24,6 +24,8 @@ schema 15 新增 `request_reminder_throttles`：App 待处理提醒的明确限�
 
 schema 16 新增 `outbound_request_markers`：新镜像 attempt 的隐藏 element_id、完整实际载荷、原 UUID、接收者和 outbox 领取在同一事务冻结。标记全局唯一且外键关联原 attempt；普通发送、引用回复、PATCH 使用新的标记，历史 attempt 不补标记。unknown 只通过 GET 核验，不重新发送；查不到 / 格式不同 / 分页截断不代表拒绝。核验间隔持久化为 30 秒，单次总预算 5 秒，失败不阻塞独立 ready 消息。确认与原 revision、消息 ID / 后续 PATCH 调度原子保存，status 提供 `outbound.readback_available`。原 schema 15 未决记录保持 unknown。真实飞书读回 / 显示仍待验收，见[接口与证明边界](../research/feishu-unknown-readback-2026-10-12.md)。
 
+schema 17 新增 `card_request_markers`，在镜像、命令确认、待处理提醒之间统一保留唯一标记；原 schema 16 镜像映射原样保留，并登记到共享表，原镜像检查 deadline 不变。命令和提醒只核验原不可变 attempt 的实际带标记载荷；登记、原卡冻结和领取在同一事务，缺 source / 忽略 proof write 均不发请求。检查失败继续投递独立 ready 回复；已解决的 App 请求仍可确认此前送达，不恢复 pending 或通知资格。旧无标记命令 / 提醒继续保持 unknown。status 提供 `command_replies.readback_available`、`requests.reminder_readback_available`，仍不输出卡正文。
+
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 
 | 表 | 主键 / 唯一约束 | 主要字段 |

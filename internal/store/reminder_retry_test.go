@@ -73,7 +73,7 @@ func TestReminderRateRetryPersistsDeadlineAndRequiresLiveRequestAfterRestart(t *
 	r.Replay = true
 	observeRequest(t, s, r, o, time.UnixMilli(due))
 	b := claimRequest(t, s, o, time.UnixMilli(due))
-	if a.ID == b.ID || a.Card != b.Card || b.ParentMessageID != "original-input" {
+	if a.ID == b.ID || unmarkedWireCard(t, s, a.ID, a.Card) != unmarkedWireCard(t, s, b.ID, b.Card) || b.ParentMessageID != "original-input" {
 		t.Fatal("retry lost fresh UUID or original relationship", a, b)
 	}
 	if err := s.FinishRequestReminder(ctx, a.ID, "confirmed", "stale-A"); !errors.Is(err, ErrConflict) {

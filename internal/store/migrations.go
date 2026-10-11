@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 16
+const SchemaVersion = 17
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -247,6 +247,15 @@ PRAGMA user_version=4;
 			return err
 		}
 		if _, err = tx.Exec("PRAGMA user_version=16"); err != nil {
+			return err
+		}
+	}
+
+	if version < 17 {
+		if _, err = tx.Exec(CardReadbackSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=17"); err != nil {
 			return err
 		}
 	}

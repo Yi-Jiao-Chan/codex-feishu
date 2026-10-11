@@ -198,5 +198,15 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 			return h, errors.New("message readback health unavailable")
 		}
 	}
+	if schema >= 17 {
+		h.CommandReplies["readback_available"], err = count(`SELECT COUNT(*) FROM command_reply_attempts a JOIN card_request_markers k ON k.kind='command' AND k.attempt_id=a.attempt_id JOIN command_replies r USING(app_id,message_id) WHERE a.host_id=? AND a.app_id=? AND a.state='unknown' AND r.state='unknown' AND r.attempt_id=a.attempt_id`, host, app)
+		if err != nil {
+			return h, errors.New("command readback health unavailable")
+		}
+		h.Requests["reminder_readback_available"], err = count(`SELECT COUNT(*) FROM request_reminder_attempts a JOIN card_request_markers k ON k.kind='reminder' AND k.attempt_id=a.attempt_id JOIN app_requests r USING(host_id,app_id,thread_id,request_key) WHERE a.host_id=? AND a.app_id=? AND a.state='unknown' AND r.reminder_state='unknown'`, host, app)
+		if err != nil {
+			return h, errors.New("reminder readback health unavailable")
+		}
+	}
 	return h, nil
 }

@@ -114,7 +114,7 @@ func TestCommandReplyUnknownAfterRestartIsNeverClaimed(t *testing.T) {
 		t.Fatal(err)
 	}
 	claimed, fresh, err := s.ClaimCommandReply(ctx, "host", now.UnixMilli()+1000)
-	if err != nil || !fresh || claimed.ID != r.ID || claimed.MessageID != req.MessageID || claimed.Card != r.Card {
+	if err != nil || !fresh || claimed.ID != r.ID || claimed.MessageID != req.MessageID || unmarkedWireCard(t, s, claimed.ID, claimed.Card) != r.Card {
 		t.Fatalf("wrong frozen reply: %+v %t %v", claimed, fresh, err)
 	}
 	var sequence int

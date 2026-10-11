@@ -78,7 +78,7 @@ func TestCommandRetryKeepsCommandEffectAndOriginalReplyAcrossRestart(t *testing.
 		t.Fatal("reply retry reapplied original mute", err)
 	}
 	b := retryCommandClaim(t, s, now.UnixMilli()+8000)
-	if b.ID == a.ID || b.Card != a.Card || b.MessageID != a.MessageID || b.ChatID != a.ChatID || b.UserID != a.UserID || b.CreatedAtMS != a.CreatedAtMS {
+	if b.ID == a.ID || unmarkedWireCard(t, s, b.ID, b.Card) != unmarkedWireCard(t, s, a.ID, a.Card) || b.MessageID != a.MessageID || b.ChatID != a.ChatID || b.UserID != a.UserID || b.CreatedAtMS != a.CreatedAtMS {
 		t.Fatal("retry lost frozen reply identity")
 	}
 	if err := s.FinishCommandReply(ctx, a.ID, "confirmed", "stale-result"); !errors.Is(err, ErrConflict) {

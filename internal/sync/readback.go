@@ -18,6 +18,15 @@ type MessageReadbackGateway interface {
 	ListCardMessages(context.Context, string, string, string) (feishu.CardMessagePage, error)
 }
 
+type CardReadbackProof struct {
+	AppID           string `json:"-"`
+	ChatID          string `json:"-"`
+	ParentMessageID string `json:"-"`
+	TargetMessageID string `json:"-"`
+	Card            string `json:"-"`
+	Marker          string `json:"-"`
+}
+
 var ErrReadbackIncomplete = errors.New("message readback evidence incomplete")
 
 // ReconcileOne performs GETs only. Only a pre-send, globally reserved marker
@@ -31,16 +40,45 @@ func (o Outbound) ReconcileOne(ctx context.Context, host, thread string, nowMS i
 	if err != nil || !claimed {
 		return DeliveryResult{}, err
 	}
+	a := r.Attempt
+	messageID, err := FindMarkedCard(ctx, o.Readback, CardReadbackProof{
+		AppID:           r.AppID,
+		ChatID:          a.ChatID,
+		ParentMessageID: a.ParentMessageID,
+		TargetMessageID: a.TargetMessageID,
+		Card:            a.Card,
+		Marker:          r.Marker,
+	})
+	if err != nil || messageID == "" {
+		return DeliveryResult{}, err
+	}
+	if err := o.Store.FinishMirrorAttempt(ctx, a.ID, "confirmed", messageID); err != nil {
+		return DeliveryResult{}, err
+	}
+	m, err := o.Store.Mirror(ctx, host, thread, a.Key)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+	return DeliveryResult{AttemptID: a.ID, Key: a.Key, Kind: m.Kind, TurnID: m.TurnID, State: "confirmed", MessageID: messageID}, nil
+}
+
+// FindMarkedCard performs a GET-only proof of one pre-send marker. A blank
+// result means the available readback is inconclusive; it never means that a
+// remote write was rejected.
+func FindMarkedCard(ctx context.Context, reader MessageReadbackGateway, proof CardReadbackProof) (string, error) {
+	if reader == nil || proof.AppID == "" || proof.ChatID == "" || proof.Card == "" || proof.Marker == "" {
+		return "", ErrReadbackIncomplete
+	}
 	// Recovery reads share a total budget, rather than paying the transport
 	// timeout on every history page and monopolizing a thread actor.
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	a := r.Attempt
 	var msg feishu.CardMessage
-	if a.Operation == "update" {
-		msg, err = o.Readback.ReadCardMessage(checkCtx, a.TargetMessageID)
+	var err error
+	if proof.TargetMessageID != "" {
+		msg, err = reader.ReadCardMessage(checkCtx, proof.TargetMessageID)
 		if err != nil {
-			return DeliveryResult{}, err
+			return "", err
 		}
 	} else {
 		// Phase1 uses ordinary group replies, explicitly reply_in_thread=false.
@@ -51,100 +89,106 @@ func (o Outbound) ReconcileOne(ctx context.Context, host, thread string, nowMS i
 		found := map[string]feishu.CardMessage{}
 		complete := false
 		for n := 0; n < 20; n++ {
-			page, e := o.Readback.ListCardMessages(checkCtx, "chat", a.ChatID, cursor)
+			page, e := reader.ListCardMessages(checkCtx, "chat", proof.ChatID, cursor)
 			if e != nil {
-				return DeliveryResult{}, e
+				return "", e
 			}
 			if len(page.Items) > 50 {
-				return DeliveryResult{}, ErrReadbackIncomplete
+				return "", ErrReadbackIncomplete
 			}
 			for _, item := range page.Items {
 				if item.Type != "interactive" {
 					continue
 				}
-				count := markerCount(item.Content, r.Marker)
+				count := markerCount(item.Content, proof.Marker)
 				if count == 0 {
 					continue
 				}
 				if item.ID == "" || count != 1 {
-					return DeliveryResult{}, ErrReadbackIncomplete
+					return "", ErrReadbackIncomplete
 				}
 				if previous, ok := found[item.ID]; ok && !reflect.DeepEqual(previous, item) {
-					return DeliveryResult{}, ErrReadbackIncomplete
+					return "", ErrReadbackIncomplete
 				}
 				found[item.ID] = item
 			}
 			if len(found) > 1 {
-				return DeliveryResult{}, ErrReadbackIncomplete
+				return "", ErrReadbackIncomplete
 			}
 			if !page.HasMore {
 				complete = true
 				break
 			}
 			if page.Token == "" || seenTokens[page.Token] {
-				return DeliveryResult{}, ErrReadbackIncomplete
+				return "", ErrReadbackIncomplete
 			}
 			seenTokens[page.Token] = true
 			cursor = page.Token
 		}
 		if !complete {
-			return DeliveryResult{}, ErrReadbackIncomplete
+			return "", ErrReadbackIncomplete
 		}
 		if len(found) == 0 {
-			return DeliveryResult{}, nil
+			return "", nil
 		}
 		for id := range found {
 			// Re-read the unique candidate after complete pagination so a stale
 			// list representation cannot confirm a subsequently changed card.
-			msg, err = o.Readback.ReadCardMessage(checkCtx, id)
+			msg, err = reader.ReadCardMessage(checkCtx, id)
 			if err != nil {
-				return DeliveryResult{}, err
+				return "", err
 			}
 			if msg.ID != id {
-				return DeliveryResult{}, ErrReadbackIncomplete
+				return "", ErrReadbackIncomplete
 			}
 		}
 	}
 	if err := checkCtx.Err(); err != nil {
-		return DeliveryResult{}, err
+		return "", err
 	}
-	if !matchesReadback(r, msg) {
-		return DeliveryResult{}, nil
+	if !matchesCardReadback(proof, msg) {
+		return "", nil
 	}
-	if err := o.Store.FinishMirrorAttempt(ctx, a.ID, "confirmed", msg.ID); err != nil {
-		return DeliveryResult{}, err
-	}
-	m, err := o.Store.Mirror(ctx, host, thread, a.Key)
-	if err != nil {
-		return DeliveryResult{}, err
-	}
-	return DeliveryResult{AttemptID: a.ID, Key: a.Key, Kind: m.Kind, TurnID: m.TurnID, State: "confirmed", MessageID: msg.ID}, nil
+	return msg.ID, nil
 }
 
+// matchesReadback keeps the store-shaped helper available to existing
+// package-local callers while proof-based callers use matchesCardReadback.
 func matchesReadback(r store.MirrorReadback, m feishu.CardMessage) bool {
 	a := r.Attempt
-	if m.ID == "" || m.ChatID != a.ChatID || m.Type != "interactive" || m.SenderType != "app" || m.SenderIDType != "app_id" || m.SenderID != r.AppID || m.Deleted == nil || *m.Deleted {
+	return matchesCardReadback(CardReadbackProof{
+		AppID:           r.AppID,
+		ChatID:          a.ChatID,
+		ParentMessageID: a.ParentMessageID,
+		TargetMessageID: a.TargetMessageID,
+		Card:            a.Card,
+		Marker:          r.Marker,
+	}, m)
+}
+
+func matchesCardReadback(proof CardReadbackProof, m feishu.CardMessage) bool {
+	if m.ID == "" || m.ChatID != proof.ChatID || m.Type != "interactive" || m.SenderType != "app" || m.SenderIDType != "app_id" || m.SenderID != proof.AppID || m.Deleted == nil || *m.Deleted {
 		return false
 	}
-	if a.Operation == "update" && m.ID != a.TargetMessageID {
+	if proof.TargetMessageID != "" && m.ID != proof.TargetMessageID {
 		return false
 	}
 	if m.ThreadID != nil && *m.ThreadID != "" {
 		return false
 	}
-	if a.ParentMessageID != "" {
-		if m.ParentID == nil || *m.ParentID != a.ParentMessageID {
+	if proof.ParentMessageID != "" {
+		if m.ParentID == nil || *m.ParentID != proof.ParentMessageID {
 			return false
 		}
 	} else if m.ParentID != nil && *m.ParentID != "" || m.RootID != nil && *m.RootID != "" {
 		return false
 	}
-	expected, err := parseProofJSON(a.Card)
+	expected, err := parseProofJSON(proof.Card)
 	if err != nil {
 		return false
 	}
 	actual, err := parseProofJSON(m.Content)
-	return err == nil && markerCountValue(expected, r.Marker) == 1 && reflect.DeepEqual(expected, actual)
+	return err == nil && markerCountValue(expected, proof.Marker) == 1 && reflect.DeepEqual(expected, actual)
 }
 
 func markerCount(card, marker string) int {

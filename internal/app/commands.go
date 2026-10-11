@@ -162,9 +162,16 @@ func (c Commands) DispatchOne(ctx context.Context, gateway messages.MessageGatew
 	if c.Store == nil || gateway == nil {
 		return false, errors.New("command delivery requires storage and gateway")
 	}
+	confirmed, readbackErr := reconcileFeedbackCard(ctx, c.Store, gateway, "command", c.Config.Host.ID, c.Config.Feishu.AppID, "", c.now().UnixMilli())
+	if confirmed {
+		return true, readbackErr
+	}
 	r, claimed, err := c.Store.ClaimCommandReply(ctx, c.Config.Host.ID, c.now().UnixMilli())
-	if err != nil || !claimed {
+	if err != nil {
 		return false, err
+	}
+	if !claimed {
+		return false, readbackErr
 	}
 	remoteID, sendErr := gateway.ReplyCard(ctx, r.MessageID, r.Card, r.ID)
 	var limited *feishu.RateLimited

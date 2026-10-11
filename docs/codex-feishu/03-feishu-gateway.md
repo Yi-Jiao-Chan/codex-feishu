@@ -67,4 +67,6 @@ FollowTarget 为 topic 时，所有镜像、排队卡、通知、错误和操作
 
 App 待处理提醒的明确限流恢复已接入开发版：等待期不读群成员，到期读取实际成员后再冻结新提醒卡与 UUID，始终 reply 原输入。未知响应不重发；完整等待区间内出现免打扰或请求解决则终止旧提醒。schema 15 隔离证据见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)，真实 M0 尚未迁移。
 
-镜像未知结果的只读 reader 已接入开发版：GET/List 明确请求 `user_card_content`，sender 使用 app_id 核验而非 bot open_id，缺 deleted / 父关系等必要证明仍保守处理。普通群分页至多 20 页、总计 5 秒，截断、分页失败或多 marker 候选不确认。旧无标记请求不追认，建群 / reaction / 命令 / App 待处理卡的 unknown 仍需各自证据契约。官方界限与新标记协议见[远端核验研究](../research/feishu-unknown-readback-2026-10-12.md)；真实 marker 读回和 UI 尚待验收。
+镜像未知结果的只读 reader 已接入开发版：GET/List 明确请求 `user_card_content`，sender 使用 app_id 核验而非 bot open_id，缺 deleted / 父关系等必要证明仍保守处理。普通群分页至多 20 页、总计 5 秒，截断、分页失败或多 marker 候选不确认。旧无标记请求不追认；命令 / App 待处理卡已接入下述共用核验，建群 / reaction 的 unknown 仍需各自证据契约。官方界限与新标记协议见[远端核验研究](../research/feishu-unknown-readback-2026-10-12.md)；真实 marker 读回和 UI 尚待验收。
+
+开发 schema 17 的命令 / 待处理卡共用上述 `FindMarkedCard`。命令回复仍引用原命令，核验不重做目录、通知或任务控制效果；已解决请求的旧提醒只确认已存在的原卡，不重新询问或 @。只有有发送前唯一标记的新 attempt 进入 reader，unknown 查不到不重发。真实读回/UI 验收状态与镜像一致，尚待验收。

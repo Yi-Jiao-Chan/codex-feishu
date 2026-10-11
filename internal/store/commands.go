@@ -305,6 +305,14 @@ func (s *Store) ClaimCommandReply(ctx context.Context, host string, nowMS int64)
 	if err := commandWriteOne(ctx, tx, `INSERT INTO command_reply_attempts(attempt_id,host_id,app_id,message_id,chat_id,chat_type,user_id,thread_id,kind,card_json,created_at_ms,dispatched_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'dispatching')`, r.ID, r.HostID, r.AppID, r.MessageID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.Card, r.CreatedAtMS, nowMS); err != nil {
 		return CommandReply{}, false, err
 	}
+	wire, _, err := freezeCardRequestMarker(ctx, tx, "command", r.ID, r.Card)
+	if err != nil {
+		return CommandReply{}, false, err
+	}
+	if err := commandWriteOne(ctx, tx, `UPDATE command_reply_attempts SET card_json=? WHERE attempt_id=?`, wire, r.ID); err != nil {
+		return CommandReply{}, false, err
+	}
+	r.Card = wire
 	if err := tx.Commit(); err != nil {
 		return CommandReply{}, false, err
 	}

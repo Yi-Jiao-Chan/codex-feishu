@@ -270,7 +270,11 @@ type commandTestGateway struct {
 func (g *commandTestGateway) ReplyCard(ctx context.Context, parent, card, uuid string) (string, error) {
 	g.t.Helper()
 	r, err := g.s.CommandReply(ctx, g.want.HostID, g.want.AppID, g.want.MessageID)
-	if err != nil || r.State != "dispatching" || parent != g.want.MessageID || card != g.want.Card || uuid != g.want.ID {
+	var wire string
+	if e := g.s.DB.QueryRow(`SELECT card_json FROM command_reply_attempts WHERE attempt_id=?`, uuid).Scan(&wire); e != nil {
+		g.t.Fatal(e)
+	}
+	if err != nil || r.State != "dispatching" || parent != g.want.MessageID || card != wire || r.Card != g.want.Card || uuid != g.want.ID {
 		g.t.Fatalf("reply before journal or wrong parent/payload: %+v %v", r, err)
 	}
 	g.calls++

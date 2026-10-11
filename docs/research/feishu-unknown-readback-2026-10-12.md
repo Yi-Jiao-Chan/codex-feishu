@@ -98,3 +98,15 @@ delete 按已知 message/reaction ID，只能删自己添加且真实存在的�
 独立只读审查实际复现并修复两项问题：GET 失败曾跳过其他 ready 投递；损坏 JSON 曾被当成无 marker，漏掉第二候选。正式隔离回归覆盖这两项，此外覆盖分页找回、候选读回后改变、同内容不同 marker、身份/父消息/撤回/话题/缺字段、重复 token 与预算截断、原回复关系、未知不重发、重启保留冷却、迁移不造证明、marker proof write 被忽略则不发请求，以及长正文带 @ 与标记的总字节预算。真实 element_id round-trip / 卡片显示 / 故障恢复 UI 仍 pending；`phase1_released=false`。
 
 验证：组合先通过 `go test -race ./... -count=1`；随后对总 GET 预算、总字节 / @ 预留和版本能力的最终修改，重跑 app / sync / cards / feishu / CLI 的 race 检查及 store health / marker / proof 定向 race 检查。`go vet ./...`、`git diff --check` 通过。没有实际飞书业务发送、群 / reaction 操作、原生输入、服务部署或旧 M0 数据库迁移。
+
+## 命令确认与 App 待处理卡的共用核验
+
+开发 schema 17 增加共享 `card_request_markers`。schema 16 镜像标记拷贝到共享命名空间，保留原映射和已持久检查间隔；不是给旧无标记请求补造标记。镜像、命令、提醒的标记不可互相复用，领取必须先存在精确 source attempt，同一事务保存实际带标记载荷和 ready→dispatching 的状态证明。非 JSON2 旧载荷保留原值，不进入标记核验。
+
+`FindMarkedCard` 从原镜像算法提取，共用既有 GET 预算、完整分页、原卡结构、发送身份、chat/parent/撤回/非话题与标记唯一证明。命令可在未绑定会话的本人私聊核验，提醒则要求原 host/app/thread/binding；两者保持 30 秒持久间隔，只检查 exact unknown attempt。读失败不会饿死其他 ready 回复。成功只调用既有 atomic Finish，不再执行任何目录 / 通知命令或 native 输入 / 审批。请求已经 resolved、连接待重新确认或 @ 已关闭时，reader 可以核验此前是否送达；它不会恢复 pending、重新渲染旧 @ 或发送新的提醒。
+
+新增隔离案例覆盖：旧 off 回复在随后 on 后只读确认，规则仍为 on；提醒在 resolved/off/restart 后确认原卡且不查询群成员、不重开原请求；读取失败不阻塞后来命令；原 wire card 不变；重启 / schema 16 镜像保留 / 旧命令不造证明；source 缺失和被忽略的 marker 写入回滚；外部 host/thread 不能领取；共享 proof DTO 不序列化正文。命令逻辑结果卡保持原样，实际每次请求卡的隐藏标记不同，测试分别核验可见正文与不可变原 wire payload。
+
+原 M0 仍未迁移或切换，marker 的真实飞书原值读回 / UI 仍 pending，建群与 reaction 的未知结果也未由本切片覆盖。一期 release 标志保持 false。
+
+本切片组合通过 `go test -race ./... -count=1`，CLI capability 的最终更新另跑 CLI 测试；`go vet ./...` 与 `git diff --check` 通过。没有真实外部写入、原生输入、接管或部署。

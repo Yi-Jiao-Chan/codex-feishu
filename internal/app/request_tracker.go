@@ -263,9 +263,17 @@ func (t *RequestTracker) DispatchOne(ctx context.Context, thread string) (bool, 
 		return false, nil
 	}
 	preparedAt := t.now().UnixMilli()
+	confirmed, readbackErr := reconcileFeedbackCard(ctx, t.Store, t.Gateway, "reminder", t.HostID, t.AppID, thread, preparedAt)
+	if confirmed {
+		return true, readbackErr
+	}
+	preparedAt = max(preparedAt, t.now().UnixMilli())
 	ready, err := t.Store.PrepareRequestRemindersAt(ctx, t.HostID, t.AppID, thread, preparedAt, t.Options)
-	if err != nil || !ready {
+	if err != nil {
 		return false, err
+	}
+	if !ready {
+		return false, readbackErr
 	}
 	options := t.Options
 	options.ChatID, options.MemberIDs = "", nil

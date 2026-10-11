@@ -86,7 +86,7 @@ func TestCommandsRetryReplyDoesNotReapplyOldNotificationAction(t *testing.T) {
 	if wrote, err := c.DispatchOne(ctx, g); err != nil || !wrote || len(g.ids) != 3 {
 		t.Fatal("due reply not recovered", err)
 	}
-	if g.ids[0] == g.ids[2] || g.parents[0] != g.parents[2] || g.cards[0] != g.cards[2] {
+	if g.ids[0] == g.ids[2] || g.parents[0] != g.parents[2] || !sameVisibleTestCard(t, s, g.ids[0], g.cards[0], g.ids[2], g.cards[2]) {
 		t.Fatal("retry changed original context or reused UUID")
 	}
 	p, err := s.NotificationPolicy(ctx, "app", in.UserID)
