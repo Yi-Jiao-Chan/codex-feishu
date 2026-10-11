@@ -15,7 +15,7 @@ func (t Thread) InteractiveMain() bool {
 			return false
 		}
 		switch label {
-		case "subagent", "guardian_review", "memory_consolidation":
+		case "subagent", "guardian_review", "memory_consolidation", "feishu.bridge.validation", "feishu.bridge.creation":
 			return false
 		}
 	}

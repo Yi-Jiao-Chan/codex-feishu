@@ -112,7 +112,24 @@ func page[T any](ctx context.Context, c *Client, method string, p map[string]any
 	}
 }
 func (c *Client) List(ctx context.Context) ([]Thread, error) {
-	return page[Thread](ctx, c, "thread/list", map[string]any{"limit": 100, "sortKey": "updated_at", "sortDirection": "desc", "useStateDbOnly": true})
+	return c.ListArchive(ctx, false)
+}
+
+// An empty provider filter includes all configured providers. Omitting it lets
+// the server filter to the current provider and is unsuitable for a baseline.
+func (c *Client) ListArchive(ctx context.Context, archived bool) ([]Thread, error) {
+	return page[Thread](ctx, c, "thread/list", map[string]any{"limit": 100, "sortKey": "updated_at", "sortDirection": "desc", "useStateDbOnly": true, "archived": archived, "modelProviders": []string{}})
+}
+
+// LoadedIDs includes unmaterialized drafts which thread/list may omit. Reading
+// metadata does not subscribe to events; drafts must remain pending until input.
+func (c *Client) LoadedIDs(ctx context.Context) ([]string, error) {
+	return page[string](ctx, c, "thread/loaded/list", map[string]any{"limit": 100})
+}
+
+func BeforeFirstInput(err error) bool {
+	var rpc *RPCError
+	return errors.As(err, &rpc) && rpc.Code == -32600 && strings.Contains(rpc.Message, "thread/turns/list is unavailable before first user message")
 }
 func (c *Client) Turns(ctx context.Context, id string) ([]Turn, error) {
 	turns, err := page[Turn](ctx, c, "thread/turns/list", map[string]any{"threadId": id, "limit": 50, "sortDirection": "asc", "itemsView": "full"})

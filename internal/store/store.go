@@ -43,14 +43,12 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
- CREATE TABLE IF NOT EXISTS m0_operations(key TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, remote_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
- CREATE TABLE IF NOT EXISTS m0_receipts(id TEXT PRIMARY KEY, app_id TEXT NOT NULL,message_id TEXT NOT NULL,thread_id TEXT NOT NULL,chat_id TEXT NOT NULL,body TEXT NOT NULL,client_id TEXT NOT NULL UNIQUE,queue_id TEXT NOT NULL DEFAULT '',state TEXT NOT NULL,card_id TEXT NOT NULL DEFAULT '',action_token TEXT NOT NULL UNIQUE,UNIQUE(app_id,message_id));
- CREATE TABLE IF NOT EXISTS m0_bindings(thread_id TEXT PRIMARY KEY,chat_id TEXT UNIQUE NOT NULL);
-	 CREATE TABLE IF NOT EXISTS m0_actions(receipt_id TEXT PRIMARY KEY,kind TEXT NOT NULL,state TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS m0_reactions(receipt_id TEXT PRIMARY KEY,emoji TEXT NOT NULL DEFAULT '',reaction_id TEXT NOT NULL DEFAULT '',revision INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'confirmed');
- PRAGMA user_version=1;`)
+	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;`)
 	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}

@@ -4,7 +4,7 @@
 
 ## 可自动绑定的会话
 
-处理允许项目范围内、持久化、有实际人类输入的交互主会话。排除 ephemeral、存在父代理关系的子线程、桥 validation/creation 标记的线程。用户 fork 出的新主会话可以独立跟进；不能因为 sessionId 与 threadId 不同就判为子代理。
+处理允许项目范围内、持久化、有实际人类输入的交互主会话。排除 ephemeral、存在父代理关系的子线程、桥 validation/creation 标记的线程。**2026-10-12 用户调整：fork 暂不实现，发现后记录 `fork_deferred`，不自动建群；代码保留 TODO。** 普通 App 主会话和注册工作树仍在本期范围内；不能因为 sessionId 与 threadId 不同就判为子代理。
 
 来源不能写死：本机真正 App 与误用 CLI 的测试主线程都出现过 source=vscode、originator=codex-tui、threadSource=null；这些字段不能区分两种入口。M0 保存真实 App 新建、fork、worktree 与子代理的脱敏样例，再落实分类器。准确版本规则与边界见[分类研究](../research/thread-classification-0.162.0.md)：parentThreadId 与所有 subAgent 变体排除；forkedFromId 不排除；preview 不作首条用户输入证明。至少保证 App 主会话可发现；共享 daemon 内其他符合条件的交互会话可复用入口，来源页脚在无法细分时写“Codex 端”。CLI 回显仍不验收。
 
@@ -12,9 +12,9 @@
 
 ## 基线与补偿扫描
 
-第一次启动先连接事件流，暂存通知，建立 thread/list 基线。已在启动前存在的线程只记已见，不批量建群。基线期间新创建的线程结合 createdAt 和暂存事件判断；边界无法判清的会话保持待检查，不能因扫描竞争大量补建旧群。将基线完成标志与观察记录持久保存。
+第一次启动先保存毫秒 fence、连接事件流并持久接收出生通知，建立 thread/list 基线。已在启动前存在的历史只记已见，不批量建群。基线期间的出生通知和正常本机 0.162.0 UUIDv7 的正向新建证据优先于快照忽略记录；不能单凭 createdAt/updatedAt 判定新任务。边界无法判清的会话保持待检查，不能因扫描竞争大量补建旧群。将基线完成标志与历史忽略记录原子保存；重启不重置 fence。首输入前草稿通过 loaded/list + metadata-only read + typed turns/list 探测保留 pending，详见[准确版本基线研究](../research/discovery-baseline-0.162.0.md)。
 
-平时使用 thread/started 快速发现；约每 15 秒按 updated_at 排序分页扫描，带重叠窗口补漏。thread/list 没有“updated_since”参数时不要虚构它；在客户端分页到已覆盖水位为止。乱序和重启通过已见表、首条输入及绑定唯一键去重。
+平时使用 thread/started 快速发现；约每 15 秒按 updated_at 排序分页扫描，并检查 loaded IDs 与持久 pending。thread/list 没有“updated_since”参数时不要虚构它；本切片完整扫描普通/归档 ID、显式 modelProviders=[]，避免投影延迟落在已推进水位之后。后续优化窗口必须保留覆盖证据，不能默认最新一页完整。归档候选暂停建群，解除归档再判断；乱序和重启通过已见表、首条输入及绑定唯一键去重。
 
 静默期间创建但未绑定的候选保存最终判定原因。解除目录 mute 后不重新自动激活这些历史候选；用户仍可显式 /bind。
 
@@ -48,7 +48,7 @@ creating_group 响应未知 → reconciling_group
 ## 验收
 
 1. 首次安装不会给旧历史建群；随后真实 App 提交首条输入只建一个群。
-2. 草稿不建群，子代理不建群；fork 主会话行为与普通新会话一致。
+2. 草稿不建群，子代理不建群；fork 按用户本期调整保留 TODO，不自动跟进。
 3. thread/started 丢失，补偿扫描仍发现；重放事件不重复创建。
 4. 建群中断/超时、建群成功保存前崩溃，不出现第二个群。
 5. mute / 递归 / worktree 生效；解 mute 不补建历史；显式 bind 仍可用。

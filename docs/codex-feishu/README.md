@@ -2,7 +2,7 @@
 
 更新：2026-10-10。实施方案已确认；本文是开发规格，M0 真实可行性联调已通过，正在进入 M1，尚非一期发布。
 
-第一期交付你的常用流程：在 Codex App 的远程机器上发起任务，自动建飞书群，两端持续对话。执行中补充消息默认进入 Codex 原生队列；点击卡片“追加引导”才进入当前轮。第二期交付飞书内新建任务、目录选择、专属群或话题跟进。CLI 界面的外部输入回显不在两期范围内。
+第一期交付你的常用流程：在 Codex App 的远程机器上发起任务，自动建飞书群，两端持续对话。执行中补充消息默认进入 Codex 原生队列；点击卡片“追加引导”才进入当前轮。第二期交付飞书内新建任务、目录选择、专属群或话题跟进。CLI 界面的外部输入回显不在两期范围内。2026-10-12 用户调整：fork 跟进暂缓，代码留 TODO；普通 App 和注册工作树仍继续实现。
 
 ## 从哪里开始
 
@@ -82,6 +82,7 @@ M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书
 - [开源调研](../research/codex-feishu-bridge-2026-10-10.md)
 - [飞书权限研究](../research/feishu-m0-permissions-2026-10-10.md)
 - [准确版本线程分类](../research/thread-classification-0.162.0.md)
+- [首装基线与草稿发现研究](../research/discovery-baseline-0.162.0.md)、[M1 基础实现进展](../research/m1-discovery-foundation-2026-10-12.md)
 - [准确版本审批与问答路由](../research/approval-routing-0.162.0.md)
 - [卡片组件研究](../research/codex-feishu-card-ux-2026-10-10.md)
 - [主链路验证](../research/codex-feishu-probes-2026-10-10/native-queue-probe-result.json)、[并发与边界](../research/codex-feishu-probes-2026-10-10/native-race-probe-result.json)、[空闲入口](../research/codex-feishu-probes-2026-10-10/native-idle-queue-probe-result.json)

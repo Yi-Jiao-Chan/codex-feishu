@@ -4,6 +4,8 @@
 
 M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fork/worktree/子代理分类，以及飞书卡片、reaction、引用回复和 @ 验证。当前进入 M1 开发，尚未交付自动建群与完整一期，不是一期发布版。
 
+2026-10-12：用户将 fork 跟进暂缓，发现器保留 TODO 并记录 `fork_deferred`；普通 App 会话和注册工作树继续实现。M1 已有持久基线、发现/目录校验和建群意图基础，完整同步组合仍待完成，见 [M1 进展](docs/research/m1-discovery-foundation-2026-10-12.md)。
+
 - [开发手册](docs/codex-feishu/README.md)
 - [Agent 配置指南](docs/codex-feishu/AGENT-SETUP.md)
 - [实施与验收](docs/codex-feishu/11-integration-and-acceptance.md)
