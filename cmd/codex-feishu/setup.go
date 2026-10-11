@@ -13,6 +13,9 @@ func runSetup(ctx context.Context, args []string) int {
 	if len(args) > 0 && args[0] == "pair" {
 		return runPair(ctx, args[1:])
 	}
+	if len(args) > 0 && args[0] == "migrate" {
+		return runMigration(ctx, args[1:])
+	}
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	input := flags.String("input", "", "absolute setup JSON path")
 	preview := flags.Bool("plan", false, "preview local configuration changes")
@@ -78,6 +81,8 @@ func setupFailure(err error) int {
 		state = "release-acceptance-pending"
 	case errors.Is(err, setup.ErrApplyPending):
 		state, code = "setup-recovery-pending", 5
+	case errors.Is(err, setup.ErrMigrationPending):
+		state, code = "migration-recovery-pending", 5
 	}
 	emit(output{Command: "setup", State: state, Checks: []check{{"setup", "fail", true, err.Error()}}})
 	return code

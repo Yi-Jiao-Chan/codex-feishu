@@ -18,7 +18,7 @@
 
 ## 调用与证据边界
 
-这是内部接管基础，还没有可用于真实切换的 CLI。存储 primitive 验证本地来源摘要、消息 ID、父关系、canonical key 形状和事务一致性；**不能仅凭 NativeDigest 证明原生历史完整或渲染覆盖完整**。调用方必须从完整原生快照重跑 `PlanLegacyThread`，禁止从 CLI 输入反序列化裸镜像 seeds。后续配置命令须核验计划 ID 和新读取的数据。
+存储与 mapper 是内部接管基础；现已接入 `setup migrate` CLI，开发版本仍拒绝真实 apply。存储 primitive 验证本地来源摘要、消息 ID、父关系、canonical key 形状和事务一致性；**不能仅凭 NativeDigest 证明原生历史完整或渲染覆盖完整**。调用方必须从完整原生快照重跑 `PlanLegacyThread`，禁止从 CLI 输入反序列化裸镜像 seeds。迁移 CLI 从新读取的完整快照重新生成 seeds，核验原计划 ID，禁止输入裸 seeds。
 
 真实 apply 前仍需：核验并停止准确的旧 bridge 进程，持有 App 与规范数据库部署锁，保存私有 SQLite 一致备份，冻结配置及兼容版本，重新核验完整 history/空队列、App 来源、目录和群成员，再执行原子接管。不能停止 Codex daemon，不能用文件复制代替活跃 WAL 数据库的备份。
 
@@ -35,4 +35,18 @@
 
 本轮 `go test -race ./... -count=1`、最终存储/同步包的 race 复验、`go vet ./...` 与 `git diff --check` 通过。测试和审查均使用合成数据与临时数据库；没有向真实群发送消息、提交原生输入或执行真实迁移。
 
-实际切换、配置迁移计划/备份/锁的组合、异常远程读回、正式服务 UI 与部署验收仍待完成。当前运行的 M0 配置、数据库和二进制没有替换。
+计划/一致备份/部署锁/原子接管的组合已完成下述隔离测试；实际切换、异常远程读回、正式服务 UI 与部署验收仍待完成。当前运行的 M0 配置、数据库和二进制没有替换。
+
+## 迁移 CLI 与一致备份
+
+新增 `setup migrate --config ABS --plan --json`、`--apply --plan-id ID --json`。摘要仅包含数量、路径、摘要 ID；私有 plan journal 没有历史原文或密钥。核验配置、artifact、secret、准确 daemon 兼容版本；线程必须为静止普通 App 主线程、允许目录、完整历史且无 queue，原群中机器人和 owner 已核验。相同证据在 15 分钟内产生相同 ID，变化或超时拒绝旧计划。开发版 `CanApply=false`，不能真实迁移。
+
+配置锁之外，Preview 和 Apply 持 canonical DB 的共同 artifact lock，复制配置无法并发覆盖 prepared/applied marker。Apply 另持 App 和监听锁，不停止 bridge、不连接新接收器、不操作原生输入、不调用飞书写 API。部署者须先停止准确的旧 bridge，保留 Codex daemon。
+
+`BackupLegacy` 使用 `VACUUM INTO` 生成包含已提交 WAL 的独立快照，验证 schema 1 和来源摘要。Linux directory FD 固定私有目录；0600 临时文件 fsync 后用禁止覆盖的 link 发布，目录 fsync；不覆盖既有文件。SQLite data_version 与短暂 BEGIN IMMEDIATE 阻止源并发写入时发布旧快照。同摘要已存在备份核验后可复用；不同摘要、目录替换、不安全权限、硬链接及符号链接拒绝。源行/schema、权限、journal mode 保留，源 sidecars 不删除。
+
+备份前、备份后均重新核验计划，随后原子接管。prepared marker 阻止普通启动及配置应用；已提交的 exact adoption record 支持恢复 marker，保留后来发送/状态变化，不重新连接原生 history 或重放 seeds。计划与备份留下供恢复，不自动安装/启动正式服务。
+
+隔离测试覆盖计划稳定/隐私、空队列和来源过滤、配置/artifact/secret/群成员/原生历史变动、过期、App/数据库锁、跨复制配置的共享计划锁、prepared/backup/committed 三处中断、恢复后活动不回退。备份测试覆盖活跃 WAL、源字节/记录/权限不变、取消及并发写入、原子不覆盖和不安全目标。CLI 参数与退出码测试通过。没有操作真实 M0 或发送外部消息。
+
+本轮组合实现通过 `go test -race ./... -count=1`、`go vet ./...` 和 `git diff --check`。真实 M0 仍未迁移，一期发布验收未完成。

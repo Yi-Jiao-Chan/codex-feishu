@@ -97,6 +97,19 @@ func readApplyJournal(target string) (applyJournal, bool, error) {
 // Applied policies may later change through normal commands; only unfinished
 // or malformed journals block startup, not historical after-policy values.
 func CheckApplyReady(configPath string) error {
+	if err := checkConfigurationApplyReady(configPath); err != nil {
+		return err
+	}
+	c, err := config.Load(configPath)
+	if err != nil {
+		return ErrApplyPending
+	}
+	return checkMigrationReady(c.Storage.DatabaseFile, c.Host.ID, c.Feishu.AppID)
+}
+
+// Migration recovery checks the configuration transaction independently: its
+// own prepared marker is precisely the transaction it is allowed to finish.
+func checkConfigurationApplyReady(configPath string) error {
 	target, err := canonicalTarget(configPath)
 	if err != nil {
 		return ErrApplyPending

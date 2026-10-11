@@ -219,3 +219,31 @@ func legacyMirrorKey(key, kind string) bool {
 	prefix := kind + ":"
 	return strings.HasPrefix(key, prefix) && legacyDigest(strings.TrimPrefix(key, prefix))
 }
+
+// LegacyAdoptionCommitted is read-only evidence for finishing a local journal
+// after the atomic transaction already committed. It never reopens outbox work.
+func (s *Store) LegacyAdoptionCommitted(ctx context.Context, planID, host, app, source, native string, startedMS int64) (bool, error) {
+	var schema int
+	if err := s.DB.QueryRowContext(ctx, "PRAGMA user_version").Scan(&schema); err != nil {
+		return false, errors.New("legacy adoption evidence unavailable")
+	}
+	if schema < 11 {
+		return false, nil
+	}
+	if schema > SchemaVersion {
+		return false, ErrConflict
+	}
+	var recordedHost, recordedApp, recordedSource, recordedNative string
+	var recordedMS int64
+	err := s.DB.QueryRowContext(ctx, `SELECT host_id,app_id,source_digest,native_digest,adopted_at_ms FROM legacy_adoptions WHERE plan_id=?`, planID).Scan(&recordedHost, &recordedApp, &recordedSource, &recordedNative, &recordedMS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, errors.New("legacy adoption evidence unavailable")
+	}
+	if recordedHost != host || recordedApp != app || recordedSource != source || recordedNative != native || recordedMS != startedMS {
+		return false, ErrConflict
+	}
+	return true, nil
+}

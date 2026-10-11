@@ -75,6 +75,9 @@ func deploymentApplyComplete(marker deploymentApply) bool {
 // Held application/database locks serialize pointer ownership. A pointer whose
 // journal has not been written yet can only be resumed by its original plan.
 func checkDeploymentApply(c config.Config, target, planID string) error {
+	if err := checkMigrationReady(c.Storage.DatabaseFile, c.Host.ID, c.Feishu.AppID); err != nil {
+		return err
+	}
 	marker, found, err := readDeploymentApply(c.Storage.DatabaseFile)
 	if err != nil {
 		return err

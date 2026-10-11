@@ -55,6 +55,9 @@ func runServe(ctx context.Context, args []string) int {
 		if errors.Is(err, setup.ErrApplyPending) {
 			state, code = "setup-recovery-pending", 5
 		}
+		if errors.Is(err, setup.ErrMigrationPending) {
+			state, code = "migration-recovery-pending", 5
+		}
 		emit(output{Command: "serve", State: state, NextSteps: []string{"complete or recover the original setup transaction before starting the bridge; no connections or migration started"}})
 		return code
 	}

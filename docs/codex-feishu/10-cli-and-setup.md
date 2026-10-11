@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对已通过自动测试，真实私聊验收仍待完成；完整 verify、已有通知规则的向导更新、迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)、[私聊配对进展](../research/m3-pairing-2026-10-12.md)及[验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对已通过自动测试，真实私聊验收仍待完成；通知规则事务及迁移命令已通过隔离测试；完整 verify、真实迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)、[私聊配对进展](../research/m3-pairing-2026-10-12.md)及[验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
 
 ## 命令表
 
@@ -14,6 +14,8 @@
 | setup --input PATH --plan --json | 检查部分输入、生成配置差异和稳定 plan_id；不写正式配置、不启动服务 |
 | setup --input PATH --apply --plan-id ID --json | 应用已知计划；备份旧配置、原子写入，不自行启动 |
 | setup pair --input PATH [--config PATH] --timeout 300 --json | 限时私聊配对获取 owner open_id；复用已有接收器或只监听配对的临时接收器，不改变同步配置 |
+| setup migrate --config PATH --plan --json | 核验静止的 M0 与原生历史、群成员，保存私有摘要计划；不备份、不迁移、不发送 |
+| setup migrate --config PATH --apply --plan-id ID --json | 停止旧桥后持锁、一致备份、重新核验并原子接管；不启动服务，开发版本拒绝执行 |
 | service install --config PATH --user --json | 创建/更新本工具的 systemd 用户服务，不操作 Codex 服务 |
 | service start / stop --config PATH --json | 启停本工具用户服务 |
 | service uninstall --config PATH --keep-data --json | 删除本工具服务，默认保留配置、密钥与数据库 |
@@ -27,7 +29,7 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 
 当前开发版的受控线程与正式实例测试流程尚未接入：请求 `--allow-test-thread` 时不部分发送卡片或建群；已有管理实例时保留唯一接收器，返回 managed tests pending。只有单独授权 card / group、没有管理实例、同时取得应用与数据库监听锁，并且已有私有 schema 1 日志时，才保留旧 M0 准备能力。锁后重新核验诊断所用配置与密钥；变更返回冲突。可写打开只接受所属用户的 0700 物理目录 / 私有文件与准确 schema，不创建或迁移。UUID 在 API 前落盘，unknown / rejected 不重发；这不是正式一期 verify。
 
-旧 M0 准备后只能使用保留的历史 M0 二进制处理其回调。当前开发版 m0-listen 仍会通过 Store.Open 迁移数据库，不能拿它替换运行中的旧实例；正式迁移须另行完成验收。
+旧 M0 准备后只能使用保留的历史 M0 二进制处理其回调。当前开发版 m0-listen 的 Store.Open 会拒绝未接管的 schema 1，不能拿它替换运行中的旧实例；正式迁移须另行完成验收。
 
 ## JSON 与退出码
 
@@ -72,9 +74,17 @@ apply 用部署配置锁，备份旧配置，原子写临时文件并 rename；�
 
 当前开发实现：计划实际核验所选二进制、现有 daemon、密钥文件权限、目录和现有部署；输入、二进制、密钥或配置变化使旧 plan_id 失效，兼容版本 daemon 的临时 socket 变化不影响恢复。已有 host_id 和数据库路径保留。通知 off / snooze 保持原值；向导仅修改本人明确提供的 quiet / timezone，不改变其他接收者。省略 quiet 保留现有规则，显式空字符串清除 quiet。
 
-apply 同时取得应用与数据库监听锁。已有规则的更新要求私有、准确 schema 10 数据库；完整状态比较后在同一 SQLite 事务提交规则与审计，重复执行不增加 revision 或审计。数据库旁的部署标记与配置 prepared 日志在配置替换前持久化，完整更新完成后保存 applied 并清理部署标记。中断返回 `setup-recovery-pending` / 退出 5；保持原输入文件、二进制、密钥、原 plan_id、配置备份和事务文件，再重跑原 apply。不要用新计划覆盖未完成事务，也不要删除日志。serve 在连接或迁移前拒绝未完成事务；改用备份/复制配置或数据库 symlink 别名也不能绕过同一数据库的恢复检查。当前 apply 不创建或迁移数据库，旧 M0 schema 1 仍须单独迁移与绑定接管验收。自动测试证据见[通知配置事务进展](../research/m3-policy-apply-2026-10-12.md)。
+apply 同时取得应用与数据库监听锁。已有规则的更新要求私有、准确 schema 11 数据库；完整状态比较后在同一 SQLite 事务提交规则与审计，重复执行不增加 revision 或审计。数据库旁的部署标记与配置 prepared 日志在配置替换前持久化，完整更新完成后保存 applied 并清理部署标记。中断返回 `setup-recovery-pending` / 退出 5；保持原输入文件、二进制、密钥、原 plan_id、配置备份和事务文件，再重跑原 apply。不要用新计划覆盖未完成事务，也不要删除日志。serve 在连接或迁移前拒绝未完成事务；改用备份/复制配置或数据库 symlink 别名也不能绕过同一数据库的恢复检查。当前 apply 不创建或迁移数据库，旧 M0 schema 1 仍须单独迁移与绑定接管验收。自动测试证据见[通知配置事务进展](../research/m3-policy-apply-2026-10-12.md)。
 
 改变运行中配置前须停止本工具实例，再重新 plan / apply；应用锁或数据库锁被占用时拒绝替换配置。service install 更新正在使用的 unit 后仅报告 restart pending，须明确 stop / start；start 对已运行服务是 no-op。配置 Agent 不应将这两种情况写成更新已经生效。
+
+## M0 迁移事务
+
+`setup migrate --plan` 只接受现有私有 schema 1 数据库与配置；通过既有 daemon 的只读 metadata / history / queue 方法和飞书 GET，确认 App 主线程、完整静止历史、空队列、允许目录、机器人及 owner 在原群。fork 暂缓。旧日志未知或进行中结果不能自动接管。计划和公有 JSON 不含原文或密钥；私有数据库旁保存摘要与原 plan_id，预览可能创建 SQLite 读取 sidecars。计划默认 15 分钟有效，重复相同预览沿用有效 ID。
+
+`--apply` 要求已验收发布版本，配置、二进制、密钥、原生历史和群成员与计划一致。先由部署者核验并停止准确的旧 bridge 进程，保留 Codex daemon；命令取得配置锁、按物理数据库命名的共享计划锁、App 锁及数据库监听锁。不能靠复制配置绕过锁。使用 SQLite 一致备份包含已提交 WAL，0600 私有备份禁止覆盖；备份后重读全部证据，再在一个事务内登记原群、原消息 ID、输入关联和 schema。不会建群、发消息、提交输入或安装服务。
+
+prepared marker 在写数据库之前持久化，中断阻止 serve 和配置 apply。保留同一配置、二进制、密钥、计划、备份，重跑原 `setup migrate --apply --plan-id ID`。如果数据库已提交，通过不可变接管记录恢复 marker，不重新生成 seeds 或覆盖后来活动。备份前后数据变化使计划失效；已确定未提交时可重新预览，旧备份保留。不要删除 marker、改 user_version、清空日志或直接复制活跃 WAL 的主文件。迁移成功只证明本地接管成功，实际启动、消息更新和 App UI 必须另验。见[M0 接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
 
 ## 配对与凭据
 
