@@ -8,6 +8,8 @@ M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fo
 
 最新开发边界见[配置、服务管理与待处理提醒进展](docs/research/m3-setup-and-request-reminders-2026-10-12.md)和[管理通道、状态核验与离线取消](docs/research/m3-control-and-offline-cancel-2026-10-12.md)。开发版本可预览配置，正式 apply / 服务安装和启动保留发布门槛；status 对新版实例查询真实连接，旧 M0 退回只读快照和 pending。
 
+只读 doctor 已检查配置、实际 daemon、机器人与 tenant 授权；启动后用 `--require-running` 核验原实例，不额外监听消息。version 内嵌权限能力清单，授权满足与实际行为分开，见[诊断与权限清单](docs/research/m3-doctor-and-permissions-2026-10-12.md)。
+
 - [开发手册](docs/codex-feishu/README.md)
 - [Agent 配置指南](docs/codex-feishu/AGENT-SETUP.md)
 - [实施与验收](docs/codex-feishu/11-integration-and-acceptance.md)

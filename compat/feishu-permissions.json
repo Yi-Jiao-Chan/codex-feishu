@@ -1,0 +1,335 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-10-10",
+  "source_research": "docs/research/feishu-m0-permissions-2026-10-10.md",
+  "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+  "sdk_version": "v3.12.0",
+  "recommended_tenant_scopes": [
+    "im:message.p2p_msg:readonly",
+    "im:message.group_at_msg:readonly",
+    "im:chat:create",
+    "im:chat:read",
+    "im:chat.members:read",
+    "im:message:send_as_bot",
+    "im:message.reactions:write_only"
+  ],
+  "capabilities": [
+    {
+      "id": "bot_identity",
+      "required": true,
+      "api": [
+        "GET /open-apis/bot/v3/info"
+      ],
+      "any_of_permissions": [],
+      "source": [
+        "https://open.feishu.cn/document/client-docs/bot-v3/obtain-bot-info"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "bot_enabled_and_published",
+        "valid_tenant_access_token",
+        "api_reachable"
+      ],
+      "verification_method": "Read a nonempty root bot.open_id using the tenant token."
+    },
+    {
+      "id": "receive_p2p_user",
+      "required": true,
+      "api": [
+        "im.message.receive_v1"
+      ],
+      "any_of_permissions": [
+        "im:message.p2p_msg:readonly",
+        "im:message.p2p_msg"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/events/receive"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "bot_enabled_and_published",
+        "event_subscribed",
+        "application_availability"
+      ],
+      "verification_method": "Receive an actual human private-chat message event."
+    },
+    {
+      "id": "receive_group_user_at",
+      "required": true,
+      "api": [
+        "im.message.receive_v1"
+      ],
+      "any_of_permissions": [
+        "im:message.group_at_msg:readonly",
+        "im:message.group_at_msg"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/events/receive"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "bot_enabled_and_published",
+        "event_subscribed",
+        "application_availability",
+        "sender_filter"
+      ],
+      "verification_method": "Receive an actual human group @ message; ignore ordinary non-@ group messages."
+    },
+    {
+      "id": "create_chat_with_initial_owner_members",
+      "required": true,
+      "api": [
+        "POST /open-apis/im/v1/chats"
+      ],
+      "any_of_permissions": [
+        "im:chat:create",
+        "im:chat"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/chat/create"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "valid_open_ids",
+        "same_tenant"
+      ],
+      "verification_method": "Create a test group with the operator as owner/member, then verify returned chat and membership."
+    },
+    {
+      "id": "get_chat",
+      "required": true,
+      "api": [
+        "GET /open-apis/im/v1/chats/:chat_id"
+      ],
+      "any_of_permissions": [
+        "im:chat:read",
+        "im:chat:readonly",
+        "im:chat"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/chat/get"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "same_tenant",
+        "group_access"
+      ],
+      "verification_method": "Read the created group and verify its identity and owner."
+    },
+    {
+      "id": "get_chat_human_members",
+      "required": true,
+      "api": [
+        "GET /open-apis/im/v1/chats/:chat_id/members"
+      ],
+      "any_of_permissions": [
+        "im:chat.members:read",
+        "im:chat:readonly",
+        "im:chat",
+        "im:chat.group_info:readonly"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/chat-members/get"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "operator_in_chat",
+        "pagination_complete",
+        "security_configuration_allows_read"
+      ],
+      "verification_method": "Read all member pages and confirm the operator; the API filters robots."
+    },
+    {
+      "id": "bot_is_in_chat",
+      "required": true,
+      "api": [
+        "GET /open-apis/im/v1/chats/:chat_id/members/is_in_chat"
+      ],
+      "any_of_permissions": [
+        "im:chat.members:read",
+        "im:chat:readonly",
+        "im:chat",
+        "im:chat.group_info:readonly"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/chat-members/is_in_chat"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "tenant_token_identity"
+      ],
+      "verification_method": "Verify true for a joined test group and false for an unjoined test group."
+    },
+    {
+      "id": "send_message",
+      "required": true,
+      "api": [
+        "POST /open-apis/im/v1/messages"
+      ],
+      "any_of_permissions": [
+        "im:message:send_as_bot",
+        "im:message",
+        "im:message:send"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/create"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "bot_in_chat",
+        "bot_can_speak",
+        "application_availability"
+      ],
+      "verification_method": "Send an interactive card and verify it appears in the intended chat."
+    },
+    {
+      "id": "reply_message",
+      "required": true,
+      "api": [
+        "POST /open-apis/im/v1/messages/:message_id/reply"
+      ],
+      "any_of_permissions": [
+        "im:message:send_as_bot",
+        "im:message",
+        "im:message:send"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/reply"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "known_message_id",
+        "bot_in_chat",
+        "bot_can_speak"
+      ],
+      "verification_method": "Reply to a known message and verify its parent_id and intended chat/thread."
+    },
+    {
+      "id": "patch_shared_card",
+      "required": true,
+      "api": [
+        "PATCH /open-apis/im/v1/messages/:message_id"
+      ],
+      "any_of_permissions": [
+        "im:message:send_as_bot",
+        "im:message:update",
+        "im:message"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/patch"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "same_sending_identity",
+        "update_multi_enabled",
+        "message_not_recalled",
+        "message_within_14_days"
+      ],
+      "verification_method": "Update the same visible shared card with config.update_multi=true."
+    },
+    {
+      "id": "get_own_p2p_message",
+      "required": false,
+      "api": [
+        "GET /open-apis/im/v1/messages/:message_id"
+      ],
+      "any_of_permissions": [
+        "im:message:readonly",
+        "im:message"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/get"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "known_own_message_id"
+      ],
+      "verification_method": "Read back a message sent by this bot in private chat."
+    },
+    {
+      "id": "get_own_group_message",
+      "required": false,
+      "api": [
+        "GET /open-apis/im/v1/messages/:message_id"
+      ],
+      "any_of_permissions": [],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/get"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documentation_gap",
+      "non_scope_conditions": [
+        "known_own_message_id",
+        "documentation_gap"
+      ],
+      "verification_method": "Independently observe own-group message readback under the deployed scopes; do not infer general group history access."
+    },
+    {
+      "id": "create_delete_own_reaction",
+      "required": true,
+      "api": [
+        "POST /open-apis/im/v1/messages/:message_id/reactions",
+        "DELETE /open-apis/im/v1/messages/:message_id/reactions/:reaction_id"
+      ],
+      "any_of_permissions": [
+        "im:message.reactions:write_only",
+        "im:message"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message-reaction/create",
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message-reaction/delete"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "known_message_id",
+        "own_existing_reaction"
+      ],
+      "verification_method": "Add a reaction to a test message, preserve its reaction_id, and delete only that bot-owned reaction."
+    },
+    {
+      "id": "card_callback",
+      "required": true,
+      "api": [
+        "card.action.trigger"
+      ],
+      "any_of_permissions": [],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/card-callback-communication"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "callback_subscribed",
+        "sdk_handler_registered",
+        "interactive_card_component"
+      ],
+      "verification_method": "Click an actual card action and observe its callback and response within three seconds."
+    }
+  ]
+}

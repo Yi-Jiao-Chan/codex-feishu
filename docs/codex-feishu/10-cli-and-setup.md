@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、M0 verify / m0-listen、serve、setup plan / apply、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对、完整 doctor / verify、已有通知规则的向导更新、迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)及[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、M0 verify / m0-listen、serve、setup plan / apply、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对、完整 verify、已有通知规则的向导更新、迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)及[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
 
 ## 命令表
 
@@ -10,6 +10,7 @@
 | --- | --- |
 | version --json | 版本、构建 commit、支持的命令、配置 schema、兼容清单摘要 |
 | doctor --config PATH --json | 检查环境/配置/连接；只读，不创建群或输入 |
+| doctor --config PATH --require-running --json | 启动后必需的连接、绑定恢复及发现基线检查；复用现有管理通道 |
 | setup --input PATH --plan --json | 检查部分输入、生成配置差异和稳定 plan_id；不写正式配置、不启动服务 |
 | setup --input PATH --apply --plan-id ID --json | 应用已知计划；备份旧配置、原子写入，不自行启动 |
 | setup pair --input PATH --timeout 300 --json | 限时私聊配对获取 owner open_id；只监听配对，不启用同步 |
@@ -39,6 +40,10 @@ verify 另接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thre
 | 7 | 内部错误；输出脱敏诊断位置 |
 
 服务运行与完整验收分开：status 显示 running 不等于 verify pass。verify 必需项 pending 时不返回“配置完成”。示例输出见 [doctor 示例](examples/doctor-output.example.json)，它是格式样例，不是实际健康报告。
+
+安装前 doctor 默认允许桥尚未运行：仅在配置、私有密钥、实际共享 server 版本、tenant 机器人身份及必需权限全部确认后返回 `prerequisites-ready-bridge-not-observed`，未观察到的实例仍以非必需 pending 列出。启动后必须加 `--require-running`；连接、绑定恢复、初次历史基线或远端操作待核验时退出 5。若已存在运行实例，即使没有该标志，其未恢复状态也不能忽略。配置摘要或 socket 身份冲突退出 6。已有数据库不可读、版本不支持或部署身份不符退出 3；从未初始化的数据库只作安装前说明，不创建或迁移。
+
+配置 doctor 只查询既有管理端点、daemon version、机器人身份与权限 GET，不新建原生客户端或飞书长连接。独立的 `doctor --codex-only` 才执行短暂只读 handshake / thread list。权限按 API 文档认可的 OR 替代关系检查，只计算 `grant_status=1` 且 `scope_type=tenant`；缺字段、未知状态或授权响应不明确保留 pending。scope 满足不证明消息订阅、卡片回调、建群、更新、reaction 或 App UI 已验收：每项能力的 `runtime_observed` 仍为 unknown，实际 verify 单独提供证据。
 
 ## 配置与输入文件
 

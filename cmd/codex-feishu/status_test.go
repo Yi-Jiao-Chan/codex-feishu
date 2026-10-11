@@ -79,3 +79,18 @@ func TestLiveStatusRequiresEveryJournalAndRecoveredRequestToBeKnown(t *testing.T
 		t.Fatal("known queued work blocked healthy status", o, code)
 	}
 }
+
+func TestLiveStatusRequiresBaselineOnlyWhenAutomaticDiscoveryEnabled(t *testing.T) {
+	s := control.Snapshot{Running: true, NativeConnected: true, FeishuConnected: true, DiscoveryEnabled: true}
+	if o, code := liveStatus(s); code != 5 || o.OK {
+		t.Fatal("empty bindings and connected sockets concealed incomplete discovery", o, code)
+	}
+	s.Persistent.BaselineComplete = true
+	if o, code := liveStatus(s); code != 0 || !o.OK {
+		t.Fatal("completed initial baseline not recognized", o, code)
+	}
+	s.DiscoveryEnabled, s.Persistent.BaselineComplete = false, false
+	if o, code := liveStatus(s); code != 0 || !o.OK {
+		t.Fatal("disabled automatic discovery required its baseline", o, code)
+	}
+}

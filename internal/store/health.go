@@ -10,6 +10,7 @@ type PersistentHealth struct {
 	Schema           int              `json:"schema"`
 	LegacyM0         bool             `json:"legacy_m0"`
 	Bindings         int64            `json:"bindings"`
+	BaselineComplete bool             `json:"baseline_complete"`
 	Inputs           map[string]int64 `json:"inputs"`
 	Outbound         map[string]int64 `json:"outbound"`
 	OutboundAttempts map[string]int64 `json:"outbound_attempts"`
@@ -40,13 +41,15 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 		h.Bindings, err = count(`SELECT COUNT(*) FROM m0_bindings`)
 	} else {
 		var actual string
-		err = s.DB.QueryRowContext(ctx, `SELECT app_id FROM deployment WHERE host_id=?`, host).Scan(&actual)
+		var completed int64
+		err = s.DB.QueryRowContext(ctx, `SELECT app_id,baseline_completed_at FROM deployment WHERE host_id=?`, host).Scan(&actual, &completed)
 		if errors.Is(err, sql.ErrNoRows) {
 			return h, nil
 		}
 		if err != nil || actual != app {
 			return h, errors.New("database deployment differs from configuration")
 		}
+		h.BaselineComplete = completed > 0
 		h.Bindings, err = count(`SELECT COUNT(*) FROM bindings WHERE host_id=?`, host)
 	}
 	if err != nil {

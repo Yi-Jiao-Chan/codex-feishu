@@ -3,9 +3,12 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"codex-feishu/internal/store"
 )
 
 type healthNative struct {
@@ -61,5 +64,31 @@ func TestHealthAndButtonsFailClosedBeforeDisconnectedActorsJoin(t *testing.T) {
 	live, err := s.Health(context.Background())
 	if err != nil || live.NativeConnected || live.HydratedBindings != 0 {
 		t.Fatal("closed native reader reported healthy", live, err)
+	}
+}
+
+func TestHealthPublishesActualInitialDiscoveryBaseline(t *testing.T) {
+	_, cfg, _ := serviceFixture(t)
+	cfg.Storage.DatabaseFile = filepath.Join(t.TempDir(), "fresh.db")
+	db, err := store.Open(cfg.Storage.DatabaseFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.BeginBaseline(context.Background(), cfg.Host.ID, cfg.Feishu.AppID, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Discovery.Enabled = true
+	s := &Service{Store: db, Config: cfg}
+	live, err := s.Health(context.Background())
+	if err != nil || !live.DiscoveryEnabled || live.Persistent.BaselineComplete {
+		t.Fatal("initial baseline invented from a live configuration", live, err)
+	}
+	if err := db.CompleteBaseline(context.Background(), cfg.Host.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	live, err = s.Health(context.Background())
+	if err != nil || !live.Persistent.BaselineComplete {
+		t.Fatal("actual initial history snapshot not reflected", live, err)
 	}
 }

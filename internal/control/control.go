@@ -38,6 +38,7 @@ type Snapshot struct {
 	NativeConnected  bool                   `json:"native_connected"`
 	FeishuConnected  bool                   `json:"feishu_connected"`
 	HydratedBindings int                    `json:"hydrated_bindings"`
+	DiscoveryEnabled bool                   `json:"discovery_enabled"`
 	StartedAtMS      int64                  `json:"started_at_ms"`
 	ObservedAtMS     int64                  `json:"observed_at_ms"`
 	Persistent       store.PersistentHealth `json:"durable"`

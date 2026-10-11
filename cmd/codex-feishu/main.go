@@ -1,6 +1,7 @@
 package main
 
 import (
+	"codex-feishu/compat"
 	"codex-feishu/internal/app"
 	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
@@ -72,11 +73,12 @@ func run(ctx context.Context, args []string) int {
 		return runService(ctx, args[1:])
 	case "status":
 		return runStatus(ctx, args[1:])
+	case "doctor":
+		return runDoctor(ctx, args[1:])
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "absolute TOML config path")
 	_ = flags.Bool("json", false, "JSON output (default)")
-	codexOnly := flags.Bool("codex-only", false, "doctor: check shared daemon without Feishu config")
 	allowCard := flags.Bool("allow-test-card", false, "verify: send one card to configured owner")
 	allowGroup := flags.Bool("allow-test-group", false, "verify: create one private owner+bot test group")
 	target := flags.String("target", "self", "verify supports only self")
@@ -86,10 +88,10 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	if command == "version" {
-		emit(output{Command: command, OK: true, State: "phase1-development", Data: map[string]any{"version": "0.0.1-dev", "commit": commit, "config_schema": 1, "commands": []string{"version", "doctor", "verify", "m0-listen", "serve", "setup", "service", "status"}, "phase1_released": phase1Released, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "m0_app_ui_verified": true, "m0_feishu_verified": true, "phase1_service_ui_verified": false, "capabilities": map[string]any{"setup_plan": true, "setup_apply": true, "setup_pair": false, "status_live_instance": true, "status_readonly_snapshot": true}}})
+		emit(output{Command: command, OK: true, State: "phase1-development", Data: map[string]any{"version": "0.0.1-dev", "commit": commit, "config_schema": 1, "commands": []string{"version", "doctor", "verify", "m0-listen", "serve", "setup", "service", "status"}, "phase1_released": phase1Released, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "feishu_permissions_manifest": compat.FeishuManifest(), "m0_app_ui_verified": true, "m0_feishu_verified": true, "phase1_service_ui_verified": false, "capabilities": map[string]any{"setup_plan": true, "setup_apply": true, "setup_pair": false, "status_live_instance": true, "status_readonly_snapshot": true, "doctor_managed_instance": true, "doctor_permission_metadata": true}}})
 		return 0
 	}
-	if command != "doctor" && command != "verify" && command != "m0-listen" {
+	if command != "verify" && command != "m0-listen" {
 		emit(output{Command: command, State: "unsupported-command"})
 		return 2
 	}
@@ -123,12 +125,6 @@ func run(ctx context.Context, args []string) int {
 		return 3
 	}
 	o.Checks = append(o.Checks, check{"codex.thread_list", "pass", true, map[string]any{"count": len(threads), "full_pagination": true}})
-	if *codexOnly && command == "doctor" {
-		o.OK = true
-		o.State = "codex-readonly-ready"
-		emit(o)
-		return 0
-	}
 	if *cfgPath == "" {
 		emit(output{Command: command, State: "config-required"})
 		return 2
@@ -171,13 +167,6 @@ func run(ctx context.Context, args []string) int {
 		return 4
 	}
 	o.Checks = append(o.Checks, check{"feishu.bot", "pass", true, map[string]string{"bot_open_id": bot}})
-	if command == "doctor" {
-		o.OK = true
-		o.State = "readonly-ready-ui-unverified"
-		o.NextSteps = []string{"verify live Feishu long connection, private group, card callback and App UI"}
-		emit(o)
-		return 0
-	}
 	db, err := store.Open(cfg.Storage.DatabaseFile)
 	if err != nil {
 		o.State = "storage-failed"

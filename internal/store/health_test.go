@@ -55,6 +55,23 @@ func TestHealthContainsOnlyScopedAggregateFacts(t *testing.T) {
 	if _, err := s.Health(ctx, SchemaVersion, "host-one", "other-app"); err == nil {
 		t.Fatal("wrong application used database health")
 	}
+	if h.BaselineComplete {
+		t.Fatal("baseline completion inferred from binding counts")
+	}
+	if err := s.CompleteBaseline(ctx, "host-two", nil); err != nil {
+		t.Fatal(err)
+	}
+	h, err = s.Health(ctx, SchemaVersion, "host-one", "app")
+	if err != nil || h.BaselineComplete {
+		t.Fatal("foreign host baseline used for readiness", h, err)
+	}
+	if err := s.CompleteBaseline(ctx, "host-one", nil); err != nil {
+		t.Fatal(err)
+	}
+	h, err = s.Health(ctx, SchemaVersion, "host-one", "app")
+	if err != nil || !h.BaselineComplete {
+		t.Fatal("completed baseline not reported", h, err)
+	}
 }
 
 func healthJournals(h PersistentHealth) map[string]map[string]int64 {

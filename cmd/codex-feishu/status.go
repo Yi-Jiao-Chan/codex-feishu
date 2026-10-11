@@ -39,6 +39,7 @@ func runStatus(ctx context.Context, args []string) int {
 	}
 	code := 5
 	if liveErr == nil {
+		live.DiscoveryEnabled = cfg.Discovery.Enabled
 		o, code = liveStatus(live)
 		data["bridge_connections"], data["instance"], data["durable"] = "observed", live, live.Persistent
 	} else {
@@ -102,6 +103,9 @@ func liveStatus(s control.Snapshot) (output, int) {
 	observe("instance.codex_connection", s.NativeConnected, "existing native generation attachment")
 	observe("instance.feishu_connection", s.FeishuConnected, "existing Feishu receiver ready state")
 	observe("instance.bindings_reconciled", int64(s.HydratedBindings) == s.Persistent.Bindings, "bound threads hydrated in this native generation")
+	if s.DiscoveryEnabled {
+		observe("instance.discovery_baseline", s.Persistent.BaselineComplete, "initial history baseline must complete before automatic group discovery is ready")
+	}
 	// Journals can describe the same operation at several layers. Check whether
 	// any result needs confirmation; adding their counts would double-count it.
 	known := true
