@@ -315,7 +315,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	defer timer.Stop()
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID}
 	engine.ProgressRender = r.RenderProgress
-	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership, MinProgressIntervalMS: r.MinProgressIntervalMS}
+	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership, MinProgressIntervalMS: r.MinProgressIntervalMS, Now: r.now}
 	members := []string{r.OwnerID}
 	seenMembers := map[string]bool{r.OwnerID: true}
 	for _, id := range r.Members {
@@ -438,6 +438,10 @@ actorLoop:
 							}
 							if result.AttemptID == "" {
 								break
+							}
+							if result.State == "deferred" {
+								r.notice("delivery.rate_limited")
+								continue // Independent final or queue cards may still deliver.
 							}
 							if result.State != "confirmed" {
 								r.notice("delivery.verification_required")

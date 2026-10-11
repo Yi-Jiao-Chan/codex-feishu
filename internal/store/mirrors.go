@@ -146,11 +146,7 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			return err
 		}
 		if m.Retired {
-			// An unattempted obsolete segment needs no new remote card.
-			// Accepted or ambiguous old segments must retain their journal;
-			// known remote cards are updated with the replacement notice.
-			_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='confirmed' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='ready' AND NOT EXISTS(SELECT 1 FROM outbound_attempts a WHERE a.host_id=? AND a.thread_id=? AND a.mirror_key=?)`, host, thread, m.Key, host, thread, m.Key)
-			if err != nil {
+			if err = retireUnacceptedMirror(ctx, tx, host, thread, m.Key); err != nil {
 				return err
 			}
 		}
@@ -176,7 +172,26 @@ func (s *Store) Watermark(ctx context.Context, host, thread string) (m Watermark
 // a transaction. Ordering is deterministic, and unresolved optional progress
 // does not prevent an independent final reply from being selected.
 func (s *Store) ReadyMirrors(ctx context.Context, host, thread string) ([]Mirror, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+mirrorColumns+` FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? AND o.state='ready' ORDER BY o.rowid`, host, thread)
+	return s.readyMirrors(ctx, host, thread, 0)
+}
+
+// ReadyMirrorsAt excludes future deferrals before any dispatch-time remote
+// lookups. ClaimMirror still rechecks the deadline transactionally.
+func (s *Store) ReadyMirrorsAt(ctx context.Context, host, thread string, nowMS int64) ([]Mirror, error) {
+	if nowMS <= 0 {
+		return nil, errors.New("invalid mirror selection time")
+	}
+	return s.readyMirrors(ctx, host, thread, nowMS)
+}
+
+func (s *Store) readyMirrors(ctx context.Context, host, thread string, nowMS int64) ([]Mirror, error) {
+	query := `SELECT ` + mirrorColumns + ` FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? AND o.state='ready'`
+	args := []any{host, thread}
+	if nowMS > 0 {
+		query += ` AND NOT EXISTS(SELECT 1 FROM outbound_throttles t WHERE t.host_id=m.host_id AND t.thread_id=m.thread_id AND t.mirror_key=m.mirror_key AND t.next_retry_at_ms>?)`
+		args = append(args, nowMS)
+	}
+	rows, err := s.DB.QueryContext(ctx, query+` ORDER BY o.rowid`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +209,8 @@ func (s *Store) ReadyMirrors(ctx context.Context, host, thread string) ([]Mirror
 
 // ClaimMirror freezes target, parent, payload and UUID before a remote write.
 // A false claim means not ready, stale revision, no binding/parent yet, or the
-// per-thread writer/progress interval is busy. Unknown work is never claimed.
+// per-thread writer/progress interval is busy, or a definite rate rejection is
+// still deferred. Unknown work is never claimed.
 func (s *Store) ClaimMirror(ctx context.Context, host, thread, key string, revision, nowMS int64) (a MirrorAttempt, claimed bool, err error) {
 	return s.ClaimMirrorWithMentions(ctx, host, thread, key, revision, nowMS, MentionOptions{})
 }
@@ -226,6 +242,10 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	}
 	if m.State != "ready" || m.Revision != revision {
 		return a, false, nil
+	}
+	var deferred int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbound_throttles WHERE host_id=? AND thread_id=? AND mirror_key=? AND next_retry_at_ms>?`, host, thread, key, nowMS).Scan(&deferred); err != nil || deferred != 0 {
+		return a, false, err
 	}
 	var busy int
 	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbound WHERE host_id=? AND thread_id=? AND state='dispatching'`, host, thread).Scan(&busy); err != nil || busy != 0 {
@@ -352,6 +372,9 @@ func (s *Store) FinishMirrorAttempt(ctx context.Context, id, outcome, remoteID s
 	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `UPDATE mentions SET state=? WHERE attempt_id=? AND state IN ('dispatching','unknown')`, outcome, id)
+	}
+	if err == nil {
+		_, err = tx.ExecContext(ctx, `DELETE FROM outbound_throttles WHERE host_id=? AND thread_id=? AND mirror_key=?`, a.HostID, a.ThreadID, a.Key)
 	}
 	if err != nil {
 		return err

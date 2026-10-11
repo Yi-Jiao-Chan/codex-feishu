@@ -39,6 +39,8 @@
 
 Card JSON 2.0 用原生 API 发送与更新，保留 message/card ID。每 turn 一张过程卡，同一卡最短 2 秒 PATCH；最终结果独立发送。不要每个 agentMessage 或增量发一条新消息。reaction 是辅助反馈，其失败不能阻断主链路或触发输入重试。发送和更新限流各自按平台错误与 x-ogw-ratelimit-reset 等实际信号调节。原消息引用使用 POST /im/v1/messages/:message_id/reply，持久父消息 ID 与回复 ID；普通群 reply_in_thread=false，不把 reply 失败降级成普通 send。
 
+当前开发版对正式镜像 outbox 的 send/reply/PATCH 实现持久限流恢复：完整错误 JSON 的通用 `99991400`（HTTP 400/429），或这三个消息接口的 `230020`（HTTP 400）才进入延后路径。等待 `x-ogw-ratelimit-reset` 指定的响应接收后秒数，缺失/非法时采用持久指数退避（1 秒起、最高 60 秒；合法平台等待下限可以更长）。每次拒绝保存原 attempt，下一次重新冻结最新正文与 UUID，并重新检查 @ 规则与群成员；没有接受过的旧正文不会强行补发。暂停期间不反复读取成员。超时、5xx、不完整错误、无法解释的 429、`230049` 消息发送中均保持 unknown，不能靠 UUID 去重窗口盲重试；额度耗尽 `99991403` 保留明确拒绝，需管理员处理。建群、reaction、命令回复及 App 待处理提醒的限流恢复仍需独立接入，不能认为该切片已覆盖所有网关动作。[频控策略](https://open.feishu.cn/document/server-docs/api-call-guide/frequency-control.md)、[发送错误码](https://open.feishu.cn/document/server-docs/im-v1/message/create.md)、[回复错误码](https://open.feishu.cn/document/server-docs/im-v1/message/reply.md)、[卡片更新](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/patch.md)
+
 @ 必须由桥根据 07 的策略生成结构化 mention；用户/AI 正文中的类似 mention 标签作为普通内容显示，不能绕过免打扰。目标须已在群内；不可达成员在状态中明确标注，不退回 @所有人。
 
 **提醒能否由更新卡片触发须实测。** 首版可靠默认：流式卡片不 @；最终事件需要提醒时，发送一条包含 @ 和原回复定位的简短结果通知，和正文卡分开。若最终正文第一次发出时已完成，可在该发送中提醒，无需额外通知。持久 delivery key 保证同一最终事件最多安排一次提醒，补齐旧历史不补 @。

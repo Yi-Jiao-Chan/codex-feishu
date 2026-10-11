@@ -63,8 +63,11 @@ func (g *Gateway) request(ctx context.Context, method, path string, q core.Query
 	if err != nil {
 		return &Unknown{method + " " + path}
 	}
+	if r.StatusCode >= 500 {
+		return &Unknown{method + " " + path}
+	}
 	var status struct {
-		Code    int    `json:"code"`
+		Code    *int   `json:"code"`
 		Message string `json:"msg"`
 		Error   struct {
 			PermissionViolations []struct {
@@ -72,16 +75,24 @@ func (g *Gateway) request(ctx context.Context, method, path string, q core.Query
 			} `json:"permission_violations"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(r.RawBody, &status) != nil {
+	if json.Unmarshal(r.RawBody, &status) != nil || status.Code == nil {
 		return &Unknown{method + " " + path}
 	}
-	if status.Code != 0 || r.StatusCode < 200 || r.StatusCode >= 300 {
-		e := &Rejected{Code: status.Code, HTTPStatus: r.StatusCode, RequestID: r.RequestId()}
-		if status.Code == 230099 {
+	// An unexplained 429 is not evidence for a safe mutation retry. The
+	// documented monthly quota exhaustion is an explicit permanent rejection.
+	if r.StatusCode == 429 && *status.Code != 99991400 && *status.Code != 99991403 || *status.Code == 230049 {
+		return &Unknown{method + " " + path}
+	}
+	if *status.Code != 0 || r.StatusCode < 200 || r.StatusCode >= 300 {
+		e := &Rejected{Code: *status.Code, HTTPStatus: r.StatusCode, RequestID: r.RequestId()}
+		if *status.Code == 230099 {
 			e.CardValidationDetail = strings.ReplaceAll(status.Message, g.secret, "[redacted]")
 		}
 		for _, p := range status.Error.PermissionViolations {
 			e.RequiredPermissions = append(e.RequiredPermissions, p.Subject)
+		}
+		if definiteRateLimit(method, path, e.Code, e.HTTPStatus) {
+			return &RateLimited{Rejection: e, RetryAfter: rateLimitDelay(r.Header.Get("x-ogw-ratelimit-reset"))}
 		}
 		return e
 	}

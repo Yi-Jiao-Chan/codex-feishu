@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -145,7 +146,7 @@ func TestApplyNotificationPoliciesRejectsDeploymentAndSchema(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "future-schema":
-				if _, err := s.DB.Exec(`PRAGMA user_version=10`); err != nil {
+				if _, err := s.DB.Exec(fmt.Sprintf("PRAGMA user_version=%d", SchemaVersion+1)); err != nil {
 					t.Fatal(err)
 				}
 			}

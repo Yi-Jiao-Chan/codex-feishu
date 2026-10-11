@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/store"
@@ -29,6 +30,7 @@ type Outbound struct {
 	Mentions              *store.MentionOptions
 	Membership            MembershipGateway
 	MinProgressIntervalMS int64
+	Now                   func() time.Time // Clock at response receipt, not request start.
 }
 
 type DeliveryResult struct {
@@ -42,7 +44,7 @@ func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS in
 	if o.Store == nil || o.Gateway == nil {
 		return DeliveryResult{}, errors.New("outbound requires store and gateway")
 	}
-	ready, err := o.Store.ReadyMirrors(ctx, host, thread)
+	ready, err := o.Store.ReadyMirrorsAt(ctx, host, thread, nowMS)
 	if err != nil {
 		return DeliveryResult{}, err
 	}
@@ -64,7 +66,15 @@ func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS in
 				}
 			}
 		}
-		a, claimed, err := o.Store.ClaimMirrorWithMentions(ctx, host, thread, m.Key, m.Revision, nowMS, options, o.MinProgressIntervalMS)
+		claimAt := nowMS
+		// Membership may paginate or wait on the network across a quiet-hours
+		// boundary. Formal runtime supplies its clock; recheck at claim time.
+		if o.Now != nil {
+			if current := o.Now().UnixMilli(); current > claimAt {
+				claimAt = current
+			}
+		}
+		a, claimed, err := o.Store.ClaimMirrorWithMentions(ctx, host, thread, m.Key, m.Revision, claimAt, options, o.MinProgressIntervalMS)
 		if err != nil {
 			return DeliveryResult{}, err
 		}
@@ -85,6 +95,27 @@ func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS in
 		default:
 			// Schema constraints and ClaimMirror make this unreachable.
 			sendErr = errors.New("unsupported persisted outbound operation")
+		}
+		var limited *feishu.RateLimited
+		if errors.As(sendErr, &limited) {
+			clock := o.Now
+			if clock == nil {
+				clock = time.Now
+			}
+			receivedAt := clock().UnixMilli()
+			if receivedAt < claimAt {
+				receivedAt = claimAt
+			}
+			delay := limited.RetryAfter.Milliseconds()
+			if delay < 1000 {
+				delay = 1000
+			}
+			if err := o.Store.DeferMirrorAttempt(ctx, a.ID, receivedAt, delay); err != nil {
+				result.State = "unknown"
+				return result, err
+			}
+			result.State = "deferred"
+			return result, nil
 		}
 		result.State = "confirmed"
 		if sendErr != nil || remoteID == "" {
