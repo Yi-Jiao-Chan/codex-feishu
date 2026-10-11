@@ -1,6 +1,6 @@
 # M0 真实联调进展
 
-日期：2026-10-10。状态：**开发验证，完整 M0 与一期发布尚未通过**。复用当前系统用户的既有 Codex daemon，所有外部测试限定本人测试应用 / 测试群与独立测试会话；未改变全局 Codex 配置或原线程权限。
+日期：2026-10-10，2026-10-12 补齐 App 分类。状态：**M0 可行性联调通过，一期发布尚未通过**。复用当前系统用户的既有 Codex daemon，所有外部测试限定本人测试应用 / 测试群与独立测试会话；未改变全局 Codex 配置或原线程权限。
 
 ## 已验证
 
@@ -22,6 +22,7 @@
 | 实际 @ 与手机长代码 | 引用原用户消息发送含本人显式 @ 的 24 行长代码卡；用户对实际提醒、手机完整查看及底部引用区答复“没问题” | pass（本次 fixture） |
 | UUID 实际去重 | 同一进程内，建群 query.uuid、发送 body.uuid、引用回复 body.uuid 各立即重复一次，返回 ID 均与第一次相同；每次请求独立 journal，未知不重试 | pass（即时重复，不证明过期后行为） |
 | fork / worktree 协议 | 既有 daemon + 独立本地模型 / 临时 Git 仓库：fork 新 ID、forkedFromId、parent 空、实际 cwd、注册 worktree/common-dir、继承 turn ID 均正确；两条 fixture 线程归档清理 | pass（协议，真实 App 分类仍待确认） |
+| 真实 App fork / worktree / 子代理分类 | 2026-10-12 用户提供工作树目录；App 工具读取实际新增测试输入、父子最终标记；原生详情确认 forkedFromId 指向原 M0、主线程 parent 空、子代理 source/parent 明确；Git 确认注册工作树和相同 common-dir | pass（真实 App 与元数据交叉核验） |
 | Go 原生双客户端协议 | opt-in 集成测试使用已有 daemon + 本地模型 fixture，证明 queue/add、exact delete、expectedTurnId steer、原生消费各一次；独立线程清理 | pass（协议，不能代替 App UI） |
 | 原生问答与桥断开 | 同 daemon 独立模型 fixture；Default 问答专用 feature 仅在自有线程开启，两个连接收到同 ID，桥不答且断开，另一端回答后完成，收到对应 serverRequest/resolved；线程归档清理 | pass（协议，App 问答 UI pending） |
 | 首条输入 / 未加载历史 | M0 不再依赖 preview 的标记，必须首个真实 userMessage 带测试标记；summary/notLoaded 补齐 items 全部分页，拒绝跨 turn 内容；本地 race 测试通过 | pass（本地门槛与分页 fixture） |
@@ -76,14 +77,14 @@ bin/codex-feishu m0-listen --config /absolute/path/to/config.toml --thread APP_T
 
 ## 仍需完成的门槛
 
-1. 真实 App 分类：首条输入、App UI fork / worktree / 子代理元数据，已请求用户进行同一 M0 会话的独立 fork 测试；原生 fork 协议通过不能代替 UI 来源证明。App 与 CLI 均可能呈现 source=vscode、originator=codex-tui；不能据此分类。[准确版本分类研究](thread-classification-0.162.0.md)与源码核验已完成。
+1. 真实 App 分类已于 2026-10-12 补验通过，见[脱敏证据](m0-app-classification-2026-10-12.json)。实际 fork 为 `01a12bb4-59ae-7100-9db0-58b6dac81c66`，子代理为 `01a12bb4-de40-7772-b1ad-31d66991a503`。工作树不在原目录物理前缀内，但已注册且同仓库；M1 将按仓库身份及子目录范围落实 worktree 授权。App/CLI 仍不能仅凭 source 区分。
 
-   分类维护检查已补齐活跃及归档的人类 fork，再对每条测试谱系读取活跃及归档的 spawned descendants。只读 metadata/turns，不 resume 已归档线程，不输出标题或正文。分页覆盖空页后续 cursor，并拒绝重复 cursor。最新实际检查仍只有原 App 测试线程（7 个 userMessage），没有测试 fork 或子代理样本；因此真实 App 分类继续 pending，不能据此次只读结果宣布 M0 完成。
+   分类维护检查覆盖活跃及归档谱系，支持显式 App 样本 ID。实际 thread/list 的 fork 血缘为空，thread/read 才得到 forkedFromId；因此发现器必须按候选读详情，不能用列表字段代替分类。原会话 7 个用户项，新会话继承后新增测试输入共 8 项；父子标记均读回最终 agentMessage。只读验证不 resume 归档线程，不输出标题或正文。此前无样本的结果已由本次真实操作补齐。
 
    开发检查的参数为位置参数，不使用 `--config`：
 
    ```sh
-   go run ./cmd/m0-maintenance /absolute/path/to/m0.toml APP_TEST_THREAD_ID --classification-check
+   go run ./cmd/m0-maintenance /absolute/path/to/m0.toml APP_TEST_THREAD_ID --classification-check APP_SAMPLE_THREAD_ID
    ```
 2. M0 API：权限阻塞已解除；@、手机长代码、群成员、引用 parent_id、UUID 即时重复均已通过。去重期限采用官方建群同 owner 10 小时、消息/回复1小时契约；本次未等待期限到达或超期再请求，也不会用未知请求去验证是否产生重复。原先首个群的 UUID 放 body 不作为去重通过证据。仅测新发送含 @；PATCH 触发提醒行为仍未测，首版过程 PATCH 始终不含 @，最终新发送才含策略生成的 @。
 3. 一期权限拒绝 / 长内容分片 / 过期按钮等剩余矩阵继续保留 pending；手机 fixture 通过不泛化到所有内容。

@@ -2,7 +2,7 @@
 
 独立 Go CLI：连接 Codex App 的共享远程 App Server 与飞书自建机器人。
 
-当前为 M0 开发验证阶段，已通过真实 App 双向输入与原生排队，以及飞书过程卡 / 最终结果 / reaction 交互验证；完整 M0 与一期验收仍在进行，不是一期发布版。
+M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fork/worktree/子代理分类，以及飞书卡片、reaction、引用回复和 @ 验证。当前进入 M1 开发，尚未交付自动建群与完整一期，不是一期发布版。
 
 - [开发手册](docs/codex-feishu/README.md)
 - [Agent 配置指南](docs/codex-feishu/AGENT-SETUP.md)

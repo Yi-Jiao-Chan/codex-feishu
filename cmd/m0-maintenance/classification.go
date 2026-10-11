@@ -13,7 +13,7 @@ import (
 )
 
 // Read only the bound M0 lineage. Never print previews, names or item bodies.
-func checkClassification(ctx context.Context, c *codexclient.Client, cfg config.Config, root string) {
+func checkClassification(ctx context.Context, c *codexclient.Client, cfg config.Config, root string, appSamples ...string) {
 	fail := func(err error) { reportError(err); os.Exit(4) }
 	threads, err := c.List(ctx)
 	if err != nil {
@@ -29,6 +29,27 @@ func checkClassification(ctx context.Context, c *codexclient.Client, cfg config.
 	}
 	threads = append(threads, archivedThreads...)
 	selected := map[string]bool{root: true}
+	listLineageAbsent := map[string]bool{}
+	// An App-provided sample may fork a different test conversation. Resolve its
+	// actual lineage rather than assuming it belongs to the bound M0 thread.
+	for _, id := range appSamples {
+		metadata, e := c.Metadata(ctx, id)
+		if e != nil {
+			fail(e)
+		}
+		selected[id] = true
+		found := false
+		for i := range threads {
+			if threads[i].ID == id {
+				listLineageAbsent[id] = threads[i].ForkedFromID == nil && metadata.ForkedFromID != nil
+				threads[i], found = metadata, true
+				break
+			}
+		}
+		if !found {
+			threads = append(threads, metadata)
+		}
+	}
 	for changed := true; changed; {
 		changed = false
 		for _, thread := range threads {
@@ -56,6 +77,9 @@ func checkClassification(ctx context.Context, c *codexclient.Client, cfg config.
 		}
 		record := classificationRecord(cfg, thread)
 		record["archived"] = archivedIDs[thread.ID]
+		if absent, checked := listLineageAbsent[thread.ID]; checked {
+			record["list_lineage_absent_details_present"] = absent
+		}
 		record["user_item_count"] = userItems
 		record["git_common_dir"] = gitMetadata(ctx, thread.CWD, "rev-parse", "--path-format=absolute", "--git-common-dir")
 		if thread.ID != root {

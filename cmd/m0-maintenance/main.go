@@ -21,9 +21,9 @@ func main() {
 	checkOnly := len(os.Args) == 4 && os.Args[3] == "--check-only"
 	uuidProbe := len(os.Args) == 4 && os.Args[3] == "--uuid-probe"
 	scopeCheck := len(os.Args) == 4 && os.Args[3] == "--scope-check"
-	classificationCheck := len(os.Args) == 4 && os.Args[3] == "--classification-check"
+	classificationCheck := (len(os.Args) == 4 || len(os.Args) == 5) && os.Args[3] == "--classification-check"
 	if len(os.Args) != 3 && !checkOnly && !replyProbe && !uuidProbe && !scopeCheck && !classificationCheck {
-		fmt.Fprintln(os.Stderr, "usage: m0-maintenance CONFIG TEST_THREAD [--check-only|--reply-probe|--uuid-probe|--scope-check|--classification-check]")
+		fmt.Fprintln(os.Stderr, "usage: m0-maintenance CONFIG TEST_THREAD [--check-only|--reply-probe|--uuid-probe|--scope-check|--classification-check [APP_SAMPLE_THREAD]]")
 		os.Exit(2)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -69,7 +69,11 @@ func main() {
 	}
 	defer c.Close()
 	if classificationCheck {
-		checkClassification(ctx, c, cfg, thread)
+		var samples []string
+		if len(os.Args) == 5 {
+			samples = append(samples, os.Args[4])
+		}
+		checkClassification(ctx, c, cfg, thread, samples...)
 		return
 	}
 	turns, e := c.Turns(ctx, thread)
