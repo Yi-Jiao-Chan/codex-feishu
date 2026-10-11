@@ -76,16 +76,20 @@ func (s *Store) DeferMirrorAttempt(ctx context.Context, id string, nowMS, minimu
 	if delay > math.MaxInt64-nowMS {
 		return errors.New("mirror retry deadline overflow")
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO outbound_throttles(host_id,thread_id,mirror_key,last_attempt_id,next_retry_at_ms,rejection_count) VALUES(?,?,?,?,?,?) ON CONFLICT(host_id,thread_id,mirror_key) DO UPDATE SET last_attempt_id=excluded.last_attempt_id,next_retry_at_ms=excluded.next_retry_at_ms,rejection_count=excluded.rejection_count`, a.HostID, a.ThreadID, a.Key, id, nowMS+delay, count); err != nil {
+	if err = mirrorWriteOne(ctx, tx, `INSERT INTO outbound_throttles(host_id,thread_id,mirror_key,last_attempt_id,next_retry_at_ms,rejection_count) VALUES(?,?,?,?,?,?) ON CONFLICT(host_id,thread_id,mirror_key) DO UPDATE SET last_attempt_id=excluded.last_attempt_id,next_retry_at_ms=excluded.next_retry_at_ms,rejection_count=excluded.rejection_count`, a.HostID, a.ThreadID, a.Key, id, nowMS+delay, count); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE outbound_attempts SET state='rejected' WHERE attempt_id=?`, id); err != nil {
+	if err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET state='rejected' WHERE attempt_id=?`, id); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=?`, a.HostID, a.ThreadID, a.Key); err != nil {
+	if err = mirrorWriteOne(ctx, tx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=?`, a.HostID, a.ThreadID, a.Key); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE mentions SET state='eligible',reason='',attempt_id=NULL WHERE host_id=? AND thread_id=? AND mirror_key=? AND attempt_id=? AND state='dispatching'`, a.HostID, a.ThreadID, a.Key, id); err != nil {
+	var selected int64
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mentions WHERE host_id=? AND thread_id=? AND mirror_key=? AND attempt_id=? AND state='dispatching'`, a.HostID, a.ThreadID, a.Key, id).Scan(&selected); err != nil {
+		return err
+	}
+	if err = mirrorWriteCount(ctx, tx, selected, `UPDATE mentions SET state='eligible',reason='',attempt_id=NULL WHERE host_id=? AND thread_id=? AND mirror_key=? AND attempt_id=? AND state='dispatching'`, a.HostID, a.ThreadID, a.Key, id); err != nil {
 		return err
 	}
 	// Retirement may have arrived while this attempt was dispatching. Once its

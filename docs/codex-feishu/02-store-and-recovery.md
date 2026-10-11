@@ -22,6 +22,8 @@ schema 14 新增 `command_reply_attempts` 与 `command_reply_throttles`：确认
 
 schema 15 新增 `request_reminder_throttles`：App 待处理提醒的明确限流拒绝与等待记录原子保存。重试使用新 UUID、保留原引用，并重新核验请求仍 pending、当前连接已确认、群成员与通知策略。等待期间经过完整静默窗口或 off / snooze 后恢复允许，不复活旧提醒；unknown 不重发。status 提供 `requests.reminder_deferred`，已解决 / suppressed 不计入待重试。
 
+schema 16 新增 `outbound_request_markers`：新镜像 attempt 的隐藏 element_id、完整实际载荷、原 UUID、接收者和 outbox 领取在同一事务冻结。标记全局唯一且外键关联原 attempt；普通发送、引用回复、PATCH 使用新的标记，历史 attempt 不补标记。unknown 只通过 GET 核验，不重新发送；查不到 / 格式不同 / 分页截断不代表拒绝。核验间隔持久化为 30 秒，单次总预算 5 秒，失败不阻塞独立 ready 消息。确认与原 revision、消息 ID / 后续 PATCH 调度原子保存，status 提供 `outbound.readback_available`。原 schema 15 未决记录保持 unknown。真实飞书读回 / 显示仍待验收，见[接口与证明边界](../research/feishu-unknown-readback-2026-10-12.md)。
+
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 
 | 表 | 主键 / 唯一约束 | 主要字段 |

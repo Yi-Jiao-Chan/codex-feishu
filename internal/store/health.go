@@ -192,5 +192,11 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 			return h, errors.New("reminder retry health unavailable")
 		}
 	}
+	if schema >= 16 {
+		h.Outbound["readback_available"], err = count(`SELECT COUNT(*) FROM outbound_attempts a JOIN outbound_request_markers k USING(attempt_id) WHERE a.host_id=? AND a.state='unknown'`, host)
+		if err != nil {
+			return h, errors.New("message readback health unavailable")
+		}
+	}
 	return h, nil
 }

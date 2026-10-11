@@ -29,6 +29,7 @@ type Outbound struct {
 	Gateway               MessageGateway
 	Mentions              *store.MentionOptions
 	Membership            MembershipGateway
+	Readback              MessageReadbackGateway
 	MinProgressIntervalMS int64
 	Now                   func() time.Time // Clock at response receipt, not request start.
 }
@@ -43,6 +44,14 @@ type DeliveryResult struct {
 func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS int64) (DeliveryResult, error) {
 	if o.Store == nil || o.Gateway == nil {
 		return DeliveryResult{}, errors.New("outbound requires store and gateway")
+	}
+	var readbackErr error
+	if result, err := o.ReconcileOne(ctx, host, thread, nowMS); result.AttemptID != "" {
+		return result, err
+	} else {
+		// A failed GET has a persisted cooldown. It must not starve unrelated
+		// ready documents; the original unknown target stays unclaimable.
+		readbackErr = err
 	}
 	ready, err := o.Store.ReadyMirrorsAt(ctx, host, thread, nowMS)
 	if err != nil {
@@ -134,5 +143,5 @@ func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS in
 		result.MessageID = remoteID
 		return result, nil
 	}
-	return DeliveryResult{}, nil
+	return DeliveryResult{}, readbackErr
 }

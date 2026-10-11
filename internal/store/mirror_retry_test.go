@@ -442,7 +442,7 @@ func TestMirrorDeferralReevaluatesOnlyRejectedDispatchMentions(t *testing.T) {
 				options.MemberIDs = nil
 			}
 			second := mentionClaim(t, s, options, retryAt)
-			if second.ID == first.ID || hasMention(second.Card) || second.Card != m.Card {
+			if second.ID == first.ID || hasMention(second.Card) || second.Card != expectedMarkedCard(t, s, second.ID, m.Card) {
 				t.Fatalf("retry retained obsolete mention: %+v", second)
 			}
 			decisions, err = s.MentionDecisions(ctx, "host", "thread", "final")

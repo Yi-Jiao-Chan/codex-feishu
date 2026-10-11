@@ -59,7 +59,7 @@ func TestMentionsQuietEventNeverBecomesMorningBacklog(t *testing.T) {
 	}
 	bindMirrorThread(t, s)
 	a := mentionClaim(t, s, options, event.Add(9*time.Hour))
-	if hasMention(a.Card) || a.Card != m.Card {
+	if hasMention(a.Card) || a.Card != expectedMarkedCard(t, s, a.ID, m.Card) {
 		t.Fatal("quiet event became a morning mention")
 	}
 	if err := s.FinishMirrorAttempt(ctx, a.ID, "confirmed", "result-message"); err != nil {
@@ -90,7 +90,7 @@ func TestMentionsEligibleThenOffBeforeDispatch(t *testing.T) {
 	}
 	bindMirrorThread(t, s)
 	a := mentionClaim(t, s, options, event.Add(2*time.Minute))
-	if a.Card != m.Card || hasMention(a.Card) {
+	if a.Card != expectedMarkedCard(t, s, a.ID, m.Card) || hasMention(a.Card) {
 		t.Fatal("queued eligible event ignored later off")
 	}
 	if d := mentionDecision(t, s); d.State != "suppressed" || d.Reason != "off" {
@@ -167,7 +167,7 @@ func TestMentionsFailClosedForReplayUnknownTimeMissingHistoryAndMembers(t *testi
 			}
 			bindMirrorThread(t, s)
 			a := mentionClaim(t, s, options, event.Add(time.Minute))
-			if hasMention(a.Card) || a.Card != m.Card || mentionDecision(t, s).State != "suppressed" {
+			if hasMention(a.Card) || a.Card != expectedMarkedCard(t, s, a.ID, m.Card) || mentionDecision(t, s).State != "suppressed" {
 				t.Fatalf("unsafe mention or body lost: %+v %+v", a, mentionDecision(t, s))
 			}
 		})
@@ -186,7 +186,7 @@ func TestMentionsPersistFrozenAttemptAcrossReopenAndCorrection(t *testing.T) {
 			}
 			bindMirrorThread(t, s)
 			a := mentionClaim(t, s, options, event.Add(time.Minute))
-			if !hasMention(a.Card) || a.Card == m.Card || mentionDecision(t, s).AttemptID != a.ID {
+			if !hasMention(a.Card) || a.Card == expectedMarkedCard(t, s, a.ID, m.Card) || mentionDecision(t, s).AttemptID != a.ID {
 				t.Fatal("rendered mention not frozen with attempt")
 			}
 			base, err := s.Mirror(ctx, "host", "thread", m.Key)

@@ -297,12 +297,18 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	if err != nil {
 		return MirrorAttempt{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO outbound_attempts(attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching')`, a.ID, host, thread, key, a.Revision, a.Operation, a.ChatID, a.ParentMessageID, a.TargetMessageID, a.Card, nowMS)
+	err = mirrorWriteOne(ctx, tx, `INSERT INTO outbound_attempts(attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching')`, a.ID, host, thread, key, a.Revision, a.Operation, a.ChatID, a.ParentMessageID, a.TargetMessageID, a.Card, nowMS)
+	if err == nil {
+		err = freezeMirrorRequestMarker(ctx, tx, &a)
+	}
+	if err == nil {
+		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET card_json=? WHERE attempt_id=?`, a.Card, a.ID)
+	}
 	if err == nil {
 		err = linkMirrorMentions(ctx, tx, a, mentionIDs)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='dispatching' WHERE host_id=? AND thread_id=? AND mirror_key=?`, host, thread, key)
+		err = mirrorWriteOne(ctx, tx, `UPDATE outbound SET state='dispatching' WHERE host_id=? AND thread_id=? AND mirror_key=?`, host, thread, key)
 	}
 	if err != nil {
 		return MirrorAttempt{}, false, err
@@ -359,19 +365,23 @@ func (s *Store) FinishMirrorAttempt(ctx context.Context, id, outcome, remoteID s
 		if a.Operation == "update" && remoteID != a.TargetMessageID || m.RemoteID != "" && remoteID != m.RemoteID {
 			return ErrConflict
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE mirrors SET remote_id=?,delivered_revision=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, remoteID, a.Revision, a.HostID, a.ThreadID, a.Key)
+		err = mirrorWriteOne(ctx, tx, `UPDATE mirrors SET remote_id=?,delivered_revision=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, remoteID, a.Revision, a.HostID, a.ThreadID, a.Key)
 		if m.Revision > a.Revision {
 			state = "ready"
 		}
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE outbound_attempts SET state=?,remote_id=? WHERE attempt_id=?`, outcome, remoteID, id)
+		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET state=?,remote_id=? WHERE attempt_id=?`, outcome, remoteID, id)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE outbound SET state=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, state, a.HostID, a.ThreadID, a.Key)
+		err = mirrorWriteOne(ctx, tx, `UPDATE outbound SET state=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, state, a.HostID, a.ThreadID, a.Key)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE mentions SET state=? WHERE attempt_id=? AND state IN ('dispatching','unknown')`, outcome, id)
+		var selected int64
+		err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mentions WHERE attempt_id=? AND state IN ('dispatching','unknown')`, id).Scan(&selected)
+		if err == nil {
+			err = mirrorWriteCount(ctx, tx, selected, `UPDATE mentions SET state=? WHERE attempt_id=? AND state IN ('dispatching','unknown')`, outcome, id)
+		}
 	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `DELETE FROM outbound_throttles WHERE host_id=? AND thread_id=? AND mirror_key=?`, a.HostID, a.ThreadID, a.Key)

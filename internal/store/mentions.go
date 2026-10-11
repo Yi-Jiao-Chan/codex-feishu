@@ -344,7 +344,7 @@ func prepareMirrorMentions(ctx context.Context, tx *sql.Tx, m Mirror, a *MirrorA
 
 func linkMirrorMentions(ctx context.Context, tx *sql.Tx, a MirrorAttempt, ids []string) error {
 	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, `UPDATE mentions SET state='dispatching',attempt_id=? WHERE host_id=? AND thread_id=? AND mirror_key=? AND open_id=? AND state='eligible'`, a.ID, a.HostID, a.ThreadID, a.Key, id); err != nil {
+		if err := mirrorWriteOne(ctx, tx, `UPDATE mentions SET state='dispatching',attempt_id=? WHERE host_id=? AND thread_id=? AND mirror_key=? AND open_id=? AND state='eligible'`, a.ID, a.HostID, a.ThreadID, a.Key, id); err != nil {
 			return err
 		}
 	}

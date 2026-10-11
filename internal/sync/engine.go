@@ -23,10 +23,11 @@ type NativeHistory interface {
 // actor serializes Reconcile calls; events only trigger a new full reconciliation
 // and never publish token deltas directly. No remote writes happen here.
 type Engine struct {
-	Store        *store.Store
-	Native       NativeHistory
-	HostID       string
-	MaxCardBytes int
+	Store          *store.Store
+	Native         NativeHistory
+	HostID         string
+	MaxCardBytes   int
+	MentionTargets []string // Reserve the complete structured reminder before splitting final text.
 	// ProgressRender is pure; the actor prepares its durable control state first.
 	// An empty interrupted render suppresses a new historical progress card.
 	ProgressRender func(thread, turn, nativeStatus, body string) string
@@ -130,7 +131,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			if strings.TrimSpace(text) == "" {
 				text = "此条输入没有可同步的文本，请在 Codex 中查看。"
 			}
-			parts, err := cards.SplitMessage("人类发送", "Codex 端", text, e.MaxCardBytes)
+			parts, err := cards.SplitMessage("人类发送", "Codex 端", text, markerCardBudget(e.MaxCardBytes))
 			if err != nil {
 				return snapshotPlan{}, err
 			}
@@ -166,7 +167,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			if e.ProgressRender != nil {
 				render = func(body string) string { return e.ProgressRender(thread, turn.ID, turn.Status, body) }
 			}
-			card, err := boundedRenderedProgress(progressBody(turn), e.MaxCardBytes, render)
+			card, err := boundedRenderedProgress(progressBody(turn), markerCardBudget(e.MaxCardBytes), render)
 			if err != nil {
 				return snapshotPlan{}, err
 			}
@@ -179,7 +180,11 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			if strings.TrimSpace(body) == "" {
 				body = emptyResult(turn.Status)
 			}
-			parts, err := cards.SplitMessage("AI 回复", "Codex", body, e.MaxCardBytes)
+			budget, err := finalCardBudget(e.MaxCardBytes, e.MentionTargets)
+			if err != nil {
+				return snapshotPlan{}, err
+			}
+			parts, err := cards.SplitMessage("AI 回复", "Codex", body, budget)
 			if err != nil {
 				return snapshotPlan{}, err
 			}
@@ -387,4 +392,32 @@ func (e Engine) FinalDelivered(ctx context.Context, thread, turn string) (bool, 
 		}
 	}
 	return found, nil
+}
+
+// The persisted wire card later adds one invisible request-marker field.
+func markerCardBudget(limit int) int {
+	if limit == 0 {
+		limit = cards.DefaultMaxCardBytes
+	}
+	if limit <= cards.MaxRequestMarkerBytes {
+		return -1
+	}
+	return limit - cards.MaxRequestMarkerBytes
+}
+
+func finalCardBudget(limit int, targets []string) (int, error) {
+	budget := markerCardBudget(limit)
+	if len(targets) == 0 {
+		return budget, nil
+	}
+	base := cards.Message("", "", "")
+	mentioned, err := cards.WithMentions(base, targets)
+	if err != nil {
+		return 0, errors.New("notification targets exceed card budget")
+	}
+	budget -= len(mentioned) - len(base)
+	if budget <= 0 {
+		return 0, errors.New("card budget cannot hold notification targets")
+	}
+	return budget, nil
 }

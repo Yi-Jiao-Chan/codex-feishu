@@ -62,7 +62,7 @@ func TestMirrorMentionWaitingAcrossWholeSuppressionWindowNeverCreatesMorningBack
 			if hasMention(a.Card) != (variant == "allowed") {
 				t.Fatalf("delayed mention %s: %s", variant, a.Card)
 			}
-			if variant != "allowed" && a.Card != m.Card {
+			if variant != "allowed" && a.Card != expectedMarkedCard(t, s, a.ID, m.Card) {
 				t.Fatal("public body changed")
 			}
 			if err := s.FinishMirrorAttempt(ctx, a.ID, "confirmed", "result"); err != nil {

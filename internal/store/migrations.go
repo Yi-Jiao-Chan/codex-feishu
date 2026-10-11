@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 15
+const SchemaVersion = 16
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -238,6 +238,15 @@ PRAGMA user_version=4;
 			return err
 		}
 		if _, err = tx.Exec("PRAGMA user_version=15"); err != nil {
+			return err
+		}
+	}
+
+	if version < 16 {
+		if _, err = tx.Exec(MirrorReadbackSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=16"); err != nil {
 			return err
 		}
 	}

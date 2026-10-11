@@ -315,7 +315,13 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	defer timer.Stop()
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID}
 	engine.ProgressRender = r.RenderProgress
+	if r.Mentions.Enabled {
+		engine.MentionTargets = r.Mentions.Targets
+	}
 	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership, MinProgressIntervalMS: r.MinProgressIntervalMS, Now: r.now}
+	if reader, ok := r.Messages.(messages.MessageReadbackGateway); ok {
+		outbound.Readback = reader
+	}
 	members := []string{r.OwnerID}
 	seenMembers := map[string]bool{r.OwnerID: true}
 	for _, id := range r.Members {
