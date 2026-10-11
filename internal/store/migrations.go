@@ -5,9 +5,9 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
-// Preserve the M0 journals while adding the first production discovery slice.
+// Preserve the M0 journals while adding production discovery and outbox slices.
 // Never reset user_version on open or accept a newer database accidentally.
 func migrate(db *sql.DB) error {
 	tx, err := db.Begin()
@@ -54,6 +54,46 @@ CREATE TABLE IF NOT EXISTS bindings (
  chat_id TEXT NOT NULL, PRIMARY KEY(host_id,thread_id), UNIQUE(host_id,chat_id)
 );
 PRAGMA user_version=2;
+`)
+		if err != nil {
+			return err
+		}
+	}
+	if version < 3 {
+		_, err = tx.Exec(`
+CREATE TABLE IF NOT EXISTS mirrors (
+ host_id TEXT NOT NULL, thread_id TEXT NOT NULL, mirror_key TEXT NOT NULL,
+ turn_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('human','progress','final')),
+ card_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+ terminal INTEGER NOT NULL DEFAULT 0, replay INTEGER NOT NULL DEFAULT 0,
+ parent_key TEXT NOT NULL DEFAULT '', parent_message_id TEXT NOT NULL DEFAULT '',
+ remote_id TEXT NOT NULL DEFAULT '', delivered_revision INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(host_id,thread_id,mirror_key),
+ FOREIGN KEY(host_id,thread_id) REFERENCES thread_observations(host_id,thread_id)
+);
+CREATE TABLE IF NOT EXISTS outbound (
+ host_id TEXT NOT NULL, thread_id TEXT NOT NULL, mirror_key TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('ready','dispatching','unknown','rejected','confirmed')),
+ PRIMARY KEY(host_id,thread_id,mirror_key),
+ FOREIGN KEY(host_id,thread_id,mirror_key) REFERENCES mirrors(host_id,thread_id,mirror_key)
+);
+CREATE TABLE IF NOT EXISTS outbound_attempts (
+ attempt_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, thread_id TEXT NOT NULL, mirror_key TEXT NOT NULL,
+ revision INTEGER NOT NULL, operation TEXT NOT NULL CHECK(operation IN ('send','reply','update')),
+ chat_id TEXT NOT NULL, parent_message_id TEXT NOT NULL, target_message_id TEXT NOT NULL,
+ card_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('dispatching','unknown','rejected','confirmed')),
+ remote_id TEXT NOT NULL DEFAULT '',
+ FOREIGN KEY(host_id,thread_id,mirror_key) REFERENCES mirrors(host_id,thread_id,mirror_key)
+);
+CREATE INDEX IF NOT EXISTS outbound_attempts_mirror ON outbound_attempts(host_id,thread_id,mirror_key,created_at_ms);
+CREATE TABLE IF NOT EXISTS history_watermarks (
+ host_id TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, item_id TEXT NOT NULL,
+ observed_at_ms INTEGER NOT NULL,
+ PRIMARY KEY(host_id,thread_id),
+ FOREIGN KEY(host_id,thread_id) REFERENCES thread_observations(host_id,thread_id)
+);
+PRAGMA user_version=3;
 `)
 		if err != nil {
 			return err
