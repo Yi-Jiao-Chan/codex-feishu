@@ -2,7 +2,7 @@
 
 负责 `internal/rules/`、命令解析与规则存储。依赖 00、02；规则是领域函数，目录和时间边界适合参数化测试。
 
-当前实现边界：目录物理匹配 / 注册工作树规则、通知 `Policy` 计算、严格 `/notify at` 解析与纯更新函数、通知规则 revision 持久化已实现。默认初始化不会覆盖用户已有的 off / snooze / quiet，deadline 使用 UTC RFC3339Nano，不因重启延长。正式飞书命令入口、操作者权限反馈、目录规则存储及通知资格 / 送达去重还未整合；现有 M0 listener 尚不能使用本页命令。详见[实现与只读证据](../research/m1-history-sync-and-rules-2026-10-12.md)。
+当前实现边界：目录物理匹配 / 注册工作树规则、严格目录命令解析和 host/app 隔离持久化、通知 `Policy` 计算、严格 `/notify at` 解析与纯更新函数、通知规则 revision 持久化已实现。默认初始化不会覆盖用户已有的 off / snooze / quiet，deadline 使用 UTC RFC3339Nano，不因重启延长。正式飞书命令入口、操作者权限反馈及通知资格 / 送达去重还未整合；现有 M0 listener 尚不能使用本页命令。详见[实现与只读证据](../research/m1-history-sync-and-rules-2026-10-12.md)和[运行时整合进展](../research/m1-runtime-and-m2-inputs-2026-10-12.md)。
 
 ## 目录命令与匹配
 

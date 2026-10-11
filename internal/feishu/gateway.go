@@ -108,7 +108,7 @@ func (g *Gateway) CreateGroup(ctx context.Context, name, owner string, members [
 			ChatID string `json:"chat_id"`
 		} `json:"data"`
 	}
-	body := map[string]any{"name": name, "owner_id": owner, "user_id_list": members, "chat_mode": "group", "chat_type": "private", "description": "Codex Feishu M0 联调测试群"}
+	body := map[string]any{"name": name, "owner_id": owner, "user_id_list": members, "chat_mode": "group", "chat_type": "private", "description": "跟进同一个 Codex 会话的任务与公开回复"}
 	err := g.request(ctx, "POST", "/open-apis/im/v1/chats", core.QueryParams{"user_id_type": {"open_id"}, "uuid": {uuid}}, body, &r)
 	if err == nil && r.Data.ChatID == "" {
 		err = &Unknown{"create group response missing chat_id"}

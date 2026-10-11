@@ -93,7 +93,7 @@ func TestVersionThreeMigrationPreservesInflightMirrorJournal(t *testing.T) {
 	stage(t, s, 100, mirrorDoc("human", "human", "old-version-public-card"))
 	a := claimMirror(t, s, "human", 1000)
 	// Remove only the v4 extensions to reproduce an actual v3 outbox database.
-	if _, err := s.DB.Exec(`ALTER TABLE mirrors DROP COLUMN retired; ALTER TABLE mirrors DROP COLUMN event_type; ALTER TABLE mirrors DROP COLUMN event_at; DROP TABLE input_history_links; DROP TABLE notification_rules; PRAGMA user_version=3;`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE directory_rules; DROP TABLE submission_attempts; DROP TABLE submission_actions; DROP TABLE submission_inputs; ALTER TABLE mirrors DROP COLUMN retired; ALTER TABLE mirrors DROP COLUMN event_type; ALTER TABLE mirrors DROP COLUMN event_at; DROP TABLE input_history_links; DROP TABLE notification_rules; PRAGMA user_version=3;`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
