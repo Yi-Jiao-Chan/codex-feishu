@@ -10,11 +10,92 @@
   "feishu_sdk_version": null,
   "host_id": null,
   "cases": [
-    {"id": "P1-01", "status": "pending", "evidence": [], "blocking_reason": "未执行真实 App 自动建群验收"},
-    {"id": "P1-03", "status": "pending", "evidence": [], "blocking_reason": "未执行 App 界面双向回显验收"},
-    {"id": "P1-05", "status": "pending", "evidence": [], "blocking_reason": "需列出 Q3–Q9 具体证据"},
-    {"id": "P1-11", "status": "pending", "evidence": [], "blocking_reason": "未执行独立 Agent 配置验收"}
+    {
+      "id": "P1-01",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本真实 App 自动建群验收"
+    },
+    {
+      "id": "P1-02",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本首装基线、草稿、子代理和注册工作树验收；fork 按用户要求暂缓"
+    },
+    {
+      "id": "P1-03",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本 App 界面与飞书双向回显验收"
+    },
+    {
+      "id": "P1-04",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本忙时默认原生排队验收"
+    },
+    {
+      "id": "P1-05",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "需记录本版本 Q3–Q9 追加引导与竞争恢复证据"
+    },
+    {
+      "id": "P1-06",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本停止、保留队列和明确继续验收"
+    },
+    {
+      "id": "P1-07",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本目录 mute / unmute 与工作树真实验收"
+    },
+    {
+      "id": "P1-08",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本 @ / quiet / snooze、跨重启与多群结束验收"
+    },
+    {
+      "id": "P1-09",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本断线、限流和未知结果读回验收"
+    },
+    {
+      "id": "P1-10",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本桌面 / 手机卡片、权限与回 App 审批验收"
+    },
+    {
+      "id": "P1-11",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本独立 Agent 只读指南完成配置验收"
+    },
+    {
+      "id": "P1-12",
+      "status": "pending",
+      "evidence": [],
+      "blocking_reason": "未执行本版本用户服务、SSH 注销 / 重启和卸载保留数据验收"
+    }
   ],
-  "required_case_ids": ["P1-01", "P1-02", "P1-03", "P1-04", "P1-05", "P1-06", "P1-07", "P1-08", "P1-09", "P1-10", "P1-11", "P1-12"],
+  "required_case_ids": [
+    "P1-01",
+    "P1-02",
+    "P1-03",
+    "P1-04",
+    "P1-05",
+    "P1-06",
+    "P1-07",
+    "P1-08",
+    "P1-09",
+    "P1-10",
+    "P1-11",
+    "P1-12"
+  ],
   "ready_to_release": false
 }

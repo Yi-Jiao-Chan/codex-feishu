@@ -116,3 +116,17 @@ status 优先从匹配的运行实例读取真实 receiver ready、原生 reader
 4. 备份/原子更新/迁移故障不损坏旧状态；卸载默认保留数据。
 5. 非交互调用、SSH 退出与重启后的运行符合实际服务管理器条件。
 6. 将 [Agent 配置指南](AGENT-SETUP.md) 单独交给一个没有本项目历史的 Agent，也能完成检测、收集、配置与验证，或报告具体前置阻塞。
+
+## 本地开发验收包
+
+代码和文档提交且 Git 干净后，在源码根目录执行：
+
+```sh
+go run ./cmd/dev-package --output /absolute/private/dist --json
+```
+
+当前构建本机 Linux amd64 / arm64 的 development 包；不是跨平台正式发布器，也不安装或启动实例。源码身份、二进制 `version --json` 的 commit、开发状态和兼容版本必须一致，打包后再次核验 Git 与白名单文件摘要。源文件不是普通文件、输出路径不私有 / 含 symlink、产物已存在但内容不同，均拒绝。构建继承 Go 缓存，stage 在输出私有目录，失败清理暂存。
+
+包包含 `bin/codex-feishu`、`artifact.json`、`SHA256SUMS`、`compat/codex.json` 与精确飞书权限清单、Agent 指南、配置 / 向导样例、服务示例和完整 P1 pending 验收模板。全包按显式白名单组装，不遍历复制源码、`.env`、真实配置、数据库或研究日志。时间和成员顺序固定，相同输入可复现；重复相同归档 no-op，冲突文件不覆盖，归档和外部 SHA256 文件为 0600。
+
+`artifact.json` 的 `channel=development`、二进制的 `phase1_released=false` 和 pending 验收模板均保留。校验和证明收到的字节与期望一致，不证明一期已通过；未知来源的 archive/checksum 同时替换也不能建立来源可信度。须从已知来源取得外部摘要，先核验归档，安全解包，再核验内部 `SHA256SUMS`，最后执行二进制 version 并读取能力。正式发布仍要求 11 的完整矩阵，不能通过修改 JSON 或编译标志自称验收通过。

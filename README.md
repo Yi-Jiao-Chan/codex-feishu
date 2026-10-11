@@ -24,6 +24,8 @@ M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fo
 
 已有通知规则的配置更新已通过本地故障恢复测试：保留关闭 @ / snooze，只修改本人明确选定的免打扰与时区；中断可重跑原计划，未完成事务阻止服务启动。当前 M0 配置和数据库没有迁移或切换。见[通知配置事务进展](docs/research/m3-policy-apply-2026-10-12.md)。
 
-正式消息 outbox、reaction、自动建群和命令确认回复已接入持久限流等待，重启后按最新状态恢复；正文发送前重新核验 @ / 免打扰。真实服务部署、App 待处理提醒及未知请求的远端核验仍待完成。见[限流投递进展](docs/research/m3-rate-limit-delivery-2026-10-12.md)。
+正式消息 outbox、reaction、自动建群和命令确认回复已接入持久限流等待，重启后按最新状态恢复；正文发送前重新核验 @ / 免打扰。App 待处理提醒已接入限流与只读核验，镜像和命令确认也支持发送前标记核验；真实服务部署与读回/UI 验收仍待完成。见[限流投递进展](docs/research/m3-rate-limit-delivery-2026-10-12.md)。
 
 旧 M0 接管已有隔离测试通过的历史映射和原子存储基础：复用已有群及消息 ID，历史卡片只更新原卡；普通启动拒绝未接管的 schema 1。迁移计划 CLI、WAL 一致备份、共享计划锁和中断恢复已通过隔离测试；开发版仍拒绝真实 apply，服务切换和 UI 验收待完成，见[M0 接管进展](docs/research/m3-legacy-adoption-2026-10-12.md)。
+
+开发验收包入口为 `go run ./cmd/dev-package --output /absolute/private/dist --json`。包只含本次构建、校验和、兼容 / 权限清单、自包含 Agent 指南、配置和验收模板，不包含本机密钥、真实配置、数据库或研究日志。必须先提交并保持 Git 干净；输出是 development 包，保留未发布边界，不安装、启动或替换服务。见[CLI 与配置手册](docs/codex-feishu/10-cli-and-setup.md)。

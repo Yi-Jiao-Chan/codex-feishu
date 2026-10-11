@@ -8,3 +8,5 @@
 /var/
 /config.local.toml
 __pycache__/
+
+/dist/

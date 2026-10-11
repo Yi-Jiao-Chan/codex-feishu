@@ -50,6 +50,16 @@ Agent 分别检查退出码和 JSON，不能把 shell 输出当一条成功链�
 
 若要读取源码仓库或构建已提供的源码，先遵循该仓库 AGENTS.md 和 CodeGraph 就绪检查；普通安装配置无需扫描源码。
 
+### 收到归档包时
+
+先取得来自已知来源的归档 SHA-256，再核验归档。单独收到 archive 和它旁边的 checksum，只能检查二者字节一致，不能证明来源可信。未核验前不执行包内二进制或脚本。
+
+检查归档条目只含一个预期顶层目录；拒绝绝对路径、`..` 路径段、重复成员、软硬链接、设备 / FIFO 和超出合理总大小的内容。安全解包到本人受限、长期保留的版本目录，避免把服务执行路径留在会被清理的临时目录。包内 `SHA256SUMS` 须全部验证，`artifact.json` 的二进制摘要、成员摘要、source_commit、OS/架构须与实际内容一致；它没有资格替代本页的能力与真实验收检查。
+
+二进制位于包内 `bin/codex-feishu`，指南和样例位于 `docs/codex-feishu/`，权限位于 `compat/feishu-permissions.json`。版本输出的 commit 必须等于 manifest 的 source_commit；任一文件缺失、摘要不同或架构不匹配则停止使用这个包，不顺手重建 / 覆盖现有安装。仓库研究链接是补充背景，未打入包也不影响本指南的自包含步骤。
+
+development 包的 `phase1_released=false` 和 pending 验收模板不能改成 pass；只继续只读检查和收集缺项，不执行正式 apply / install / start。`docs/codex-feishu/examples/codex-feishu.service.template` 仅用于说明生成结构，禁止直接复制占位 unit，真实单位由已验收 CLI 的 service install 生成。
+
 **前置故障处理：**没有桥版本、共享 daemon 未运行、不是同一执行用户、版本未验收，均不进入启用同步。仍可整理目录建议、检查服务环境和收集缺失项。daemon 未启动时提示用户先用 App 连接这台机器；不私自创建一个新执行器代替它。
 
 ## B. 收集最少信息

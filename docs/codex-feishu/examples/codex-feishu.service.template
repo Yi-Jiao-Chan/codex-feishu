@@ -1,0 +1,16 @@
+# EXAMPLE ONLY: do not copy this template into a user service directory.
+# The released CLI generates the managed unit and deployment identity:
+# codex-feishu service install --config /absolute/config.toml --user --json
+# Development bundles do not authorize installation or service replacement.
+[Unit]
+Description=Codex Feishu bridge
+
+[Service]
+Type=simple
+ExecStart=:"/ABSOLUTE/RELEASED/BINARY/codex-feishu" serve --config "/ABSOLUTE/PRIVATE/CONFIG/config.toml"
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+[Install]
+WantedBy=default.target
