@@ -24,10 +24,11 @@ type MembershipGateway interface {
 // scheduled at first observation. Membership is read outside SQL transactions;
 // missing proof suppresses mentions while body delivery continues.
 type Outbound struct {
-	Store      *store.Store
-	Gateway    MessageGateway
-	Mentions   *store.MentionOptions
-	Membership MembershipGateway
+	Store                 *store.Store
+	Gateway               MessageGateway
+	Mentions              *store.MentionOptions
+	Membership            MembershipGateway
+	MinProgressIntervalMS int64
 }
 
 type DeliveryResult struct {
@@ -63,7 +64,7 @@ func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS in
 				}
 			}
 		}
-		a, claimed, err := o.Store.ClaimMirrorWithMentions(ctx, host, thread, m.Key, m.Revision, nowMS, options)
+		a, claimed, err := o.Store.ClaimMirrorWithMentions(ctx, host, thread, m.Key, m.Revision, nowMS, options, o.MinProgressIntervalMS)
 		if err != nil {
 			return DeliveryResult{}, err
 		}

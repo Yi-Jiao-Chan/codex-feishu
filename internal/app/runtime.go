@@ -42,11 +42,15 @@ type Runtime struct {
 	DiscoveryEnabled           bool
 	DirectoryRules             func(context.Context) ([]rules.DirectoryRule, error)
 	ScanInterval, PollInterval time.Duration
+	MinProgressIntervalMS      int64
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
 	ActorTick                  func(context.Context, string) error
+	HistoryPreparing           func(context.Context, string, []codexclient.Turn) error
 	HistoryStaged              func(context.Context, string, []codexclient.Turn) error
 	AfterDelivery              func(context.Context, string, []codexclient.Turn) error
+	EventObserved              func(codexclient.Event)
+	RenderProgress             func(string, string, string, string) string
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
 	Notice  func(string)
 	Now     func() time.Time
@@ -216,6 +220,9 @@ func (r *Runtime) Run(parent context.Context) error {
 				}
 				return errors.New("native event generation ended; reconnect and reconcile required")
 			}
+			if r.EventObserved != nil {
+				r.EventObserved(event)
+			}
 			if event.Method == "thread/started" && r.DiscoveryEnabled {
 				var params struct {
 					Thread codexclient.Thread `json:"thread"`
@@ -292,7 +299,8 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	timer := time.NewTicker(interval)
 	defer timer.Stop()
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID}
-	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership}
+	engine.ProgressRender = r.RenderProgress
+	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership, MinProgressIntervalMS: r.MinProgressIntervalMS}
 	members := []string{r.OwnerID}
 	seenMembers := map[string]bool{r.OwnerID: true}
 	for _, id := range r.Members {
@@ -376,7 +384,12 @@ actorLoop:
 							}
 						}
 					}
-					err = engine.Apply(readCtx, a.thread, turns, a.replay, r.now().UnixMilli())
+					if r.HistoryPreparing != nil {
+						err = r.HistoryPreparing(readCtx, a.thread, turns)
+					}
+					if err == nil {
+						err = engine.Apply(readCtx, a.thread, turns, a.replay, r.now().UnixMilli())
+					}
 					if err == nil {
 						// Freeze first-observation reminder decisions even before
 						// a slow group creation returns. Disabled configuration

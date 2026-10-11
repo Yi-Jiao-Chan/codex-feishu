@@ -54,10 +54,13 @@ func main() {
 }
 func run(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: codex-feishu version | doctor | verify | m0-listen (development, not phase1 release)")
+		fmt.Fprintln(os.Stderr, "usage: codex-feishu version | doctor | verify | serve | m0-listen (development, not phase1 release)")
 		return 2
 	}
 	command := args[0]
+	if command == "serve" {
+		return runServe(ctx, args[1:])
+	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "absolute TOML config path")
 	_ = flags.Bool("json", false, "JSON output (default)")
@@ -71,7 +74,7 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	if command == "version" {
-		emit(output{Command: command, OK: true, State: "m0-development", Data: map[string]any{"version": "0.0.1-dev", "commit": commit, "config_schema": 1, "commands": []string{"version", "doctor", "verify", "m0-listen"}, "phase1_released": false, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "real_app_ui_verified": false, "real_feishu_verified": false}})
+		emit(output{Command: command, OK: true, State: "phase1-development", Data: map[string]any{"version": "0.0.1-dev", "commit": commit, "config_schema": 1, "commands": []string{"version", "doctor", "verify", "m0-listen", "serve"}, "phase1_released": false, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "m0_app_ui_verified": true, "m0_feishu_verified": true, "phase1_service_ui_verified": false}})
 		return 0
 	}
 	if command != "doctor" && command != "verify" && command != "m0-listen" {
@@ -131,6 +134,14 @@ func run(ctx context.Context, args []string) int {
 		return 4
 	}
 	if command == "m0-listen" {
+		applicationLock, e := store.AcquireApplication(cfg.Feishu.AppID)
+		if e != nil {
+			o.State = "listener-lock-conflict"
+			o.Checks = append(o.Checks, check{"application.lock", "fail", true, e.Error()})
+			emit(o)
+			return 6
+		}
+		defer applicationLock.Close()
 		lock, e := store.AcquireListener(cfg.Storage.DatabaseFile)
 		if e != nil {
 			o.State = "listener-lock-conflict"

@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"codex-feishu/internal/cards"
+	"codex-feishu/internal/rules"
 	"errors"
 	"fmt"
 	"github.com/pelletier/go-toml/v2"
@@ -87,8 +89,13 @@ func (c Config) Validate() error {
 	if !strings.HasPrefix(c.Feishu.AppID, "cli_") || strings.Contains(c.Feishu.AppID, "replace") {
 		return errors.New("valid feishu.app_id required")
 	}
+	for _, char := range c.Feishu.AppID {
+		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_') {
+			return errors.New("invalid feishu.app_id")
+		}
+	}
 	if c.Codex.Endpoint != "auto" && c.Codex.Endpoint != "" {
-		return errors.New("M0 requires endpoint=auto for shared daemon")
+		return errors.New("endpoint must be auto for the existing shared daemon")
 	}
 	if c.Codex.CLIPath != "auto" && !filepath.IsAbs(c.Codex.CLIPath) {
 		return errors.New("codex.cli_path must be absolute or auto")
@@ -111,6 +118,12 @@ func (c Config) Validate() error {
 	if c.Discovery.FirstRun != "baseline" {
 		return errors.New("first_run must be baseline")
 	}
+	if c.Discovery.ScanIntervalSeconds < 0 || c.Discovery.ScanIntervalSeconds > 3600 {
+		return errors.New("scan interval must be 1–3600 seconds, or 0 for default")
+	}
+	if c.Sync.CardUpdateMinIntervalMS < 0 || c.Sync.CardUpdateMinIntervalMS > 10000 || c.Sync.CardUpdateMinIntervalMS > 0 && c.Sync.CardUpdateMinIntervalMS < 100 {
+		return errors.New("card update interval must be 100–10000 ms, or 0 for default")
+	}
 	if len(c.Discovery.AllowedRoots) == 0 {
 		return errors.New("at least one allowed directory required")
 	}
@@ -126,10 +139,25 @@ func (c Config) Validate() error {
 	if _, err := time.LoadLocation(c.Notifications.Timezone); err != nil {
 		return errors.New("invalid notification timezone")
 	}
+	policy, err := rules.DefaultPolicy(c.Notifications.Timezone)
+	if err != nil {
+		return err
+	}
+	if c.Notifications.QuietHours != "" {
+		policy.QuietStart, policy.QuietEnd, _ = strings.Cut(c.Notifications.QuietHours, "-")
+	}
+	if err := policy.Validate(); err != nil {
+		return errors.New("invalid notification quiet hours")
+	}
+	for _, event := range c.Notifications.MentionOn {
+		if event != "completed" && event != "failed" && event != "needs_user" {
+			return errors.New("unsupported notification event")
+		}
+	}
 	return nil
 }
 func ValidOpenID(s string) bool {
-	return strings.HasPrefix(s, "ou_") && len(s) > 10 && !strings.Contains(s, "replace")
+	return cards.ValidMentionID(s) && len(s) > 10 && !strings.Contains(s, "replace")
 }
 func (c Config) Operator(id string) bool {
 	for _, p := range c.Access.OperatorOpenIDs {

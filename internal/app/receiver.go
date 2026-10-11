@@ -20,18 +20,21 @@ import (
 type InboundCommand struct {
 	MessageID, ChatID, ChatType, UserID, Text string
 	ThreadID                                  string // Empty for a private/unbound chat.
+	Unsupported                               bool
 }
 
 // Receiver performs local durable work only. Slow/offline native and Feishu
 // APIs cannot hold callbacks open; thread actors consume committed receipts.
 // There is intentionally no Native field or client policy configuration.
 type Receiver struct {
-	Store   *store.Store
-	Config  config.Config
-	BotID   string
-	Wake    func(string)
-	Command func(context.Context, InboundCommand) error
-	Notice  func(string)
+	Store         *store.Store
+	Config        config.Config
+	BotID         string
+	Wake          func(string)
+	Command       func(context.Context, InboundCommand) error
+	TaskAction    func(context.Context, string, string, string, string, int64) (string, error)
+	ActionAllowed func(string) bool
+	Notice        func(string)
 }
 
 func (r *Receiver) notice(code string) {
@@ -70,11 +73,11 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 		}
 	}
 	text, err := Text(msg, r.BotID)
-	if err != nil {
+	unsupported := err != nil
+	if unsupported {
 		r.notice("input.unsupported_content")
-		return nil
 	}
-	if text == "" {
+	if text == "" && !unsupported {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
@@ -84,9 +87,9 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 	if bindingErr != nil && !errors.Is(bindingErr, sql.ErrNoRows) {
 		return bindingErr
 	}
-	if strings.HasPrefix(strings.TrimSpace(text), "/") || !bound {
+	if unsupported || strings.HasPrefix(strings.TrimSpace(text), "/") || !bound {
 		if r.Command != nil {
-			command := InboundCommand{MessageID: ptr(msg.MessageId), ChatID: ptr(msg.ChatId), ChatType: chatType, UserID: user, Text: text}
+			command := InboundCommand{MessageID: ptr(msg.MessageId), ChatID: ptr(msg.ChatId), ChatType: chatType, UserID: user, Text: text, Unsupported: unsupported}
 			if bound {
 				command.ThreadID = b.ThreadID
 			}
@@ -124,6 +127,19 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 	kind, _ := a.Action.Value["action"].(string)
 	queue, _ := a.Action.Value["queue_id"].(string)
 	revision, validRevision := callbackRevision(a.Action.Value["revision"])
+	if (kind == "stop" || kind == "continue") && token != "" && validRevision && r.TaskAction != nil {
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+		defer cancel()
+		thread, err := r.TaskAction(ctx, a.Context.OpenChatID, a.Context.OpenMessageID, kind, token, revision)
+		if err != nil {
+			if errors.Is(err, store.ErrSubmissionStale) || errors.Is(err, store.ErrSubmissionBusy) || errors.Is(err, store.ErrConflict) {
+				return respond("info", "状态已更新，请查看最新卡片"), nil
+			}
+			return respond("error", "保存操作失败，请稍后重试"), err
+		}
+		r.wake(thread)
+		return respond("info", "已收到，正在处理"), nil
+	}
 	if token == "" || queue == "" || !validRevision || kind != "steer" && kind != "remove" {
 		return respond("info", "卡片已更新，请使用最新操作"), nil
 	}
@@ -132,6 +148,9 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 	b, err := r.Store.BindingByChat(ctx, r.Config.Host.ID, a.Context.OpenChatID)
 	if err != nil {
 		return respond("info", "会话已失效"), nil
+	}
+	if r.ActionAllowed != nil && !r.ActionAllowed(b.ThreadID) {
+		return respond("info", "连接暂不可用，请恢复同步后重试"), nil
 	}
 	n, err := r.Store.ByToken(ctx, token)
 	if err != nil || n.AppID != r.Config.Feishu.AppID || n.ThreadID != b.ThreadID || n.ChatID != b.ChatID {

@@ -176,6 +176,29 @@ func TestProgressCoalescesInflightContentAndTerminalCannotRegress(t *testing.T) 
 	}
 }
 
+func TestProgressThrottleUsesConfiguredInterval(t *testing.T) {
+	s, _ := discoveryStore(t)
+	ctx := context.Background()
+	eligible(t, s, "thread")
+	bindMirrorThread(t, s)
+	p := mirrorDoc("progress", "progress", "starting")
+	p.ParentKey, p.ParentMessageID = "", "human"
+	stage(t, s, 100, p)
+	first := claimMirror(t, s, p.Key, 1000)
+	if err := s.FinishMirrorAttempt(ctx, first.ID, "confirmed", "process-card"); err != nil {
+		t.Fatal(err)
+	}
+	p.Card = `{"body":"latest"}`
+	stage(t, s, 101, p)
+	if _, claimed, err := s.ClaimMirrorWithMentions(ctx, "host", "thread", p.Key, 2, 5999, MentionOptions{}, 5000); err != nil || claimed {
+		t.Fatal("configured throttle bypassed", err)
+	}
+	a, claimed, err := s.ClaimMirrorWithMentions(ctx, "host", "thread", p.Key, 2, 6000, MentionOptions{}, 5000)
+	if err != nil || !claimed || a.TargetMessageID != "process-card" {
+		t.Fatal("latest revision was not updated on the original card", err)
+	}
+}
+
 func TestMirrorCrashFreezesUnknownAndDoesNotBlockIndependentFinal(t *testing.T) {
 	ctx := context.Background()
 	s, path := discoveryStore(t)
@@ -310,7 +333,7 @@ func TestVersionTwoMigrationPreservesDiscoveryAndM0Journals(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Model a real v2 database: no v3 tables, retained discovery and M0 state.
-	if _, err := s.DB.Exec(`DROP TABLE mentions; DROP TABLE mention_events; DROP TABLE notification_policy_history; DROP TABLE directory_rules; DROP TABLE submission_attempts; DROP TABLE submission_actions; DROP TABLE submission_inputs; DROP TABLE notification_rules; DROP TABLE input_history_links; DROP TABLE outbound_attempts; DROP TABLE outbound; DROP TABLE mirrors; DROP TABLE history_watermarks; PRAGMA user_version=2;`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE task_control_claims; DROP TABLE task_controls; DROP TABLE command_replies; DROP TABLE mentions; DROP TABLE mention_events; DROP TABLE notification_policy_history; DROP TABLE directory_rules; DROP TABLE submission_attempts; DROP TABLE submission_actions; DROP TABLE submission_inputs; DROP TABLE notification_rules; DROP TABLE input_history_links; DROP TABLE outbound_attempts; DROP TABLE outbound; DROP TABLE mirrors; DROP TABLE history_watermarks; PRAGMA user_version=2;`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

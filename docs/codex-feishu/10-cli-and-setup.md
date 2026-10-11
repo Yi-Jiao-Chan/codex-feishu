@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下述 codex-feishu 命令尚未实现，是开发验收契约。** 当前真实可运行的 Codex 命令与它们区分清楚。Agent 配置指南仅在已构建、通过联调的桥版本存在时进入应用阶段。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已具备 version、只读 doctor、M0 verify / m0-listen 和新增 serve；新版 serve 已通过自动测试，尚未替换 M0 实例。setup / pair、service、完整 status / doctor 与发布流程仍待实现。详见[正式服务整合进展](../research/m2-service-and-task-controls-2026-10-12.md)。Agent 配置指南仅在已构建、通过完整联调的桥版本存在时进入应用阶段。
 
 ## 命令表
 

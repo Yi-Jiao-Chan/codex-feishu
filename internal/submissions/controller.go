@@ -80,6 +80,15 @@ func (c *Controller) Continue(ctx context.Context, actionID string) (store.Submi
 	return c.claimControl(ctx, "continue", actionID, "")
 }
 
+// ContinueExpected resumes only the queue associated with the displayed latest
+// interrupted turn. Slash Continue intentionally keeps a thread-level intent.
+func (c *Controller) ContinueExpected(ctx context.Context, actionID, expectedTurnID string) (store.SubmissionAction, error) {
+	if expectedTurnID == "" {
+		return store.SubmissionAction{}, store.ErrSubmissionStale
+	}
+	return c.claimControl(ctx, "continue", actionID, expectedTurnID)
+}
+
 func (c *Controller) claimControl(ctx context.Context, kind, actionID, expectedTurnID string) (store.SubmissionAction, error) {
 	if err := c.valid(); err != nil {
 		return store.SubmissionAction{}, err
@@ -187,6 +196,7 @@ type snapshot struct {
 	history map[string]historyInput
 	turns   map[string]codexclient.Turn
 	active  string
+	latest  string
 }
 
 func (c *Controller) snapshot(ctx context.Context) (snapshot, error) {
@@ -232,6 +242,7 @@ func (c *Controller) snapshot(ctx context.Context) (snapshot, error) {
 			return snapshot{}, store.ErrConflict
 		}
 		s.turns[t.ID] = t
+		s.latest = t.ID
 		itemIDs := map[string]bool{}
 		for _, item := range t.Items {
 			if item.ID == "" || itemIDs[item.ID] {
@@ -467,6 +478,9 @@ func (c *Controller) processAction(ctx context.Context, actionID string) error {
 				}
 				err = c.Store.PrepareSubmissionAction(ctx, c.scope(), op.ID, "interrupt", snap.active, "", "")
 			case "continue":
+				if op.ExpectedTurnID != "" && !snap.canContinue(op.ExpectedTurnID) {
+					return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", "changed")
+				}
 				if snap.active != "" {
 					return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", "busy")
 				}
@@ -477,7 +491,7 @@ func (c *Controller) processAction(ctx context.Context, actionID string) error {
 				if snap.queue[0].ClientUserMessageID != nil {
 					client = *snap.queue[0].ClientUserMessageID
 				}
-				err = c.Store.PrepareSubmissionAction(ctx, c.scope(), op.ID, "start", "", snap.queue[0].ID, client)
+				err = c.Store.PrepareSubmissionAction(ctx, c.scope(), op.ID, "start", op.ExpectedTurnID, snap.queue[0].ID, client)
 			}
 			if errors.Is(err, store.ErrSubmissionStale) {
 				return nil
@@ -486,6 +500,9 @@ func (c *Controller) processAction(ctx context.Context, actionID string) error {
 				return err
 			}
 			continue
+		}
+		if op.Kind == "continue" && op.ExpectedTurnID != "" && !snap.canContinue(op.ExpectedTurnID) {
+			return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", "changed")
 		}
 		if op.Stage == "steer" || op.Stage == "restore" {
 			// Even after a known delete, App may have consumed/reintroduced this
@@ -519,6 +536,10 @@ func (c *Controller) processAction(ctx context.Context, actionID string) error {
 		}
 	}
 	return store.ErrConflict
+}
+
+func (s snapshot) canContinue(turn string) bool {
+	return s.active == "" && s.latest == turn && s.turns[turn].Status == "interrupted"
 }
 
 func (c *Controller) observeHistory(ctx context.Context, n store.Submission, snap snapshot, actionID string) (bool, error) {

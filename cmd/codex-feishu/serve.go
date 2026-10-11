@@ -1,0 +1,98 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"sync"
+	"time"
+
+	"codex-feishu/internal/app"
+	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/config"
+	"codex-feishu/internal/feishu"
+	"codex-feishu/internal/store"
+)
+
+func runServe(ctx context.Context, args []string) int {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	path := flags.String("config", "", "absolute TOML config path")
+	_ = flags.Bool("json", false, "JSON events (default)")
+	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" {
+		emit(output{Command: "serve", State: "config-required"})
+		return 2
+	}
+	cfg, err := config.Load(*path)
+	if err != nil {
+		emit(output{Command: "serve", State: "config-invalid", Checks: []check{{"config", "fail", true, err.Error()}}})
+		return 2
+	}
+	// The application lock is independent of database choice. Acquire both
+	// before opening/migrating the database or starting a Feishu ws receiver.
+	appLock, err := store.AcquireApplication(cfg.Feishu.AppID)
+	if err != nil {
+		emit(output{Command: "serve", State: "application-lock-conflict"})
+		return 6
+	}
+	defer appLock.Close()
+	dbLock, err := store.AcquireListener(cfg.Storage.DatabaseFile)
+	if err != nil {
+		emit(output{Command: "serve", State: "listener-lock-conflict"})
+		return 6
+	}
+	defer dbLock.Close()
+	secret, err := cfg.Secret()
+	if err != nil {
+		emit(output{Command: "serve", State: "secret-unavailable"})
+		return 4
+	}
+	gateway := feishu.New(cfg.Feishu.AppID, secret)
+	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	bot, err := gateway.Bot(checkCtx)
+	cancel()
+	if err != nil {
+		emit(output{Command: "serve", State: "feishu-unavailable", Checks: []check{{"feishu.bot", "fail", true, safeFeishu(err)}}})
+		return 4
+	}
+	db, err := store.Open(cfg.Storage.DatabaseFile)
+	if err != nil {
+		emit(output{Command: "serve", State: "storage-unavailable"})
+		return 7
+	}
+	defer db.Close()
+	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Connect: func(ctx context.Context) (app.ServiceNative, error) {
+		inspectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		daemon, err := codexclient.Discover(inspectCtx, cfg.Codex.CLIPath)
+		if err != nil {
+			return nil, errors.New("existing daemon unavailable")
+		}
+		if daemon.AppServerVersion != "0.162.0" {
+			return nil, errors.New("native version is not in the verified compatibility list")
+		}
+		return codexclient.Connect(ctx, daemon.SocketPath)
+	}}
+	var noticeMu sync.Mutex
+	last := map[string]time.Time{}
+	service.Notice = func(code string) {
+		noticeMu.Lock()
+		defer noticeMu.Unlock()
+		now := time.Now()
+		if now.Sub(last[code]) < 30*time.Second {
+			return
+		}
+		last[code] = now
+		emit(output{Command: "serve", State: code})
+	}
+	emit(output{Command: "serve", State: "starting", Data: map[string]any{"host_id": cfg.Host.ID, "store_schema": store.SchemaVersion, "phase1_released": false}})
+	err = service.Run(ctx)
+	if ctx.Err() != nil {
+		emit(output{Command: "serve", OK: true, State: "stopped"})
+		return 0
+	}
+	if err != nil {
+		emit(output{Command: "serve", State: "stopped-with-error", NextSteps: []string{"run doctor; native daemon and Feishu configuration remain unchanged"}})
+		return 7
+	}
+	return 0
+}

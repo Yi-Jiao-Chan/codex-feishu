@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type Daemon struct {
@@ -103,7 +104,12 @@ func Connect(ctx context.Context, path string) (*Client, error) {
 	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", path)
 	}}
-	conn, _, err := websocket.Dial(ctx, "ws://localhost/", &websocket.DialOptions{HTTPClient: &http.Client{Transport: tr}, CompressionMode: websocket.CompressionDisabled})
+	// Bound only the handshake. The initialized connection retains the
+	// caller's lifetime, so cancelling this setup deadline cannot disconnect
+	// a healthy long-running service generation.
+	setupCtx, stopSetup := context.WithTimeout(ctx, 30*time.Second)
+	defer stopSetup()
+	conn, _, err := websocket.Dial(setupCtx, "ws://localhost/", &websocket.DialOptions{HTTPClient: &http.Client{Transport: tr}, CompressionMode: websocket.CompressionDisabled})
 	if err != nil {
 		tr.CloseIdleConnections()
 		return nil, errors.New("cannot connect to shared Codex Unix WebSocket")
@@ -112,10 +118,10 @@ func Connect(ctx context.Context, path string) (*Client, error) {
 	life, cancel := context.WithCancel(ctx)
 	c := &Client{conn: conn, ctx: life, cancel: cancel, pending: map[string]chan reply{}, events: make(chan Event, 512), done: make(chan struct{}), generation: generation.Add(1)}
 	go c.read()
-	err = c.Call(ctx, "initialize", map[string]any{"clientInfo": map[string]string{"name": "codex-feishu", "title": "Codex Feishu Bridge", "version": "0.0.1-dev"}, "capabilities": map[string]bool{"experimentalApi": true}}, nil)
+	err = c.Call(setupCtx, "initialize", map[string]any{"clientInfo": map[string]string{"name": "codex-feishu", "title": "Codex Feishu Bridge", "version": "0.0.1-dev"}, "capabilities": map[string]bool{"experimentalApi": true}}, nil)
 	if err == nil {
 		b, _ := json.Marshal(map[string]string{"method": "initialized"})
-		err = c.conn.Write(ctx, websocket.MessageText, b)
+		err = c.conn.Write(setupCtx, websocket.MessageText, b)
 	}
 	if err != nil {
 		c.Close()

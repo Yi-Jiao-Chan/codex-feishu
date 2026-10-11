@@ -27,6 +27,9 @@ type Engine struct {
 	Native       NativeHistory
 	HostID       string
 	MaxCardBytes int
+	// ProgressRender is pure; the actor prepares its durable control state first.
+	// An empty interrupted render suppresses a new historical progress card.
+	ProgressRender func(thread, turn, nativeStatus, body string) string
 }
 
 // HistoryError keeps native payloads out of ordinary error text.
@@ -142,12 +145,18 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 		}
 		key := mirrorKey("progress", turn.ID)
 		_, hadProgress := existing[key]
-		if turn.Status == "inProgress" || hadProgress {
-			card, err := boundedProgress(turnLabel(turn.Status), progressBody(turn), e.MaxCardBytes)
+		if turn.Status == "inProgress" || hadProgress || turn.Status == "interrupted" && e.ProgressRender != nil {
+			render := func(body string) string { return cards.Progress(turnLabel(turn.Status), body) }
+			if e.ProgressRender != nil {
+				render = func(body string) string { return e.ProgressRender(thread, turn.ID, turn.Status, body) }
+			}
+			card, err := boundedRenderedProgress(progressBody(turn), e.MaxCardBytes, render)
 			if err != nil {
 				return err
 			}
-			docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
+			if card != "" {
+				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
+			}
 		}
 		if turn.Status != "inProgress" {
 			body := finalBody(turn)
@@ -264,14 +273,24 @@ func progressBody(t codexclient.Turn) string {
 }
 
 func boundedProgress(label, body string, limit int) (string, error) {
+	return boundedRenderedProgress(body, limit, func(body string) string { return cards.Progress(label, body) })
+}
+
+func boundedRenderedProgress(body string, limit int, render func(string) string) (string, error) {
 	if limit == 0 {
 		limit = cards.DefaultMaxCardBytes
 	}
-	card := cards.Progress(label, body)
+	card := render(body)
+	if card == "" {
+		return "", nil
+	}
+	if !json.Valid([]byte(card)) {
+		return "", errors.New("progress renderer returned invalid card")
+	}
 	if len(card) <= limit {
 		return card, nil
 	}
-	if limit < len(cards.Progress(label, "")) {
+	if limit < len(render("")) {
 		return "", errors.New("card limit cannot hold progress status")
 	}
 	// Progress is a compact latest-action summary. Only this summary may be
@@ -280,16 +299,16 @@ func boundedProgress(label, body string, limit int) (string, error) {
 	lo, hi := 0, len(runes)
 	for lo < hi {
 		mid := (lo + hi + 1) / 2
-		if len(cards.Progress(label, string(runes[:mid])+"…")) <= limit {
+		if len(render(string(runes[:mid])+"…")) <= limit {
 			lo = mid
 		} else {
 			hi = mid - 1
 		}
 	}
 	if lo == 0 {
-		return cards.Progress(label, ""), nil
+		return render(""), nil
 	}
-	return cards.Progress(label, string(runes[:lo])+"…"), nil
+	return render(string(runes[:lo]) + "…"), nil
 }
 
 func turnLabel(status string) string {

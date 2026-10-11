@@ -329,10 +329,10 @@ func (s *Store) ClaimThreadSubmissionAction(ctx context.Context, scope Submissio
 	return s.ClaimThreadSubmissionActionExpected(ctx, scope, kind, token, "")
 }
 
-// ClaimThreadSubmissionActionExpected seeds a stop card's immutable target at
+// ClaimThreadSubmissionActionExpected seeds a task card's immutable target at
 // claim time. Replays return the original action, including its original target.
 func (s *Store) ClaimThreadSubmissionActionExpected(ctx context.Context, scope SubmissionScope, kind, token, expectedTurnID string) (SubmissionAction, error) {
-	if token == "" || kind != "stop" && kind != "continue" || kind != "stop" && expectedTurnID != "" {
+	if token == "" || kind != "stop" && kind != "continue" {
 		return SubmissionAction{}, ErrSubmissionStale
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)

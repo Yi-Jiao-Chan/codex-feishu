@@ -166,6 +166,16 @@ func TestReceiverChecksActualCardAndExactQueueRevision(t *testing.T) {
 		t.Fatal("stale or unauthorized card claimed action", err)
 	}
 	e := receiverAction(t, "ou_operator", "actual-card", n.ActionToken, n.QueueID, n.Revision)
+	r.ActionAllowed = func(string) bool { return false }
+	response, err := r.Action(ctx, e)
+	if err != nil || response.Toast.Type != "info" {
+		t.Fatal("offline card had no feedback", err)
+	}
+	actions, err = db.SubmissionActions(ctx, scope)
+	if err != nil || len(actions) != 0 {
+		t.Fatal("disconnected card scheduled native action", err)
+	}
+	r.ActionAllowed = func(string) bool { return true }
 	for i := 0; i < 2; i++ {
 		if _, err := r.Action(ctx, e); err != nil {
 			t.Fatal(err)

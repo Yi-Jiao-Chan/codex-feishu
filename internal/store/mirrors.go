@@ -201,9 +201,19 @@ func (s *Store) ClaimMirror(ctx context.Context, host, thread, key string, revis
 
 // ClaimMirrorWithMentions additionally freezes scheduled, reachable mentions in
 // the same attempt transaction. It never creates notification eligibility.
-func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key string, revision, nowMS int64, mentions MentionOptions) (a MirrorAttempt, claimed bool, err error) {
+func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key string, revision, nowMS int64, mentions MentionOptions, progressIntervalMS ...int64) (a MirrorAttempt, claimed bool, err error) {
 	if nowMS <= 0 {
 		return a, false, errors.New("invalid dispatch time")
+	}
+	interval := int64(2000)
+	if len(progressIntervalMS) > 1 {
+		return a, false, errors.New("invalid progress interval")
+	}
+	if len(progressIntervalMS) == 1 && progressIntervalMS[0] != 0 {
+		interval = progressIntervalMS[0]
+		if interval < 100 || interval > 10000 {
+			return a, false, errors.New("invalid progress interval")
+		}
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -234,7 +244,7 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 		if err = tx.QueryRowContext(ctx, `SELECT MAX(created_at_ms) FROM outbound_attempts WHERE host_id=? AND thread_id=? AND mirror_key=?`, host, thread, key).Scan(&last); err != nil {
 			return a, false, err
 		}
-		if last.Valid && nowMS-last.Int64 < 2000 {
+		if last.Valid && nowMS-last.Int64 < interval {
 			return MirrorAttempt{}, false, nil
 		}
 	}

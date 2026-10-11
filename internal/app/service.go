@@ -1,0 +1,402 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"codex-feishu/internal/bindings"
+	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/config"
+	"codex-feishu/internal/rules"
+	"codex-feishu/internal/store"
+	"codex-feishu/internal/submissions"
+	messages "codex-feishu/internal/sync"
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
+	im "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+)
+
+type ServiceNative interface {
+	RuntimeNative
+	submissions.Native
+	Close()
+}
+
+type ServiceGateway interface {
+	bindings.Groups
+	messages.MessageGateway
+	messages.MembershipGateway
+	ReactionGateway
+	Ready() bool
+	BotInChat(context.Context, string) (bool, error)
+	Listen(context.Context, func(context.Context, *im.P2MessageReceiveV1) error, func(context.Context, *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error)) error
+}
+
+// Service owns one Feishu receiver and serial native generations. Its caller
+// holds both application and canonical database locks. Connect must discover
+// the running App daemon; it must never launch another native server.
+type Service struct {
+	Config          config.Config
+	Store           *store.Store
+	Gateway         ServiceGateway
+	BotID           string
+	Connect         func(context.Context) (ServiceNative, error)
+	Notice          func(string)
+	Now             func() time.Time
+	RetryInterval   time.Duration // Tests may shorten; production starts at 1s.
+	mu              sync.RWMutex
+	current         *Runtime
+	tasks           map[string]*TaskControls
+	actionsReady    map[string]bool
+	nativeConnected atomic.Bool
+}
+
+func (s *Service) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+func (s *Service) notice(code string) {
+	if s.Notice != nil {
+		s.Notice(code)
+	}
+}
+func (s *Service) Wake(thread string) {
+	s.mu.RLock()
+	runtime := s.current
+	s.mu.RUnlock()
+	if runtime != nil {
+		runtime.Wake(thread)
+	}
+}
+func (s *Service) NativeConnected() bool { return s.nativeConnected.Load() }
+
+// A connected socket alone does not establish fresh per-thread control state.
+// Ordinary inputs remain durable while disconnected; buttons need a completed
+// history reconciliation in the current native generation.
+func (s *Service) actionAvailable(thread string) bool {
+	if !s.nativeConnected.Load() {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.actionsReady[thread]
+}
+
+func (s *Service) Run(parent context.Context) error {
+	if s.Store == nil || s.Gateway == nil || s.Connect == nil || s.BotID == "" {
+		return errors.New("service dependencies are incomplete")
+	}
+	if err := s.Config.Validate(); err != nil {
+		return err
+	}
+	if _, err := s.Store.BeginBaseline(parent, s.Config.Host.ID, s.Config.Feishu.AppID, s.now().UnixMilli()); err != nil {
+		return err
+	}
+	defaults, err := rules.DefaultPolicy(s.Config.Notifications.Timezone)
+	if err != nil {
+		return err
+	}
+	if s.Config.Notifications.QuietHours != "" {
+		defaults.QuietStart, defaults.QuietEnd, _ = strings.Cut(s.Config.Notifications.QuietHours, "-")
+	}
+	if err := defaults.Validate(); err != nil {
+		return err
+	}
+	for _, user := range s.Config.Notifications.TargetOpenIDs {
+		if _, err := s.Store.InitNotificationPolicyAt(parent, s.Config.Feishu.AppID, user, defaults, s.now()); err != nil {
+			return err
+		}
+	}
+	if err := s.Store.RecoverReactionTransitions(parent, s.Config.Host.ID, s.Config.Feishu.AppID); err != nil {
+		return err
+	}
+	if err := s.Store.RecoverCommandDispatches(parent, s.Config.Host.ID); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(parent)
+	var workers sync.WaitGroup
+	defer func() { cancel(); workers.Wait(); s.nativeConnected.Store(false) }()
+	commands := &Commands{Store: s.Store, Config: s.Config, Wake: s.Wake, Now: s.Now}
+	receiver := &Receiver{Store: s.Store, Config: s.Config, BotID: s.BotID, Wake: s.Wake, Command: commands.Handle, Notice: s.Notice}
+	receiver.TaskAction = s.claimTask
+	receiver.ActionAllowed = s.actionAvailable
+	errorsCh := make(chan error, 2)
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		err := s.Gateway.Listen(ctx, receiver.Message, receiver.Action)
+		if ctx.Err() == nil {
+			// Keep SDK error payloads out of logs or CLI output.
+			if err == nil {
+				err = errors.New("Feishu receiver stopped")
+			} else {
+				err = errors.New("Feishu receiver unavailable")
+			}
+			errorsCh <- err
+		}
+	}()
+	workers.Add(1)
+	go func() { defer workers.Done(); s.nativeLoop(ctx) }()
+	workers.Add(1)
+	go func() { defer workers.Done(); s.commandLoop(ctx, commands) }()
+	workers.Add(1)
+	go func() { defer workers.Done(); s.receivedLoop(ctx) }()
+	select {
+	case <-parent.Done():
+		return parent.Err()
+	case err := <-errorsCh:
+		return err
+	}
+}
+
+func (s *Service) nativeLoop(ctx context.Context) {
+	interval := s.RetryInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	offlineStaged := false
+	for ctx.Err() == nil {
+		native, err := s.Connect(ctx)
+		if err != nil {
+			s.notice("codex.connection_pending")
+			if !offlineStaged {
+				s.disconnected(ctx)
+				offlineStaged = true
+			}
+		} else {
+			offlineStaged = false
+			runtime := s.generation(native)
+			s.mu.Lock()
+			s.current = runtime
+			s.mu.Unlock()
+			s.nativeConnected.Store(true)
+			s.notice("codex.connected")
+			err = runtime.Run(ctx) // Run cancels and joins its actors before returning.
+			s.nativeConnected.Store(false)
+			s.mu.Lock()
+			s.current = nil
+			s.tasks = nil
+			s.actionsReady = nil
+			s.mu.Unlock()
+			native.Close()
+			if ctx.Err() == nil {
+				s.disconnected(ctx)
+				offlineStaged = true
+				s.notice("codex.reconcile_required")
+			}
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if interval < 30*time.Second {
+			interval *= 2
+			if interval > 30*time.Second {
+				interval = 30 * time.Second
+			}
+		}
+	}
+}
+
+// This runs only in the native-generation loop, after Runtime joined all
+// actors and before the next generation starts journal recovery. Offline
+// patches therefore cannot race recovery or another mirror writer.
+func (s *Service) disconnected(ctx context.Context) {
+	// Optional Feishu feedback must not postpone the next native reconnect
+	// indefinitely when many chats or a slow gateway are present.
+	ctx, stop := context.WithTimeout(ctx, 30*time.Second)
+	defer stop()
+	bindings, err := s.Store.Bindings(ctx, s.Config.Host.ID)
+	if err != nil {
+		s.notice("offline.storage_pending")
+		return
+	}
+	location, _ := time.LoadLocation(s.Config.Notifications.Timezone)
+	if location == nil {
+		location = time.UTC
+	}
+	for _, b := range bindings {
+		if ctx.Err() != nil {
+			return
+		}
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		mark, err := s.Store.Watermark(callCtx, s.Config.Host.ID, b.ThreadID)
+		if err == nil {
+			status := "Codex 连接已断开 · 状态截至 " + time.UnixMilli(mark.ObservedAtMS).In(location).Format("01-02 15:04:05")
+			err = s.Store.StageDisconnectedCards(callCtx, store.SubmissionScope{HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, ThreadID: b.ThreadID}, status)
+		}
+		if err != nil {
+			s.notice("offline.card_pending")
+			cancel()
+			continue
+		}
+		if s.Gateway.Ready() && s.canDeliver(callCtx, b) == nil {
+			outbound := messages.Outbound{Store: s.Store, Gateway: s.Gateway, Membership: s.Gateway, MinProgressIntervalMS: int64(s.Config.Sync.CardUpdateMinIntervalMS), Mentions: &store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn}}
+			for i := 0; i < 16 && callCtx.Err() == nil; i++ {
+				result, err := outbound.DispatchOne(callCtx, s.Config.Host.ID, b.ThreadID, s.now().UnixMilli())
+				if err != nil {
+					s.notice("offline.delivery_pending")
+					break
+				}
+				if result.AttemptID == "" || result.State != "confirmed" {
+					break
+				}
+			}
+		}
+		cancel()
+	}
+}
+
+func (s *Service) generation(native ServiceNative) *Runtime {
+	tracker := &RequestTracker{}
+	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting}
+	controllers := map[string]*submissions.Controller{}
+	var controllerMu sync.Mutex
+	s.mu.Lock()
+	s.tasks = map[string]*TaskControls{}
+	s.actionsReady = map[string]bool{}
+	s.mu.Unlock()
+	task := func(thread string) *TaskControls {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		t := s.tasks[thread]
+		if t == nil {
+			t = &TaskControls{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, Queue: native.Queue}
+			s.tasks[thread] = t
+		}
+		return t
+	}
+	r := &Runtime{
+		Store: s.Store, Native: native, Groups: s.Gateway, Messages: s.Gateway, Membership: s.Gateway,
+		HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, OwnerID: s.Config.Access.OwnerOpenID,
+		Members: s.Config.Groups.AdditionalMemberOpenIDs, AllowedRoots: s.Config.Discovery.AllowedRoots,
+		DiscoveryEnabled: s.Config.Discovery.Enabled, ScanInterval: time.Duration(s.Config.Discovery.ScanIntervalSeconds) * time.Second,
+		PollInterval:          time.Duration(s.Config.Sync.CardUpdateMinIntervalMS) * time.Millisecond,
+		MinProgressIntervalMS: int64(s.Config.Sync.CardUpdateMinIntervalMS),
+		Mentions:              store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn},
+		Ready:                 s.Gateway.Ready, Notice: s.Notice, Now: s.Now, EventObserved: tracker.Observe,
+		DirectoryRules: func(ctx context.Context) ([]rules.DirectoryRule, error) {
+			return s.Store.DirectoryRules(ctx, s.Config.Host.ID, s.Config.Feishu.AppID)
+		},
+	}
+	r.CanDeliver = s.canDeliver
+	r.ActorTick = func(ctx context.Context, thread string) error {
+		controllerMu.Lock()
+		c := controllers[thread]
+		if c == nil {
+			c = &submissions.Controller{Store: s.Store, Native: native, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, ThreadID: thread}
+			controllers[thread] = c
+		}
+		controllerMu.Unlock()
+		return c.Tick(ctx)
+	}
+	r.HistoryPreparing = func(ctx context.Context, thread string, turns []codexclient.Turn) error {
+		tracker.Reconcile(thread, turns)
+		return task(thread).Prepare(ctx, thread, turns)
+	}
+	r.RenderProgress = func(thread, turn, status, body string) string { return task(thread).Render(thread, turn, status, body) }
+	r.HistoryStaged = func(ctx context.Context, thread string, _ []codexclient.Turn) error {
+		if _, err := s.Store.Binding(ctx, s.Config.Host.ID, thread); err != nil {
+			return nil
+		}
+		if err := feedback.Stage(ctx, thread); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.actionsReady[thread] = true
+		s.mu.Unlock()
+		return nil
+	}
+	r.AfterDelivery = feedback.Sync
+	return r
+}
+
+func (s *Service) canDeliver(ctx context.Context, b store.Binding) error {
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	present, err := s.Gateway.BotInChat(checkCtx, b.ChatID)
+	if err != nil || !present {
+		return errors.New("bound chat delivery unavailable")
+	}
+	return nil
+}
+
+func (s *Service) commandLoop(ctx context.Context, commands *Commands) {
+	timer := time.NewTicker(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if !s.Gateway.Ready() {
+				continue
+			}
+			for i := 0; i < 16 && ctx.Err() == nil; i++ {
+				callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				wrote, err := commands.DispatchOne(callCtx, s.Gateway)
+				cancel()
+				if err != nil {
+					s.notice("command.delivery_pending")
+					break
+				}
+				if !wrote {
+					break
+				}
+			}
+		}
+	}
+}
+
+func (s *Service) receivedLoop(ctx context.Context) {
+	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID}
+	timer := time.NewTicker(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if !s.Gateway.Ready() {
+				continue
+			}
+			bindings, err := s.Store.ReceivedFeedbackBindings(ctx, s.Config.Host.ID, s.Config.Feishu.AppID)
+			if err != nil {
+				s.notice("feedback.storage_pending")
+				continue
+			}
+			for _, b := range bindings {
+				callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				if s.canDeliver(callCtx, b) == nil {
+					if err := feedback.Received(callCtx, b.ThreadID); err != nil {
+						s.notice("feedback.received_pending")
+					}
+				}
+				cancel()
+			}
+		}
+	}
+}
+
+func (s *Service) claimTask(ctx context.Context, chat, message, kind, token string, revision int64) (string, error) {
+	// Claim is local DB work. It must not wait for a thread actor holding an
+	// RPC or reuse that actor's render cache. A fresh object reads durable state.
+	b, err := s.Store.BindingByChat(ctx, s.Config.Host.ID, chat)
+	if err != nil || !s.actionAvailable(b.ThreadID) {
+		return "", store.ErrSubmissionStale
+	}
+	t := TaskControls{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID}
+	thread, err := t.Claim(ctx, chat, message, kind, token, revision)
+	if err == nil {
+		s.Wake(thread)
+	}
+	return thread, err
+}
