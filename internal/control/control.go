@@ -1,5 +1,5 @@
-// Package control exposes only local management facts. It has no native RPC,
-// message-sending or shell-execution endpoint.
+// Package control exposes local health and ephemeral private-chat pairing.
+// It has no native RPC, message-sending or shell-execution endpoint.
 package control
 
 import (
@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"codex-feishu/internal/config"
+	"codex-feishu/internal/pairing"
 	"codex-feishu/internal/store"
 )
 
@@ -29,6 +30,7 @@ var (
 	ErrIdentity    = errors.New("managed instance configuration differs")
 	ErrUnsafe      = errors.New("control endpoint ownership or permissions are invalid")
 	ErrActive      = errors.New("control endpoint already active")
+	ErrUnsupported = errors.New("management method unsupported")
 )
 
 // Snapshot deliberately contains no thread IDs, messages, request bodies,
@@ -39,21 +41,34 @@ type Snapshot struct {
 	FeishuConnected  bool                   `json:"feishu_connected"`
 	HydratedBindings int                    `json:"hydrated_bindings"`
 	DiscoveryEnabled bool                   `json:"discovery_enabled"`
+	PairingSupported bool                   `json:"pairing_supported"`
 	StartedAtMS      int64                  `json:"started_at_ms"`
 	ObservedAtMS     int64                  `json:"observed_at_ms"`
 	Persistent       store.PersistentHealth `json:"durable"`
 }
 
 type request struct {
-	Schema   int    `json:"schema_version"`
-	Method   string `json:"method"`
-	Identity string `json:"identity"`
+	Schema   int          `json:"schema_version"`
+	Method   string       `json:"method"`
+	Identity string       `json:"identity"`
+	Pair     *pairRequest `json:"pair,omitempty"`
+}
+type pairRequest struct {
+	RequestID  string `json:"request_id"`
+	TTLSeconds int    `json:"ttl_seconds,omitempty"`
 }
 type response struct {
-	Schema   int       `json:"schema_version"`
-	Identity string    `json:"identity"`
-	Code     string    `json:"code"`
-	Snapshot *Snapshot `json:"snapshot,omitempty"`
+	Schema   int                `json:"schema_version"`
+	Identity string             `json:"identity"`
+	Code     string             `json:"code"`
+	Snapshot *Snapshot          `json:"snapshot,omitempty"`
+	Pair     *pairing.Challenge `json:"pair,omitempty"`
+}
+
+type PairingProvider interface {
+	Begin(string, time.Duration) (pairing.Challenge, error)
+	State(string) (pairing.Result, error)
+	Cancel(string) (pairing.Result, error)
 }
 
 // Identity binds the running configuration, not just an App ID. A changed
@@ -141,6 +156,7 @@ type Server struct {
 	identity string
 	info     os.FileInfo
 	provider func(context.Context) (Snapshot, error)
+	pairing  PairingProvider
 	mu       sync.Mutex
 	closing  bool
 	conns    map[*net.UnixConn]struct{}
@@ -151,11 +167,11 @@ type Server struct {
 // Listen must be called while the caller owns the application's receiver lock.
 // It only replaces a socket proven stale by ECONNREFUSED, never an active or
 // ambiguous endpoint, regular file, symlink or foreign-owned socket.
-func Listen(ctx context.Context, path, identity string, provider func(context.Context) (Snapshot, error)) (*Server, error) {
+func Listen(ctx context.Context, path, identity string, provider func(context.Context) (Snapshot, error), pairProviders ...PairingProvider) (*Server, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !filepath.IsAbs(path) || len(path) >= 108 || len(identity) != 64 || provider == nil {
+	if !filepath.IsAbs(path) || len(path) >= 108 || len(identity) != 64 || provider == nil || len(pairProviders) > 1 {
 		return nil, ErrUnsafe
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -199,7 +215,11 @@ func Listen(ctx context.Context, path, identity string, provider func(context.Co
 		l.Close()
 		return nil, err
 	}
-	return &Server{listener: l, path: path, identity: identity, info: info, provider: provider, conns: map[*net.UnixConn]struct{}{}}, nil
+	server := &Server{listener: l, path: path, identity: identity, info: info, provider: provider, conns: map[*net.UnixConn]struct{}{}}
+	if len(pairProviders) == 1 {
+		server.pairing = pairProviders[0]
+	}
+	return server, nil
 }
 
 func (s *Server) Close() {
@@ -281,17 +301,52 @@ func (s *Server) handle(parent context.Context, conn *net.UnixConn) {
 	}
 	result := response{Schema: protocol, Identity: s.identity}
 	switch {
-	case r.Schema != protocol || r.Method != "health":
+	case r.Schema != protocol:
 		result.Code = "unsupported"
 	case r.Identity != s.identity:
 		result.Code = "identity-conflict"
-	default:
+	case r.Method == "health" && r.Pair == nil:
 		snapshot, err := s.provider(ctx)
 		if err != nil {
 			result.Code = "health-unavailable"
 		} else {
 			result.Code, result.Snapshot = "ok", &snapshot
 		}
+	case (r.Method == "pair.begin" || r.Method == "pair.state" || r.Method == "pair.cancel") && s.pairing != nil && r.Pair != nil:
+		var challenge pairing.Challenge
+		var err error
+		switch r.Method {
+		case "pair.begin":
+			if r.Pair.TTLSeconds < 1 || r.Pair.TTLSeconds > 300 {
+				err = pairing.ErrInvalid
+			} else {
+				challenge, err = s.pairing.Begin(r.Pair.RequestID, time.Duration(r.Pair.TTLSeconds)*time.Second)
+			}
+		case "pair.state", "pair.cancel":
+			if r.Pair.TTLSeconds != 0 {
+				err = pairing.ErrInvalid
+			} else if r.Method == "pair.state" {
+				challenge.Result, err = s.pairing.State(r.Pair.RequestID)
+			} else {
+				challenge.Result, err = s.pairing.Cancel(r.Pair.RequestID)
+			}
+		}
+		switch {
+		case err == nil:
+			result.Code, result.Pair = "ok", &challenge
+		case errors.Is(err, pairing.ErrBusy):
+			result.Code = "pair-busy"
+		case errors.Is(err, pairing.ErrNotFound):
+			result.Code = "pair-not-found"
+		case errors.Is(err, pairing.ErrInvalid):
+			result.Code = "pair-invalid"
+		case errors.Is(err, pairing.ErrClosed):
+			result.Code = "pair-closed"
+		default:
+			result.Code = "pair-unavailable"
+		}
+	default:
+		result.Code = "unsupported"
 	}
 	// The provider returns only the bounded, typed aggregate snapshot.
 	json.NewEncoder(conn).Encode(result)
@@ -299,45 +354,67 @@ func (s *Server) handle(parent context.Context, conn *net.UnixConn) {
 
 // Query never creates an endpoint, receiver or database. Both peers' OS UIDs
 // are checked; filesystem restrictions alone are not the authentication.
-func Query(ctx context.Context, path, identity string) (Snapshot, error) {
-	var snapshot Snapshot
+func exchange(ctx context.Context, path string, req request) (response, error) {
+	var result response
 	if _, err := socketInfo(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return snapshot, ErrUnavailable
+			return result, ErrUnavailable
 		}
-		return snapshot, err
+		return result, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
 	if err != nil {
-		return snapshot, ErrUnavailable
+		return result, ErrUnavailable
 	}
 	defer conn.Close()
 	c := conn.(*net.UnixConn)
 	if err := sameUser(c); err != nil {
-		return snapshot, err
+		return result, err
 	}
 	deadline, _ := ctx.Deadline()
 	c.SetDeadline(deadline)
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()
-	if json.NewEncoder(c).Encode(request{protocol, "health", identity}) != nil || c.CloseWrite() != nil {
-		return snapshot, ErrUnavailable
+	if json.NewEncoder(c).Encode(req) != nil || c.CloseWrite() != nil {
+		return result, ErrUnavailable
 	}
-	var result response
 	if decode(c, &result) != nil || result.Schema != protocol {
-		return snapshot, ErrUnavailable
+		return result, ErrUnavailable
 	}
-	if result.Code == "identity-conflict" || result.Identity != identity {
-		return snapshot, ErrIdentity
+	if result.Code == "identity-conflict" || result.Identity != req.Identity {
+		return result, ErrIdentity
 	}
-	if result.Code != "ok" || result.Snapshot == nil {
-		return snapshot, ErrUnavailable
+	switch result.Code {
+	case "ok":
+		return result, nil
+	case "unsupported":
+		return result, ErrUnsupported
+	case "pair-busy":
+		return result, pairing.ErrBusy
+	case "pair-not-found":
+		return result, pairing.ErrNotFound
+	case "pair-invalid":
+		return result, pairing.ErrInvalid
+	case "pair-closed":
+		return result, pairing.ErrClosed
+	default:
+		return result, ErrUnavailable
+	}
+}
+
+func Query(ctx context.Context, path, identity string) (Snapshot, error) {
+	result, err := exchange(ctx, path, request{Schema: protocol, Method: "health", Identity: identity})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if result.Snapshot == nil || result.Pair != nil {
+		return Snapshot{}, ErrUnavailable
 	}
 	now := time.Now().UnixMilli()
 	if result.Snapshot.ObservedAtMS < now-10_000 || result.Snapshot.ObservedAtMS > now+1_000 {
-		return snapshot, ErrUnavailable
+		return Snapshot{}, ErrUnavailable
 	}
 	return *result.Snapshot, nil
 }

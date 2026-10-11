@@ -12,6 +12,7 @@ import (
 	"codex-feishu/internal/bindings"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
+	"codex-feishu/internal/pairing"
 	"codex-feishu/internal/rules"
 	"codex-feishu/internal/store"
 	"codex-feishu/internal/submissions"
@@ -47,7 +48,8 @@ type Service struct {
 	Connect         func(context.Context) (ServiceNative, error)
 	Notice          func(string)
 	Now             func() time.Time
-	RetryInterval   time.Duration // Tests may shorten; production starts at 1s.
+	RetryInterval   time.Duration    // Tests may shorten; production starts at 1s.
+	Pairing         *pairing.Manager // Ephemeral local management; never persisted as a task.
 	mu              sync.RWMutex
 	current         *Runtime
 	tasks           map[string]*TaskControls
@@ -162,7 +164,12 @@ func (s *Service) Run(parent context.Context) error {
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
-		err := s.Gateway.Listen(ctx, receiver.Message, receiver.Action)
+		err := s.Gateway.Listen(ctx, func(ctx context.Context, event *im.P2MessageReceiveV1) error {
+			if s.Pairing != nil && s.Pairing.Handle(event) {
+				return nil
+			}
+			return receiver.Message(ctx, event)
+		}, receiver.Action)
 		if ctx.Err() == nil {
 			// Keep SDK error payloads out of logs or CLI output.
 			if err == nil {

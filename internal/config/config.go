@@ -86,13 +86,8 @@ func (c Config) Validate() error {
 	if c.Host.ID == "" || strings.Contains(c.Host.ID, "replace") {
 		return errors.New("persistent host.id required")
 	}
-	if !strings.HasPrefix(c.Feishu.AppID, "cli_") || strings.Contains(c.Feishu.AppID, "replace") {
+	if !ValidAppID(c.Feishu.AppID) {
 		return errors.New("valid feishu.app_id required")
-	}
-	for _, char := range c.Feishu.AppID {
-		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_') {
-			return errors.New("invalid feishu.app_id")
-		}
 	}
 	if c.Codex.Endpoint != "auto" && c.Codex.Endpoint != "" {
 		return errors.New("endpoint must be auto for the existing shared daemon")
@@ -158,6 +153,17 @@ func (c Config) Validate() error {
 }
 func ValidOpenID(s string) bool {
 	return cards.ValidMentionID(s) && len(s) > 10 && !strings.Contains(s, "replace")
+}
+func ValidAppID(s string) bool {
+	if !strings.HasPrefix(s, "cli_") || len(s) <= 4 || strings.Contains(s, "replace") {
+		return false
+	}
+	for _, char := range s {
+		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_') {
+			return false
+		}
+	}
+	return true
 }
 func (c Config) Operator(id string) bool {
 	for _, p := range c.Access.OperatorOpenIDs {

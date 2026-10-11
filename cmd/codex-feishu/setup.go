@@ -11,8 +11,7 @@ import (
 
 func runSetup(ctx context.Context, args []string) int {
 	if len(args) > 0 && args[0] == "pair" {
-		emit(output{Command: "setup.pair", State: "pairing-not-integrated", NextSteps: []string{"use an existing application open_id; the managed pairing path is pending"}})
-		return 3
+		return runPair(ctx, args[1:])
 	}
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	input := flags.String("input", "", "absolute setup JSON path")

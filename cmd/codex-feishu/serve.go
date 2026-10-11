@@ -12,6 +12,7 @@ import (
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/control"
 	"codex-feishu/internal/feishu"
+	"codex-feishu/internal/pairing"
 	"codex-feishu/internal/store"
 )
 
@@ -61,7 +62,13 @@ func runServe(ctx context.Context, args []string) int {
 		return 7
 	}
 	defer db.Close()
-	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Connect: func(ctx context.Context) (app.ServiceNative, error) {
+	pairManager, err := pairing.New(cfg.Feishu.AppID, cfg.Access.OwnerOpenID)
+	if err != nil {
+		emit(output{Command: "serve", State: "pairing-unavailable"})
+		return 7
+	}
+	defer pairManager.Close()
+	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Pairing: pairManager, Connect: func(ctx context.Context) (app.ServiceNative, error) {
 		inspectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		daemon, err := codexclient.Discover(inspectCtx, cfg.Codex.CLIPath)
@@ -95,7 +102,7 @@ func runServe(ctx context.Context, args []string) int {
 		emit(output{Command: "serve", State: "control-endpoint-unavailable"})
 		return 6
 	}
-	server, err := control.Listen(ctx, endpoint, identity, service.Health)
+	server, err := control.Listen(ctx, endpoint, identity, service.Health, pairManager)
 	if err != nil {
 		emit(output{Command: "serve", State: "control-endpoint-conflict"})
 		return 6

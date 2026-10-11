@@ -32,6 +32,7 @@ func TestValidateRejectsUnsafeIdentityAndInvalidOperationalSettings(t *testing.T
 		{"mention-all", func(c *Config) { c.Notifications.TargetOpenIDs = []string{"all"} }},
 		{"mention-markup", func(c *Config) { c.Notifications.TargetOpenIDs = []string{`ou_owner<at>`} }},
 		{"application-path", func(c *Config) { c.Feishu.AppID = "cli_../../file" }},
+		{"application-empty-suffix", func(c *Config) { c.Feishu.AppID = "cli_" }},
 		{"quiet-equal", func(c *Config) { c.Notifications.QuietHours = "23:00-23:00" }},
 		{"quiet-malformed", func(c *Config) { c.Notifications.QuietHours = "23:00-08:00-extra" }},
 		{"progress-notification", func(c *Config) { c.Notifications.MentionOn = []string{"progress"} }},

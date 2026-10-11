@@ -2,7 +2,7 @@
 
 版本：2026-10-12 / 配置 schema v1。对象：用户和负责配置的 Agent。
 
-本指南自包含，目标是在用户提供少量信息后，由 Agent 检测环境、生成配置、安装用户服务并验证。**M0 真实联调已通过，当前整合 M1–M3；development 版已有 serve、setup plan / apply、service 和实时 / 只读 status，但一期发布仍待验收。本文安装流程是正式发布契约。** Agent 必须检查 version 的 `phase1_released` 与具体 capabilities：开发版可做 plan，正式 apply / install / start 会拒绝，setup pair 尚未接入。status 实时健康只对提供管理通道的新版运行实例有效，旧 M0 返回只读快照和 pending。命令存在不代表可正式安装；缺少已验收版本时完成只读环境检查并报告前置条件，不能假装配置完成。开发任务另见开发手册，不在一次配置任务里默认编写整个产品。
+本指南自包含，目标是在用户提供少量信息后，由 Agent 检测环境、生成配置、安装用户服务并验证。**M0 真实联调已通过，当前整合 M1–M3；development 版已有 serve、setup plan / apply、service 和实时 / 只读 status，但一期发布仍待验收。本文安装流程是正式发布契约。** Agent 必须检查 version 的 `phase1_released` 与具体 capabilities：开发版可做 plan，正式 apply / install / start 会拒绝，setup pair 已有开发实现但真实私聊 UI 尚待验收（`setup_pair_ui_verified=false`）。status 实时健康只对提供管理通道的新版运行实例有效，旧 M0 返回只读快照和 pending。命令存在不代表可正式安装；缺少已验收版本时完成只读环境检查并报告前置条件，不能假装配置完成。开发任务另见开发手册，不在一次配置任务里默认编写整个产品。
 
 ## 用户直接交给 Agent 的提示词
 
@@ -84,17 +84,25 @@ Agent 可以检测 token、API 错误、长连接和实际事件；仅持有应�
 
 ## D. 不知道 open_id：单聊配对
 
-此步骤要求机器人已发布且能收私聊。只在正式 serve 尚未启动时运行临时配对监听；已有服务则由现有实例处理受控配对，不抢占事件连接。
+此步骤要求已验收版本声明 `capabilities.setup_pair=true`，机器人已发布且能收私聊。工具会优先复用已有正式实例；新部署才使用临时配对监听。已有部署要指定实际配置，不能另起连接绕过旧实例的锁。身份冲突、旧实例不支持或连接未恢复时先报告具体前置条件。
 
-Agent 先准备一个仅包含 app_id、secret 文件引用与环境的临时向导输入。调用已确认存在的 `setup pair --input <绝对路径> --timeout 300 --json`。它给出一次性口令，Agent指导用户在机器人单聊发：
+Agent 准备受限的部分向导 JSON：`schema_version: 1`、`feishu.app_id`、`feishu.app_secret_file`；无须先有 owner、目录或发布包路径。调用：
+
+```sh
+codex-feishu setup pair --input /absolute/path/to/pair-input.json --timeout 300 --json
+```
+
+已有配置不在默认位置时，加 `--config /absolute/path/to/config.toml`。保持这个 CLI 进程运行，逐行读取 JSON；收到 `state=pairing-waiting` 后，只把 `data.pair_command` 展示一次，引导用户在机器人单聊发送该命令。不要将完整输出落盘或保存口令，也不要在用户回复“已发”后重启 CLI 创建第二个口令。
 
 ```text
 /pair <一次性口令>
 ```
 
-工具验证口令后返回实际 sender.open_id。Agent 将其设为 owner，默认填入 operator 与通知目标。配对期间不得启用自动建群或执行用户其他消息；只能接受该应用、私聊、未过期口令。一次性口令可为指导展示一次，长期凭据不展示。
+继续读取同一进程的终态；仅当 `state=paired`、`ok=true` 且退出码为 0 时，将 `data.owner_open_id` 写入待审核的向导输入，并默认用于 operator 与通知目标。CLI 本身不写配置、不重置已有 owner；已有 owner 时只有本人能确认。临时模式只处理配对；已有实例继续正常同步，但 `/pair` 不变成任务或输入。
 
-超时保持 needs_input，提示检查发布、私聊订阅和可见范围；不能把发送者姓名、union_id 或另一个应用的 open_id 代替。用户未回答/未配对时继续保持缺项，等待时间不能代替其选择。
+一次性口令有 128 bit 随机性，最长 5 分钟有效；群消息、其他应用、错误发送者、过期口令不能认领。终态不含口令。取消时终止并等待原 CLI 退出，它会按原请求尝试清理，临时监听也会关闭。
+
+超时或结果未知保持 needs_input，提示检查发布、私聊订阅和可见范围；不能把发送者姓名、union_id 或另一个应用的 open_id 代替。用户未回答/未配对时继续保持缺项，等待时间不能代替其选择。
 
 ## E. 生成向导输入与计划
 

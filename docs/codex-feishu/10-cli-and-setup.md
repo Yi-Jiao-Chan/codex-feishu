@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、M0 verify / m0-listen、serve、setup plan / apply、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对、完整 verify、已有通知规则的向导更新、迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)及[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、M0 verify / m0-listen、serve、setup plan / apply / pair、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对已通过自动测试，真实私聊验收仍待完成；完整 verify、已有通知规则的向导更新、迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)及[私聊配对进展](../research/m3-pairing-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
 
 ## 命令表
 
@@ -13,7 +13,7 @@
 | doctor --config PATH --require-running --json | 启动后必需的连接、绑定恢复及发现基线检查；复用现有管理通道 |
 | setup --input PATH --plan --json | 检查部分输入、生成配置差异和稳定 plan_id；不写正式配置、不启动服务 |
 | setup --input PATH --apply --plan-id ID --json | 应用已知计划；备份旧配置、原子写入，不自行启动 |
-| setup pair --input PATH --timeout 300 --json | 限时私聊配对获取 owner open_id；只监听配对，不启用同步 |
+| setup pair --input PATH [--config PATH] --timeout 300 --json | 限时私聊配对获取 owner open_id；复用已有接收器或只监听配对的临时接收器，不改变同步配置 |
 | service install --config PATH --user --json | 创建/更新本工具的 systemd 用户服务，不操作 Codex 服务 |
 | service start / stop --config PATH --json | 启停本工具用户服务 |
 | service uninstall --config PATH --keep-data --json | 删除本工具服务，默认保留配置、密钥与数据库 |
@@ -72,7 +72,11 @@ apply 用部署配置锁，备份旧配置，原子写临时文件并 rename；�
 
 ## 配对与凭据
 
-用户没有 open_id 时，setup pair 创建至少 80 bit 随机单次口令、有效期 5 分钟，只接受私聊 `/pair <口令>`。匹配后返回该应用下 sender.open_id；配对期间不自动建群、不执行其他消息、不接受群中的口令。已有 owner 时重新配对必须经过本机配置身份，不允许飞书陌生人自行重置。
+用户没有 open_id 时，setup pair 创建 128 bit 随机单次口令，默认有效期 5 分钟，`--timeout` 可取 1–300 秒；只接受同应用、用户私聊、精确文本 `/pair <口令>`。每个实例只允许一个活动请求；口令过期或确认后不能再认领。已有 owner 时只接受原 owner，配对不提供身份重置。
+
+新部署先持有应用锁，机器人身份及长连接 ready 核验通过后才输出口令；临时接收器忽略其他消息、不建群、不执行 Codex 输入，所有退出路径均关闭并等待接收器结束。已有部署须用 `--config` 指定实际配置（默认用户配置路径），严格核验应用、物理密钥引用与 owner；优先复用现有实例的管理通道。旧 M0 无管理通道时还必须取得其数据库监听锁，否则退出冲突，不抢占事件连接。运行中正式实例继续处理正常同步，配对消息在普通入站处理之前被拦截。
+
+`--json` 输出逐行事件：首先是 `pairing-waiting`，其中 `data.pair_command` 仅输出一次；终态 `paired` 含 `data.owner_open_id`，不含口令。超时、取消、连接中断或状态未知返回非成功结果。Ctrl+C 和开始请求的响应丢失均按原 request_id 尝试取消，不重试创建新口令；同 request_id 的底层重试不延长原到期时间。配对状态只在内存中，口令不写数据库、配置或普通日志；CLI 不自动写配置。
 
 输入 app_secret 推荐受控 TTY 或已有 0600 文件；无安全输入渠道时请用户在本机创建凭据文件，仅提供路径。API token 在内存或受限缓存中保存；不进入 chat、argv、git 或普通日志。配对口令可以为指导展示一次，禁止长期记录。
 
@@ -82,7 +86,7 @@ Linux 首选 systemd --user，ExecStart 使用绝对二进制路径和配置路�
 
 运行中 status/verify/pair 复用现有实例，不另开竞争正式事件的 ws 连接。可以通过仅同用户可访问的本机 Unix 控制通道查询健康与提交测试/配对请求，限制为这些管理用例，不提供额外网络执行 API。
 
-当前新版 serve 提供 Linux Unix socket 管理通道，私有目录 0700、socket 0600，客户端和服务端均核验 SO_PEERCRED 的系统用户；只允许健康方法，不提供输入或执行 API。请求绑定物理配置路径与当前完整配置摘要，配置已改变而服务未重启时拒绝报告生效。消息大小、并发连接和等待均有上限；退出关闭全部管理连接，清理只删除自己的 socket。
+当前新版 serve 提供 Linux Unix socket 管理通道，私有目录 0700、socket 0600，客户端和服务端均核验 SO_PEERCRED 的系统用户；只允许 health 与限时 pair.begin / pair.state / pair.cancel 方法，不提供任务输入或执行 API。请求绑定物理配置路径与当前完整配置摘要，配置已改变而服务未重启时拒绝报告生效。消息大小、并发连接和等待均有上限；退出关闭全部管理连接，清理只删除自己的 socket。
 
 status 优先从匹配的运行实例读取真实 receiver ready、原生 reader 生命周期、当前代际已核验绑定数及聚合日志；未决 / 未知变更不报告全部健康。前台运行不要求已经安装 systemd unit；用户服务及注销常驻另列事实，安装向导仍须验证其生命周期。旧 M0 没有管理通道，退回只读检查用户服务、daemon 和数据库计数，可读 schema 1 而不迁移；实时连接 unknown、必需项 pending、退出码 5。systemd active、daemon running 或持久记录可读均不能代替实时桥健康证明。
 

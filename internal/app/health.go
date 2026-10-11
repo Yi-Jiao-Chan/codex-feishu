@@ -13,6 +13,7 @@ import (
 func (s *Service) Health(ctx context.Context) (control.Snapshot, error) {
 	result := control.Snapshot{Running: s.running.Load(), StartedAtMS: s.startedAtMS.Load(), ObservedAtMS: s.now().UnixMilli()}
 	result.DiscoveryEnabled = s.Config.Discovery.Enabled
+	result.PairingSupported = s.Pairing != nil
 	if s.Store == nil {
 		return result, errors.New("service health unavailable")
 	}
