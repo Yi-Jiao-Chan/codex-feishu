@@ -18,6 +18,7 @@ type PersistentHealth struct {
 	NativeAttempts   map[string]int64 `json:"native_attempts"`
 	CommandReplies   map[string]int64 `json:"command_replies"`
 	Reactions        map[string]int64 `json:"reactions"`
+	GroupAttempts    map[string]int64 `json:"group_attempts"`
 	GroupIntents     map[string]int64 `json:"group_intents"`
 	TaskControls     map[string]int64 `json:"task_controls"`
 	TaskClaims       map[string]int64 `json:"task_claims"`
@@ -30,7 +31,7 @@ type PersistentHealth struct {
 func (s *Store) Health(ctx context.Context, schema int, host, app string) (PersistentHealth, error) {
 	h := PersistentHealth{Schema: schema, LegacyM0: schema == 1,
 		Inputs: map[string]int64{}, Outbound: map[string]int64{}, OutboundAttempts: map[string]int64{}, NativeActions: map[string]int64{}, NativeAttempts: map[string]int64{},
-		CommandReplies: map[string]int64{}, Reactions: map[string]int64{}, GroupIntents: map[string]int64{}, TaskControls: map[string]int64{}, TaskClaims: map[string]int64{}, Requests: map[string]int64{}, ReminderAttempts: map[string]int64{}}
+		CommandReplies: map[string]int64{}, Reactions: map[string]int64{}, GroupAttempts: map[string]int64{}, GroupIntents: map[string]int64{}, TaskControls: map[string]int64{}, TaskClaims: map[string]int64{}, Requests: map[string]int64{}, ReminderAttempts: map[string]int64{}}
 	count := func(query string, args ...any) (int64, error) {
 		var n int64
 		err := s.DB.QueryRowContext(ctx, query, args...).Scan(&n)
@@ -100,6 +101,15 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 	if schema >= 2 {
 		if err := countStates(h.GroupIntents, remoteStates, `SELECT COUNT(*) FROM create_intents WHERE host_id=? AND state=?`, host); err != nil {
 			return h, err
+		}
+	}
+	if schema >= 13 {
+		if err := countStates(h.GroupAttempts, attemptStates, `SELECT COUNT(*) FROM group_attempts a JOIN create_intents i USING(intent_id) WHERE i.host_id=? AND a.state=?`, host); err != nil {
+			return h, err
+		}
+		h.GroupIntents["deferred"], err = count(`SELECT COUNT(*) FROM group_throttles t JOIN create_intents i USING(intent_id) WHERE i.host_id=?`, host)
+		if err != nil {
+			return h, errors.New("group retry health unavailable")
 		}
 	}
 	if schema >= 3 {

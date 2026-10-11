@@ -215,50 +215,37 @@ func (s *Store) PrepareGroup(ctx context.Context, host, thread, owner, name stri
 }
 
 func (s *Store) ClaimGroupDispatch(ctx context.Context, id string) (bool, error) {
-	r, err := s.DB.ExecContext(ctx, "UPDATE create_intents SET state='dispatching' WHERE intent_id=? AND state='ready'", id)
-	if err != nil {
-		return false, err
-	}
-	n, err := r.RowsAffected()
-	return n == 1, err
+	_, claimed, err := s.ClaimGroupAttempt(ctx, id, time.Now().UnixMilli())
+	return claimed, err
 }
 
 // Only use after acquiring this deployment's process lock at startup.
 func (s *Store) RecoverGroupDispatches(ctx context.Context, host string) error {
-	_, err := s.DB.ExecContext(ctx, "UPDATE create_intents SET state='unknown' WHERE host_id=? AND state='dispatching'", host)
-	return err
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE group_attempts SET state='unknown' WHERE state='dispatching' AND intent_id IN (SELECT intent_id FROM create_intents WHERE host_id=?)`, host); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE create_intents SET state='unknown' WHERE host_id=? AND state='dispatching'", host); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) FinishGroupAttempt(ctx context.Context, id, state string) error {
 	if state != "unknown" && state != "rejected" {
 		return ErrConflict
 	}
-	r, err := s.DB.ExecContext(ctx, "UPDATE create_intents SET state=? WHERE intent_id=? AND state='dispatching'", state, id)
-	if err != nil {
-		return err
-	}
-	n, err := r.RowsAffected()
-	if err == nil && n != 1 {
-		return ErrConflict
-	}
-	return err
+	return s.finishGroup(ctx, id, "", state, "")
 }
 
-// Saving the remote ID and saving the binding are separate recoverable steps.
-// A local binding failure must not discard a confirmed remote creation.
+// A known remote ID can recover an unknown legacy intent without another POST.
+// Saving the binding remains a separate recoverable step.
 func (s *Store) ConfirmGroup(ctx context.Context, id, chat string) error {
-	if chat == "" {
-		return ErrConflict
-	}
-	r, err := s.DB.ExecContext(ctx, "UPDATE create_intents SET state='confirmed',chat_id=? WHERE intent_id=? AND (state IN ('dispatching','unknown') OR (state='confirmed' AND chat_id=?))", chat, id, chat)
-	if err != nil {
-		return err
-	}
-	n, err := r.RowsAffected()
-	if err == nil && n != 1 {
-		return ErrConflict
-	}
-	return err
+	return s.finishGroup(ctx, id, "", "confirmed", chat)
 }
 
 func (s *Store) BindConfirmedGroup(ctx context.Context, id string) error {

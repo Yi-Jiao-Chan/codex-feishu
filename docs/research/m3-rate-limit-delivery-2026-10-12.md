@@ -30,7 +30,7 @@
 
 ## 仍需完成
 
-建群、命令回复及 App 待处理提醒的持久限流恢复尚需分别接入；reaction 已完成下述隔离实现。unknown 的远端读回核验、真实 M0 迁移接管、受控 verify、用户服务真实安装与一期验收也仍 pending。`phase1_released=false` 保持不变，不能把新 capability 当作整个一期发布通过。
+命令回复及 App 待处理提醒的持久限流恢复尚需分别接入；reaction 和建群已完成下述隔离实现。unknown 的远端读回核验、真实 M0 迁移接管、受控 verify、用户服务真实安装与一期验收也仍 pending。`phase1_released=false` 保持不变，不能把新 capability 当作整个一期发布通过。
 
 ## Reaction 的持久限流恢复
 
@@ -43,3 +43,17 @@ schema 12 的 `reaction_throttles` 保存 receipt、原操作 key/revision、等
 新增隔离测试覆盖持久等待与重启、响应时钟、server floor、指数退避和溢出、最新状态、delete/add 两阶段、SQL 故障回滚、unknown/永久拒绝不重开、schema 11→12 保留已知 reaction、状态摘要与 received-loop 筛选。网关模拟 HTTP 验证 reaction 的通用频控与不支持代码；真实 M0 未迁移，无外部消息或实际 reaction 请求。
 
 Reaction 组合实现通过 `go test -race ./... -count=1`、`go vet ./...` 和 `git diff --check`；仍只声明该开发切片，未执行真实部署或一期发布。
+
+## 自动建群的持久限流恢复
+
+schema 13 新增 `group_attempts` / `group_throttles`。每次领取在同一事务将意图改为 dispatching、记录独立 attempt；原意图冻结名称、owner、成员，所有请求沿用 intent ID 作为平台 UUID。不依赖 UUID 窗口处理未知请求：只有网关 typed RateLimited 的明确通用频控拒绝才会把 attempt 保存为 rejected、保存响应接收后的 deadline/退避次数并将意图重开为 ready。幂等重放 deferral 不推迟时间；server 下限可高于 60 秒。
+
+Manager 在 waiting 阶段先读本地 deadline，不 Attach 或调用创建 API；到期用实际元数据重验授权，事务领取再检查 observation 仍为 eligible/new、已有 binding、等待下限和未决 attempt。目录 mute 已导致 excluded 时不复活。当前配置的 owner/成员集合若与冻结意图不一致，未创建意图暂停，不按旧名单建群或擅自改原请求；等价的成员顺序/重复不影响核验。成功时 attempt 与 chat ID、意图 confirmed 在一事务确认；binding 另行保存，绑定失败保留群结果。按 exact attempt ID 保存结果，旧请求不能覆盖下一重试；意图级兼容结果接口仅允许首次 dispatch、权威 unknown readback 或同 chat 的 confirmed 幂等，重试中的实时结果必须携带 exact ID。
+
+恢复把遗留 dispatching 的 attempt/intent 共同标为 unknown。schema 12 升级不会替没有 attempt 的旧未决意图编造结果，仍维持 unknown。权限拒绝、额度耗尽、空 chat ID、5xx 和网络未知不进入重试路径，网关 allowlist 没扩大。
+
+线程 actor 收到 deferred 结果后按持久 deadline 在现有 tick 唤醒，不立刻重复读历史或创建 goroutine；等待时仍接收和保存公开过程与最终回复，群确认后正常补齐。没有新的 App/飞书输入也能恢复；错误回调不清除此前已收到的真实事件唤醒，避免限流结束竞争丢掉最新历史同步。状态摘要新增 `group_intents.deferred` 和 `group_attempts` 计数，不输出创建参数或原文。
+
+隔离测试覆盖响应时钟、重启保留等待、原请求参数/UUID、SQL 故障回滚、unknown 不重开、并发到期唯一领取、stale attempt 和意图级 API 不能覆盖新 dispatch、授权变化/排除、backoff 与溢出、schema 12 旧未决数据，以及真实组合 runtime 在限流期间保存最终结果、无新输入到期重试和绑定后补齐。独立只读审查定位并修复竞争分类与兼容接口覆盖的问题；没有访问实际 M0、native 或飞书。
+
+本轮 `go test -race ./... -count=1` 通过，之后针对缺失 exact ID、成员授权和事件唤醒的修正分别重跑 store / bindings / app；关闭补偿扫描的定时器恢复测试连续 10 次通过，`go vet ./...` 和 `git diff --check` 通过。真实 M0 未切换，整个一期仍待部署与 UI 验收。

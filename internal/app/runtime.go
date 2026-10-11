@@ -324,11 +324,12 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 			seenMembers[id] = true
 		}
 	}
-	manager := &bindings.Manager{Store: r.Store, Native: r.Native, Groups: r.Groups, HostID: r.HostID, OwnerID: r.OwnerID, Members: members, Authorize: func(ctx context.Context, t codexclient.Thread) error { return r.Authorize(ctx, t, true) }}
+	manager := &bindings.Manager{Store: r.Store, Native: r.Native, Groups: r.Groups, HostID: r.HostID, OwnerID: r.OwnerID, Members: members, Now: r.now, Authorize: func(ctx context.Context, t codexclient.Thread) error { return r.Authorize(ctx, t, true) }}
 	groupDone := make(chan error, 1)
 	var groupWG sync.WaitGroup
 	defer groupWG.Wait()
 	groupRunning, groupBlocked, attached, hydrated := false, false, false, false
+	var groupRetryAtMS int64
 	dirty := true
 	lastRead := time.Time{}
 	title := "Codex"
@@ -336,6 +337,10 @@ actorLoop:
 	for {
 		if ctx.Err() != nil {
 			return
+		}
+		if groupRetryAtMS > 0 && r.now().UnixMilli() >= groupRetryAtMS {
+			groupRetryAtMS = 0
+			dirty = true
 		}
 		if dirty || r.now().Sub(lastRead) >= 15*time.Second {
 			dirty = false
@@ -461,7 +466,7 @@ actorLoop:
 					}
 				} else if !errors.Is(bindingErr, sql.ErrNoRows) {
 					r.notice("binding.read_pending")
-				} else if hydrated && r.DiscoveryEnabled && r.ready() && !groupRunning && !groupBlocked {
+				} else if hydrated && r.DiscoveryEnabled && r.ready() && !groupRunning && !groupBlocked && r.now().UnixMilli() >= groupRetryAtMS {
 					groupRunning = true
 					groupWG.Add(1)
 					// Capture the chosen title: later history/name changes must
@@ -494,8 +499,15 @@ actorLoop:
 			case err := <-groupDone:
 				groupRunning = false
 				groupBlocked = errors.Is(err, bindings.ErrGroupUnknown) || errors.Is(err, bindings.ErrGroupRejected)
-				dirty = true
-				if err != nil {
+				// Error completion must not immediately rehydrate/spawn another
+				// creator. A durable limit supplies its own due wakeup; unrelated
+				// transient failures use the existing periodic/history retry.
+				dirty = dirty || err == nil // Preserve a real event already waiting to hydrate.
+				var deferred *bindings.GroupDeferredError
+				if errors.As(err, &deferred) {
+					groupRetryAtMS = deferred.RetryAtMS
+					r.notice("group.rate_wait")
+				} else if err != nil {
 					r.notice("group.verification_required")
 				}
 				continue actorLoop

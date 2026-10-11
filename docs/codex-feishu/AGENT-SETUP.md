@@ -150,7 +150,7 @@ CLI 已通过能力检查且 plan 无必需缺项时：
 
 逐步检查退出码，不用 shell 链把后续步骤在失败后继续跑。setup 生成正式 TOML，备份现有配置并原子写入；目录 0700，配置/secret 0600。保留原 host_id、数据库和绑定。重复配置差异为空时 no-op，不换身份、不清空历史、不重建群。
 
-重配已有部署时，先读 plan 的现有通知规则与独立差异。省略 quiet / timezone 保留有效规则；只有用户明确要求清除免打扰时才传 `quiet_hours: ""`。更新仅影响 owner 的明确字段，保留关闭 @ 与 snooze，其他接收者保持原值。已有规则更新需当前 schema 12；旧 M0 数据库不能由配置任务顺手迁移。普通启动也会拒绝未接管的 schema 1。迁移命令、备份和中断恢复已有隔离测试，但开发版拒绝真实迁移；不要改 user_version、清空日志或启动新实例绕过该边界，见[接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
+重配已有部署时，先读 plan 的现有通知规则与独立差异。省略 quiet / timezone 保留有效规则；只有用户明确要求清除免打扰时才传 `quiet_hours: ""`。更新仅影响 owner 的明确字段，保留关闭 @ 与 snooze，其他接收者保持原值。已有规则更新需当前 schema 13；旧 M0 数据库不能由配置任务顺手迁移。普通启动也会拒绝未接管的 schema 1。迁移命令、备份和中断恢复已有隔离测试，但开发版拒绝真实迁移；不要改 user_version、清空日志或启动新实例绕过该边界，见[接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
 
 **检测到旧 M0 schema 1 时：**先检查 `capabilities.setup_migrate` 和 `phase1_released`。开发版最多做迁移预览，报告 `migration-plan-needs-release`；不能为配置任务切换现有桥。发布版且用户已授权迁移时，使用原配置绝对路径：
 
