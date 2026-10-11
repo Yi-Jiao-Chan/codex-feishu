@@ -88,6 +88,8 @@ M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书
 - [配置向导、用户服务与待处理提醒进展](../research/m3-setup-and-request-reminders-2026-10-12.md)
 - [管理通道、状态核验与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)
 - [只读诊断与内嵌权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)
+- [私聊配对与 Agent 配置指引进展](../research/m3-pairing-2026-10-12.md)
+- [验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)
 - [准确版本审批与问答路由](../research/approval-routing-0.162.0.md)
 - [卡片组件研究](../research/codex-feishu-card-ux-2026-10-10.md)
 - [主链路验证](../research/codex-feishu-probes-2026-10-10/native-queue-probe-result.json)、[并发与边界](../research/codex-feishu-probes-2026-10-10/native-race-probe-result.json)、[空闲入口](../research/codex-feishu-probes-2026-10-10/native-idle-queue-probe-result.json)
@@ -106,5 +108,3 @@ M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书
 ```
 
 一次任务应形成可评审的切片。涉及公共契约变更时先说明具体冲突，再同步更新相关模块；不要在一个模块里另造执行队列或绕过同会话约束。
-
-- [私聊配对与 Agent 配置指引进展](../research/m3-pairing-2026-10-12.md)

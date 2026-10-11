@@ -158,7 +158,9 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 
 ## G. 真实验证
 
-有提示词中的本人测试授权时，运行：
+先检查 `version` 的 `capabilities.verify_managed_tests`。当前开发版为 false，完整受控验收尚未接入；默认 verify 可以做只读前置检查，但必需 UI / P1 证据仍 pending。不要把旧 M0 测试准备当作正式验收，也不要为了绕过实例锁停止用户现有桥或用开发版 m0-listen 迁移旧数据库。
+
+已验收版本具备该能力且有提示词中的本人测试授权时，运行：
 
 ```sh
 "$cfb_cli" verify --config "$cfb_config" --target self --allow-test-card --allow-test-group --allow-test-thread --json

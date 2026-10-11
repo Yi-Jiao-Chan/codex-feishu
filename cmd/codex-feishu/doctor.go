@@ -23,10 +23,13 @@ type doctorGateway interface {
 var errDoctorNoDatabase = errors.New("diagnostic database not initialized")
 
 type doctorDependencies struct {
-	discover func(context.Context, string) (codexclient.Daemon, error)
-	health   func(context.Context, string, config.Config) (control.Snapshot, error)
-	gateway  func(config.Config, string) doctorGateway
-	snapshot func(context.Context, config.Config) (store.PersistentHealth, error)
+	// Local verifier captures the exact validated snapshot used by these GETs.
+	// Credentials remain in memory and are never included in diagnostic output.
+	validatedConfig func(config.Config, string)
+	discover        func(context.Context, string) (codexclient.Daemon, error)
+	health          func(context.Context, string, config.Config) (control.Snapshot, error)
+	gateway         func(config.Config, string) doctorGateway
+	snapshot        func(context.Context, config.Config) (store.PersistentHealth, error)
 	// Used only by the explicitly requested standalone --codex-only probe.
 	nativeProbe func(context.Context, codexclient.Daemon) (int, error)
 }
@@ -115,6 +118,9 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 			return o, 4
 		}
 		o.Checks = append(o.Checks, check{"feishu.secret", "pass", true, "private credential file read; value omitted"})
+		if deps.validatedConfig != nil {
+			deps.validatedConfig(cfg, secret)
+		}
 	}
 	cli := "auto"
 	if !codexOnly {

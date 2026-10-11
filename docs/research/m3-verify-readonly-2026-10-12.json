@@ -1,0 +1,211 @@
+{
+  "date": "2026-10-12",
+  "commit": "e886a67+verify-development",
+  "binary_sha256": "61fab6f043355a093753c01283d333e1ac7056ee67ca45202e5bb16888f43621",
+  "command": "verify --config existing-m0-config --target self --json",
+  "exit_code": 5,
+  "state": "diagnostics-pending",
+  "read_only": true,
+  "database_before": {
+    "schema": 1,
+    "mode": "0o600"
+  },
+  "database_after": {
+    "schema": 1,
+    "mode": "0o600"
+  },
+  "existing_listener_live_before_and_after": true,
+  "extra_connections_evidence_basis": "configured code path and automated dependency-boundary tests; not runtime syscall tracing",
+  "new_receiver_opened": false,
+  "native_client_opened": false,
+  "test_writes_authorized": false,
+  "test_writes_performed": false,
+  "checks": [
+    {
+      "id": "config",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.secret",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "codex.daemon",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "codex.compatibility",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "instance.live_health",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "store.snapshot",
+      "status": "pass",
+      "required": false
+    },
+    {
+      "id": "feishu.bot",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.granted_scopes",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.bot_identity",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.receive_p2p_user",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.receive_group_user_at",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.create_chat_with_initial_owner_members",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.get_chat",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.get_chat_human_members",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.bot_is_in_chat",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.send_message",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.reply_message",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.patch_shared_card",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.get_own_p2p_message",
+      "status": "pass",
+      "required": false
+    },
+    {
+      "id": "feishu.permission.get_own_group_message",
+      "status": "pending",
+      "required": false
+    },
+    {
+      "id": "feishu.permission.create_delete_own_reaction",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "feishu.permission.card_callback",
+      "status": "pass",
+      "required": true
+    },
+    {
+      "id": "verification.live_ui",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "release.acceptance",
+      "status": "pending",
+      "required": false
+    },
+    {
+      "id": "acceptance.P1-01",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-02",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-03",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-04",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-05",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-06",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-07",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-08",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-09",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-10",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-11",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "acceptance.P1-12",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "id": "verification.test_writes",
+      "status": "skipped",
+      "required": false
+    }
+  ],
+  "phase1_released": false
+}
