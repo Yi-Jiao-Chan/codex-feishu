@@ -146,3 +146,26 @@ func TestLegacyLostAddReceiptIsNeverAdoptedAsUnsent(t *testing.T) {
 		t.Fatal("legacy unknown was blindly retried", err)
 	}
 }
+
+func TestStopCardClaimSeedCannotBeReplacedDuringPreparation(t *testing.T) {
+	s, _, scope, _ := submissionStore(t)
+	ctx := context.Background()
+	a, err := s.ClaimThreadSubmissionActionExpected(ctx, scope, "stop", "card-stop", "original-turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.PrepareSubmissionAction(ctx, scope, a.ID, "interrupt", "new-turn", "", ""); !errors.Is(err, ErrSubmissionStale) {
+		t.Fatal("preparation replaced the card's captured target", err)
+	}
+	got, err := s.SubmissionAction(ctx, scope, a.ID)
+	if err != nil || got.ExpectedTurnID != "original-turn" || got.Stage != "prepare" || got.State != "ready" {
+		t.Fatal("rejected preparation mutated the persisted claim", err)
+	}
+	if err = s.PrepareSubmissionAction(ctx, scope, a.ID, "interrupt", "original-turn", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.ClaimThreadSubmissionActionExpected(ctx, scope, "stop", "card-stop", "new-turn")
+	if err != nil || got.ID != a.ID || got.ExpectedTurnID != "original-turn" || got.Stage != "interrupt" {
+		t.Fatal("replayed claim replaced its original target", err)
+	}
+}

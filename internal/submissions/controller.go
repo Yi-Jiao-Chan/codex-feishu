@@ -64,21 +64,30 @@ func (c *Controller) ClaimAction(ctx context.Context, receiptID, kind, expectedQ
 }
 
 func (c *Controller) Stop(ctx context.Context, actionID string) (store.SubmissionAction, error) {
-	return c.claimControl(ctx, "stop", actionID)
+	return c.claimControl(ctx, "stop", actionID, "")
+}
+
+// StopExpected binds a card action to the turn the card displayed. It performs
+// no native reads or writes; an ended/replaced turn is rejected by Tick.
+func (c *Controller) StopExpected(ctx context.Context, actionID, expectedTurnID string) (store.SubmissionAction, error) {
+	if expectedTurnID == "" {
+		return store.SubmissionAction{}, store.ErrSubmissionStale
+	}
+	return c.claimControl(ctx, "stop", actionID, expectedTurnID)
 }
 
 func (c *Controller) Continue(ctx context.Context, actionID string) (store.SubmissionAction, error) {
-	return c.claimControl(ctx, "continue", actionID)
+	return c.claimControl(ctx, "continue", actionID, "")
 }
 
-func (c *Controller) claimControl(ctx context.Context, kind, actionID string) (store.SubmissionAction, error) {
+func (c *Controller) claimControl(ctx context.Context, kind, actionID, expectedTurnID string) (store.SubmissionAction, error) {
 	if err := c.valid(); err != nil {
 		return store.SubmissionAction{}, err
 	}
 	if err := c.Store.StageSubmissions(ctx, c.scope()); err != nil {
 		return store.SubmissionAction{}, &Error{err}
 	}
-	a, err := c.Store.ClaimThreadSubmissionAction(ctx, c.scope(), kind, actionID)
+	a, err := c.Store.ClaimThreadSubmissionActionExpected(ctx, c.scope(), kind, actionID, expectedTurnID)
 	return a, safeClaimError(err)
 }
 
@@ -446,6 +455,13 @@ func (c *Controller) processAction(ctx context.Context, actionID string) error {
 				}
 				err = c.Store.PrepareSubmissionAction(ctx, c.scope(), op.ID, "delete", snap.active, op.QueueID, n.ClientID)
 			case "stop":
+				if op.ExpectedTurnID != "" && snap.active != op.ExpectedTurnID {
+					result := "changed"
+					if target, found := snap.turns[op.ExpectedTurnID]; found && target.Status != "inProgress" {
+						result = "ended"
+					}
+					return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", result)
+				}
 				if snap.active == "" {
 					return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", "idle")
 				}

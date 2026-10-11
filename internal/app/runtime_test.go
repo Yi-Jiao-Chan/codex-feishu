@@ -159,6 +159,7 @@ func runtimeFixture(t *testing.T) (*store.Store, *runtimeNative, *runtimeGateway
 }
 func TestRuntimePersistsBirthDuringSnapshotAndFinalDuringSlowGroup(t *testing.T) {
 	db, n, g, r := runtimeFixture(t)
+	r.Mentions = store.MentionOptions{Targets: []string{"ou_runtime_recipient"}}
 	n.set("old", r.AllowedRoots[0], "completed")
 	n.listStarted = make(chan struct{})
 	n.releaseList = make(chan struct{})
@@ -207,6 +208,21 @@ func TestRuntimePersistsBirthDuringSnapshotAndFinalDuringSlowGroup(t *testing.T)
 	if writes != 0 {
 		t.Fatal("content sent before group existed")
 	}
+	// The first disabled configuration is frozen while group creation is
+	// still blocked; a later reconnect/config change cannot revive reminders.
+	runtimeWait(t, func() bool {
+		ms, err := db.Mirrors(ctx, "host", "new")
+		if err != nil {
+			return false
+		}
+		for _, m := range ms {
+			if m.Kind == "final" {
+				ds, err := db.MentionDecisions(ctx, "host", "new", m.Key)
+				return err == nil && len(ds) == 1 && ds[0].State == "suppressed"
+			}
+		}
+		return false
+	})
 	close(g.releaseCreate)
 	runtimeWait(t, func() bool {
 		ms, err := db.Mirrors(ctx, "host", "new")

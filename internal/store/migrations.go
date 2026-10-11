@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 // Preserve the M0 journals while adding production discovery and outbox slices.
 // Never reset user_version on open or accept a newer database accidentally.
@@ -135,6 +135,14 @@ PRAGMA user_version=4;
 			return err
 		}
 		if _, err = tx.Exec("PRAGMA user_version=6"); err != nil {
+			return err
+		}
+	}
+	if version < 7 {
+		if _, err = tx.Exec(MentionsSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=7"); err != nil {
 			return err
 		}
 	}

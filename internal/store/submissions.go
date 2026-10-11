@@ -326,7 +326,13 @@ func (s *Store) ClaimSubmissionAction(ctx context.Context, scope SubmissionScope
 }
 
 func (s *Store) ClaimThreadSubmissionAction(ctx context.Context, scope SubmissionScope, kind, token string) (SubmissionAction, error) {
-	if token == "" || kind != "stop" && kind != "continue" {
+	return s.ClaimThreadSubmissionActionExpected(ctx, scope, kind, token, "")
+}
+
+// ClaimThreadSubmissionActionExpected seeds a stop card's immutable target at
+// claim time. Replays return the original action, including its original target.
+func (s *Store) ClaimThreadSubmissionActionExpected(ctx context.Context, scope SubmissionScope, kind, token, expectedTurnID string) (SubmissionAction, error) {
+	if token == "" || kind != "stop" && kind != "continue" || kind != "stop" && expectedTurnID != "" {
 		return SubmissionAction{}, ErrSubmissionStale
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -352,8 +358,8 @@ func (s *Store) ClaimThreadSubmissionAction(ctx context.Context, scope Submissio
 	} else if blocked {
 		return SubmissionAction{}, ErrSubmissionBusy
 	}
-	a = SubmissionAction{ID: ID(), Token: token, Kind: kind, Stage: "prepare", State: "ready"}
-	_, err = tx.ExecContext(ctx, `INSERT INTO submission_actions(action_id,host_id,app_id,thread_id,token,revision,kind,stage,state,created_at_ms) VALUES(?,?,?,?,?,0,?,'prepare','ready',?)`, a.ID, scope.HostID, scope.AppID, scope.ThreadID, token, kind, time.Now().UnixMilli())
+	a = SubmissionAction{ID: ID(), Token: token, Kind: kind, Stage: "prepare", State: "ready", ExpectedTurnID: expectedTurnID}
+	_, err = tx.ExecContext(ctx, `INSERT INTO submission_actions(action_id,host_id,app_id,thread_id,token,revision,kind,stage,state,expected_turn_id,created_at_ms) VALUES(?,?,?,?,?,0,?,'prepare','ready',?,?)`, a.ID, scope.HostID, scope.AppID, scope.ThreadID, token, kind, expectedTurnID, time.Now().UnixMilli())
 	if err != nil {
 		return SubmissionAction{}, err
 	}
@@ -375,7 +381,7 @@ func (s *Store) PrepareSubmissionAction(ctx context.Context, scope SubmissionSco
 	if err != nil {
 		return err
 	}
-	if a.State != "ready" || a.Stage != "prepare" ||
+	if a.State != "ready" || a.Stage != "prepare" || a.ExpectedTurnID != "" && turnID != a.ExpectedTurnID ||
 		(a.Kind == "steer" || a.Kind == "remove") && (stage != "delete" || a.QueueID != queueID || a.ClientID != clientID) ||
 		a.Kind == "stop" && (stage != "interrupt" || turnID == "") ||
 		a.Kind == "continue" && stage != "start" || a.Kind == "steer" && turnID == "" {

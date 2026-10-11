@@ -196,6 +196,12 @@ func (s *Store) ReadyMirrors(ctx context.Context, host, thread string) ([]Mirror
 // A false claim means not ready, stale revision, no binding/parent yet, or the
 // per-thread writer/progress interval is busy. Unknown work is never claimed.
 func (s *Store) ClaimMirror(ctx context.Context, host, thread, key string, revision, nowMS int64) (a MirrorAttempt, claimed bool, err error) {
+	return s.ClaimMirrorWithMentions(ctx, host, thread, key, revision, nowMS, MentionOptions{})
+}
+
+// ClaimMirrorWithMentions additionally freezes scheduled, reachable mentions in
+// the same attempt transaction. It never creates notification eligibility.
+func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key string, revision, nowMS int64, mentions MentionOptions) (a MirrorAttempt, claimed bool, err error) {
 	if nowMS <= 0 {
 		return a, false, errors.New("invalid dispatch time")
 	}
@@ -257,7 +263,14 @@ func (s *Store) ClaimMirror(ctx context.Context, host, thread, key string, revis
 	default:
 		a.Operation = "reply"
 	}
+	mentionIDs, err := prepareMirrorMentions(ctx, tx, m, &a, mentions)
+	if err != nil {
+		return MirrorAttempt{}, false, err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO outbound_attempts(attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching')`, a.ID, host, thread, key, a.Revision, a.Operation, a.ChatID, a.ParentMessageID, a.TargetMessageID, a.Card, nowMS)
+	if err == nil {
+		err = linkMirrorMentions(ctx, tx, a, mentionIDs)
+	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='dispatching' WHERE host_id=? AND thread_id=? AND mirror_key=?`, host, thread, key)
 	}
@@ -327,6 +340,9 @@ func (s *Store) FinishMirrorAttempt(ctx context.Context, id, outcome, remoteID s
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `UPDATE outbound SET state=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, state, a.HostID, a.ThreadID, a.Key)
 	}
+	if err == nil {
+		_, err = tx.ExecContext(ctx, `UPDATE mentions SET state=? WHERE attempt_id=? AND state IN ('dispatching','unknown')`, outcome, id)
+	}
 	if err != nil {
 		return err
 	}
@@ -345,6 +361,9 @@ func (s *Store) RecoverMirrorDispatches(ctx context.Context, host string) error 
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE outbound SET state='unknown' WHERE host_id=? AND state='dispatching'`, host); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE mentions SET state='unknown' WHERE host_id=? AND state='dispatching'`, host); err != nil {
 		return err
 	}
 	return tx.Commit()

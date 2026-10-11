@@ -3,6 +3,7 @@ package sync
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	"codex-feishu/internal/feishu"
@@ -15,13 +16,18 @@ type MessageGateway interface {
 	UpdateCard(context.Context, string, string) error
 }
 
-// Outbound dispatches already-rendered public cards. The composition root owns
-// notification decisions and must not place an expired @ list in a mirror.
-// Notification rendering and verified unknown-attempt reconciliation are not
-// implemented in this foundation; no ambiguous request is automatically retried.
+type MembershipGateway interface {
+	MemberIDs(context.Context, string) ([]string, error)
+}
+
+// Outbound dispatches public cards. Optional notifications must have been
+// scheduled at first observation. Membership is read outside SQL transactions;
+// missing proof suppresses mentions while body delivery continues.
 type Outbound struct {
-	Store   *store.Store
-	Gateway MessageGateway
+	Store      *store.Store
+	Gateway    MessageGateway
+	Mentions   *store.MentionOptions
+	Membership MembershipGateway
 }
 
 type DeliveryResult struct {
@@ -40,7 +46,24 @@ func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS in
 		return DeliveryResult{}, err
 	}
 	for _, m := range ready {
-		a, claimed, err := o.Store.ClaimMirror(ctx, host, thread, m.Key, m.Revision, nowMS)
+		options := store.MentionOptions{}
+		if o.Mentions != nil {
+			options = *o.Mentions
+			options.ChatID, options.MemberIDs = "", nil
+			if options.Enabled && m.EventType != "" && m.RemoteID == "" && o.Membership != nil {
+				binding, err := o.Store.Binding(ctx, host, thread)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return DeliveryResult{}, err
+				}
+				if err == nil {
+					members, err := o.Membership.MemberIDs(ctx, binding.ChatID)
+					if err == nil {
+						options.ChatID, options.MemberIDs = binding.ChatID, members
+					}
+				}
+			}
+		}
+		a, claimed, err := o.Store.ClaimMirrorWithMentions(ctx, host, thread, m.Key, m.Revision, nowMS, options)
 		if err != nil {
 			return DeliveryResult{}, err
 		}

@@ -35,6 +35,8 @@ type Runtime struct {
 	Native                     RuntimeNative
 	Groups                     bindings.Groups
 	Messages                   messages.MessageGateway
+	Mentions                   store.MentionOptions
+	Membership                 messages.MembershipGateway
 	HostID, AppID, OwnerID     string
 	Members, AllowedRoots      []string
 	DiscoveryEnabled           bool
@@ -43,6 +45,8 @@ type Runtime struct {
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
 	ActorTick                  func(context.Context, string) error
+	HistoryStaged              func(context.Context, string, []codexclient.Turn) error
+	AfterDelivery              func(context.Context, string, []codexclient.Turn) error
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
 	Notice  func(string)
 	Now     func() time.Time
@@ -288,7 +292,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	timer := time.NewTicker(interval)
 	defer timer.Stop()
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID}
-	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages}
+	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership}
 	members := []string{r.OwnerID}
 	seenMembers := map[string]bool{r.OwnerID: true}
 	for _, id := range r.Members {
@@ -348,6 +352,13 @@ actorLoop:
 					r.notice("thread.authorization_pending")
 					continue actorLoop
 				}
+				if r.ActorTick != nil {
+					if _, err := r.Store.Binding(readCtx, r.HostID, a.thread); err == nil {
+						if err := r.ActorTick(readCtx, a.thread); err != nil {
+							r.notice("input.reconcile_pending")
+						}
+					}
+				}
 				// Read and persist first, regardless of group network latency. A
 				// failed or unknown creation never discards the first/final items.
 				turns, err := r.Native.Turns(readCtx, a.thread)
@@ -366,6 +377,15 @@ actorLoop:
 						}
 					}
 					err = engine.Apply(readCtx, a.thread, turns, a.replay, r.now().UnixMilli())
+					if err == nil {
+						// Freeze first-observation reminder decisions even before
+						// a slow group creation returns. Disabled configuration
+						// also gets a marker, preventing later replay reminders.
+						err = r.Store.ScheduleMentions(readCtx, r.HostID, a.thread, r.Mentions)
+					}
+					if err == nil && r.HistoryStaged != nil {
+						err = r.HistoryStaged(readCtx, a.thread, turns)
+					}
 				}
 				cancel()
 				if err != nil {
@@ -376,13 +396,6 @@ actorLoop:
 				}
 				b, bindingErr := r.Store.Binding(ctx, r.HostID, a.thread)
 				if bindingErr == nil {
-					if r.ActorTick != nil {
-						inputCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-						if err := r.ActorTick(inputCtx, a.thread); err != nil {
-							r.notice("input.reconcile_pending")
-						}
-						cancel()
-					}
 					if r.ready() && (r.CanDeliver == nil || r.CanDeliver(ctx, b) == nil) {
 						// Bounded batch prevents one long answer from monopolizing
 						// shutdown; every segment has its own pre-RPC journal.
@@ -398,6 +411,11 @@ actorLoop:
 							if result.State != "confirmed" {
 								r.notice("delivery.verification_required")
 								break
+							}
+						}
+						if r.AfterDelivery != nil {
+							if err := r.AfterDelivery(ctx, a.thread, turns); err != nil {
+								r.notice("feedback.reconcile_pending")
 							}
 						}
 					}
