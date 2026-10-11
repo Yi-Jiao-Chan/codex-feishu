@@ -42,7 +42,7 @@ func TestMigrationPreservesM0AndNeverDowngrades(t *testing.T) {
 	if fresh, err := s.Begin(ctx, "lost-response", "queue.add"); err != nil || !fresh {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec("PRAGMA user_version=1"); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE notification_rules; DROP TABLE input_history_links; DROP TABLE outbound_attempts; DROP TABLE outbound; DROP TABLE mirrors; DROP TABLE history_watermarks; DROP TABLE bindings; DROP TABLE create_intents; DROP TABLE thread_observations; DROP TABLE deployment; PRAGMA user_version=1;`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // Preserve the M0 journals while adding production discovery and outbox slices.
 // Never reset user_version on open or accept a newer database accidentally.
@@ -94,6 +94,29 @@ CREATE TABLE IF NOT EXISTS history_watermarks (
  FOREIGN KEY(host_id,thread_id) REFERENCES thread_observations(host_id,thread_id)
 );
 PRAGMA user_version=3;
+`)
+		if err != nil {
+			return err
+		}
+	}
+	if version < 4 {
+		_, err = tx.Exec(`
+ALTER TABLE mirrors ADD COLUMN retired INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE mirrors ADD COLUMN event_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE mirrors ADD COLUMN event_at INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE input_history_links (
+ host_id TEXT NOT NULL, thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, item_id TEXT NOT NULL,
+ receipt_id TEXT NOT NULL UNIQUE REFERENCES m0_receipts(id),
+ PRIMARY KEY(host_id,thread_id,turn_id,item_id),
+ FOREIGN KEY(host_id,thread_id) REFERENCES thread_observations(host_id,thread_id)
+);
+CREATE TABLE notification_rules (
+ app_id TEXT NOT NULL, open_id TEXT NOT NULL, enabled INTEGER NOT NULL,
+ snooze_until TEXT NOT NULL, quiet_start TEXT NOT NULL, quiet_end TEXT NOT NULL,
+ timezone TEXT NOT NULL, revision INTEGER NOT NULL,
+ PRIMARY KEY(app_id,open_id)
+);
+PRAGMA user_version=4;
 `)
 		if err != nil {
 			return err

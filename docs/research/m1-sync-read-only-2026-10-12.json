@@ -1,0 +1,18 @@
+{
+  "data": {
+    "card_counts": {"final": 6, "human": 1},
+    "exact_input_links": 6,
+    "receipt_identities_imported": 6,
+    "replay": true,
+    "second_scan_unchanged": true,
+    "serialized_max_card_bytes": 355,
+    "server_version": "0.162.0",
+    "turns": 6
+  },
+  "eligibility_fixture_only": true,
+  "groups_created": 0,
+  "messages_sent": 0,
+  "phase1_released": false,
+  "remote_read_only": true,
+  "state": "sync-check-completed"
+}

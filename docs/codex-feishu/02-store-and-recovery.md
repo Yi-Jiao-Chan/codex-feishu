@@ -4,9 +4,9 @@
 
 ## 当前实现边界（2026-10-12）
 
-schema v3 已实现公开镜像、outbox、不可变投递 attempt 与完整历史扫描水位的事务保存。待建群的 eligible 会话可以先入库，绑定及父消息确认后才领取发送；过程更新合并到最新版本，终态不回退，同一线程只允许一个 dispatching 写请求。send / reply / PATCH 都在调用网关前落账，启动时把遗留 dispatching 转为 unknown，不自动重发。
+schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输入与飞书收据关联、完整历史扫描水位的事务保存。待建群的 eligible 会话可以先入库，绑定及父消息确认后才领取发送；过程更新合并到最新版本，终态不回退，同一线程只允许一个 dispatching 写请求。send / reply / PATCH 都在调用网关前落账，启动时把遗留 dispatching 转为 unknown，不自动重发。通知规则按 app/user 持久保存，以 revision 防止并发修改丢失；重新初始化默认值不覆盖已有设置。
 
-这是存储和投递基础切片，尚未接入正式 `serve`。未知请求的远程核验、明确限流后的退避、通知策略、原生历史快照转换与跨模块恢复协调器仍待实现。现有 M0 listener 未切换到这些新表；不能据此认定一期已支持生产恢复。验证记录见[本地进展](../research/m1-mirror-outbox-foundation-2026-10-12.md)。
+完整历史到公开镜像的转换也已实现，并通过真实 daemon 只读探针。尚未接入正式 `serve`；未知请求的远程核验、明确限流后的退避、通知安排 / 送达决策及跨模块恢复协调器仍待实现。现有 M0 listener 未切换到这些新表；不能据此认定一期已支持生产恢复。验证记录见[投递基础](../research/m1-mirror-outbox-foundation-2026-10-12.md)、[历史同步与规则](../research/m1-history-sync-and-rules-2026-10-12.md)。
 
 ## SQLite 结构
 

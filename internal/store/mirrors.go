@@ -12,9 +12,11 @@ import (
 type Mirror struct {
 	HostID, ThreadID, Key, TurnID, Kind, Card string
 	Revision, DeliveredRevision               int64
-	Terminal, Replay                          bool
+	Terminal, Retired, Replay                 bool
 	ParentKey, ParentMessageID, RemoteID      string
 	State                                     string
+	EventType                                 string
+	EventAt                                   int64 // Original terminal event, Unix seconds; zero means unknown.
 }
 
 // Watermark records the end of a complete native history scan. It is a local
@@ -31,12 +33,12 @@ type MirrorAttempt struct {
 	Revision, CreatedAtMS                                 int64
 }
 
-const mirrorColumns = `m.host_id,m.thread_id,m.mirror_key,m.turn_id,m.kind,m.card_json,m.revision,m.delivered_revision,m.terminal,m.replay,m.parent_key,m.parent_message_id,m.remote_id,o.state`
+const mirrorColumns = `m.host_id,m.thread_id,m.mirror_key,m.turn_id,m.kind,m.card_json,m.revision,m.delivered_revision,m.terminal,m.retired,m.replay,m.parent_key,m.parent_message_id,m.remote_id,o.state,m.event_type,m.event_at`
 
 type rowScanner interface{ Scan(...any) error }
 
 func scanMirror(row rowScanner) (m Mirror, err error) {
-	err = row.Scan(&m.HostID, &m.ThreadID, &m.Key, &m.TurnID, &m.Kind, &m.Card, &m.Revision, &m.DeliveredRevision, &m.Terminal, &m.Replay, &m.ParentKey, &m.ParentMessageID, &m.RemoteID, &m.State)
+	err = row.Scan(&m.HostID, &m.ThreadID, &m.Key, &m.TurnID, &m.Kind, &m.Card, &m.Revision, &m.DeliveredRevision, &m.Terminal, &m.Retired, &m.Replay, &m.ParentKey, &m.ParentMessageID, &m.RemoteID, &m.State, &m.EventType, &m.EventAt)
 	return
 }
 
@@ -55,6 +57,12 @@ func (s *Store) Mirror(ctx context.Context, host, thread, key string) (Mirror, e
 // Caller serializes complete snapshots per thread; an older checkpoint is
 // rejected so delayed snapshots cannot overwrite newer public content.
 func (s *Store) StageMirrors(ctx context.Context, host, thread string, docs []Mirror, mark Watermark) error {
+	return s.StageSnapshot(ctx, host, thread, docs, nil, mark)
+}
+
+// StageSnapshot also records exact native receipt links in the same transaction.
+// Link conflicts or a bad public document roll back the checkpoint and all work.
+func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []Mirror, links []InputLink, mark Watermark) error {
 	if host == "" || thread == "" || mark.ObservedAtMS <= 0 {
 		return errors.New("invalid mirror snapshot")
 	}
@@ -88,10 +96,13 @@ func (s *Store) StageMirrors(ctx context.Context, host, thread string, docs []Mi
 	}
 	seen := make(map[string]bool, len(docs))
 	for _, m := range docs {
-		if m.Key == "" || m.TurnID == "" || !json.Valid([]byte(m.Card)) || seen[m.Key] {
+		if m.Key == "" || m.TurnID == "" || !json.Valid([]byte(m.Card)) || seen[m.Key] || m.Retired && !m.Terminal {
 			return errors.New("invalid or duplicate public mirror")
 		}
 		seen[m.Key] = true
+		if m.EventAt < 0 || m.EventType == "" && m.EventAt != 0 || m.EventType != "" && (m.Kind != "final" || m.EventType != "completed" && m.EventType != "failed") {
+			return errors.New("invalid public notification event")
+		}
 		if m.HostID != "" && m.HostID != host || m.ThreadID != "" && m.ThreadID != thread {
 			return ErrConflict
 		}
@@ -108,7 +119,10 @@ func (s *Store) StageMirrors(ctx context.Context, host, thread string, docs []Mi
 		}
 		old, readErr := readMirror(ctx, tx, host, thread, m.Key)
 		if errors.Is(readErr, sql.ErrNoRows) {
-			_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,replay,parent_key,parent_message_id) VALUES(?,?,?,?,?,?,?,?,?,?)`, host, thread, m.Key, m.TurnID, m.Kind, m.Card, m.Terminal, m.Replay, m.ParentKey, m.ParentMessageID)
+			if m.Retired {
+				return ErrConflict // Only an existing obsolete segment can retire.
+			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,replay,parent_key,parent_message_id,event_type,event_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, host, thread, m.Key, m.TurnID, m.Kind, m.Card, m.Terminal, m.Replay, m.ParentKey, m.ParentMessageID, m.EventType, m.EventAt)
 			if err == nil {
 				_, err = tx.ExecContext(ctx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, host, thread, m.Key)
 			}
@@ -118,17 +132,31 @@ func (s *Store) StageMirrors(ctx context.Context, host, thread string, docs []Mi
 			if old.Kind != m.Kind || old.TurnID != m.TurnID || old.ParentKey != m.ParentKey || old.ParentMessageID != m.ParentMessageID {
 				return ErrConflict
 			}
-			if old.Terminal && !m.Terminal || old.Card == m.Card && old.Terminal == m.Terminal {
+			if old.Terminal && !m.Terminal || old.Card == m.Card && old.Terminal == m.Terminal && old.Retired == m.Retired {
 				continue
 			}
 			// Replay provenance belongs to the first observation. Reconnect
 			// must not replace a live event's decision, or create a new one.
-			_, err = tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,terminal=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, m.Card, m.Terminal, host, thread, m.Key)
+			_, err = tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,terminal=?,retired=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, m.Card, m.Terminal, m.Retired, host, thread, m.Key)
 			if err == nil {
 				_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, host, thread, m.Key)
 			}
 		}
 		if err != nil {
+			return err
+		}
+		if m.Retired {
+			// An unattempted obsolete segment needs no new remote card.
+			// Accepted or ambiguous old segments must retain their journal;
+			// known remote cards are updated with the replacement notice.
+			_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='confirmed' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='ready' AND NOT EXISTS(SELECT 1 FROM outbound_attempts a WHERE a.host_id=? AND a.thread_id=? AND a.mirror_key=?)`, host, thread, m.Key, host, thread, m.Key)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	for _, link := range links {
+		if err = stageInputLink(ctx, tx, host, thread, link); err != nil {
 			return err
 		}
 	}
