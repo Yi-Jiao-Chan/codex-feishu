@@ -30,7 +30,7 @@ func pairCall(ctx context.Context, path, identity, method, requestID string, ttl
 	if err != nil {
 		return pairing.Challenge{}, err
 	}
-	if result.Pair == nil || result.Snapshot != nil || result.Pair.RequestID != requestID || result.Pair.ExpiresAtMS <= 0 {
+	if result.Pair == nil || result.Snapshot != nil || result.Verification != nil || result.Pair.RequestID != requestID || result.Pair.ExpiresAtMS <= 0 {
 		return pairing.Challenge{}, ErrUnavailable
 	}
 	challenge := *result.Pair

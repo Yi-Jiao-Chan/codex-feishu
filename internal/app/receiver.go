@@ -11,6 +11,7 @@ import (
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/store"
 	"codex-feishu/internal/submissions"
+	"codex-feishu/internal/verification"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	im "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
@@ -35,6 +36,7 @@ type Receiver struct {
 	TaskAction    func(context.Context, string, string, string, string, int64) (string, error)
 	ActionAllowed func(string) bool
 	Notice        func(string)
+	Verification  *verification.Manager
 }
 
 func (r *Receiver) notice(code string) {
@@ -82,6 +84,10 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
+	if r.Verification != nil && chatType == "p2p" && !unsupported && strings.HasPrefix(strings.TrimSpace(text), "/verify ") {
+		_, err := r.Verification.PrivateMessage(ctx, user, strings.TrimPrefix(strings.TrimSpace(text), "/verify "), ptr(msg.MessageId))
+		return err
+	}
 	b, bindingErr := r.Store.BindingByChat(ctx, r.Config.Host.ID, ptr(msg.ChatId))
 	bound := bindingErr == nil && chatType == "group"
 	if bindingErr != nil && !errors.Is(bindingErr, sql.ErrNoRows) {
@@ -125,6 +131,15 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 	}
 	token, _ := a.Action.Value["token"].(string)
 	kind, _ := a.Action.Value["action"].(string)
+	if kind == "verification_confirm" && r.Verification != nil {
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+		defer cancel()
+		ok, err := r.Verification.Callback(ctx, a.Operator.OpenID, token, a.Context.OpenMessageID, a.Context.OpenChatID)
+		if err != nil || !ok {
+			return respond("error", "验证已过期或无法确认，请回到配置终端查看状态"), nil
+		}
+		return respond("success", "已记录卡片回调，请继续发送验证命令"), nil
+	}
 	queue, _ := a.Action.Value["queue_id"].(string)
 	revision, validRevision := callbackRevision(a.Action.Value["revision"])
 	if (kind == "stop" || kind == "continue") && token != "" && validRevision && r.TaskAction != nil {

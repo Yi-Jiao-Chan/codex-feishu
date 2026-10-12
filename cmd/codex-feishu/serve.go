@@ -15,6 +15,7 @@ import (
 	"codex-feishu/internal/pairing"
 	"codex-feishu/internal/setup"
 	"codex-feishu/internal/store"
+	"codex-feishu/internal/verification"
 )
 
 func runServe(ctx context.Context, args []string) int {
@@ -116,6 +117,13 @@ func runServe(ctx context.Context, args []string) int {
 		emit(output{Command: "serve", State: "control-identity-unavailable"})
 		return 6
 	}
+	binaryHash, err := verification.RunningBinarySHA256()
+	if err != nil {
+		emit(output{Command: "serve", State: "verification-artifact-unavailable"})
+		return 3
+	}
+	verificationManager := &verification.Manager{Store: db, Gateway: gateway, HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, Commit: commit, BinarySHA256: binaryHash, Ready: func() bool { return gateway.Ready() && service.HealthReadyForVerification() }}
+	service.Verification = verificationManager
 	endpoint, err := control.Path(cfg.Feishu.AppID)
 	if err != nil {
 		emit(output{Command: "serve", State: "control-endpoint-unavailable"})
@@ -127,6 +135,7 @@ func runServe(ctx context.Context, args []string) int {
 		return 6
 	}
 	defer server.Close()
+	server.Verification = verificationManager
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	var workers sync.WaitGroup

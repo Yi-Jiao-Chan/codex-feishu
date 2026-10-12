@@ -29,3 +29,5 @@ M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fo
 旧 M0 接管已有隔离测试通过的历史映射和原子存储基础：复用已有群及消息 ID，历史卡片只更新原卡；普通启动拒绝未接管的 schema 1。迁移计划 CLI、WAL 一致备份、共享计划锁和中断恢复已通过隔离测试；开发版仍拒绝真实 apply，服务切换和 UI 验收待完成，见[M0 接管进展](docs/research/m3-legacy-adoption-2026-10-12.md)。
 
 开发验收包入口为 `go run ./cmd/dev-package --output /absolute/private/dist --json`。包只含本次构建、校验和、兼容 / 权限清单、自包含 Agent 指南、配置和验收模板，不包含本机密钥、真实配置、数据库或研究日志。必须先提交并保持 Git 干净；输出是 development 包，保留未发布边界，不安装、启动或替换服务。见[CLI 与配置手册](docs/codex-feishu/10-cli-and-setup.md)。
+
+管理实例的本人测试卡组件已接入现有接收器：显式 card 授权与固定 request ID，原子领取和私有记录，重复 / unknown 不重发，回调与私聊探针不进入 Codex 输入。真实部署、受控群 / 线程及完整 P1 仍 pending。见[管理测试卡进展](docs/research/m3-managed-card-verification-2026-10-12.md)。

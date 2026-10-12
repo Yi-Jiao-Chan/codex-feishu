@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对已通过自动测试，真实私聊验收仍待完成；通知规则事务及迁移命令已通过隔离测试；完整 verify、真实迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)、[私聊配对进展](../research/m3-pairing-2026-10-12.md)及[验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对与管理测试卡已通过自动测试，真实私聊验收仍待完成；通知规则事务及迁移命令已通过隔离测试；完整 verify、真实迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)、[私聊配对进展](../research/m3-pairing-2026-10-12.md)及[验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
 
 ## 命令表
 
@@ -27,7 +27,9 @@
 
 verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread` 三个显式标志；无标志只复用配置 doctor 的 GET 与管理健康 / 只读快照，不新开 native 客户端或接收器、不创建 / chmod / 迁移数据库。完整 P1 场景证据尚未整合，必需项 pending、退出 5；连接与权限通过不表示验收通过。CLI 不从“用户愿意配置”自动推断能给任意人发消息。
 
-当前开发版的受控线程与正式实例测试流程尚未接入：请求 `--allow-test-thread` 时不部分发送卡片或建群；已有管理实例时保留唯一接收器，返回 managed tests pending。只有单独授权 card / group、没有管理实例、同时取得应用与数据库监听锁，并且已有私有 schema 1 日志时，才保留旧 M0 准备能力。锁后重新核验诊断所用配置与密钥；变更返回冲突。可写打开只接受所属用户的 0700 物理目录 / 私有文件与准确 schema，不创建或迁移。UUID 在 API 前落盘，unknown / rejected 不重发；这不是正式一期 verify。
+当前开发版已接入正式实例的本人测试卡组件：只传 `--allow-test-card --request-id ID`，由已有实例持久领取并发送；`ID` 为调用前生成并保留的 32 位小写十六进制随机值。卡片按钮和私聊 `/verify TOKEN` 经过唯一接收器记录，不进入任务或原生队列。使用相同 `--request-id`、不带任何 allow 标志时只读取原记录；重复授权相同 ID 也不重发 dispatching / unknown / rejected / confirmed。schema 18 保存原 build commit、运行二进制 SHA-256、UUID、卡正文与 5 分钟到期；回调须匹配 owner 和实际 confirmed message ID。未发布状态不变，完整 P1 仍 pending。
+
+受控线程 / 管理测试群尚未接入：请求 `--allow-test-thread` 或管理实例的 `--allow-test-group` 时不部分发送卡片或建群；已有管理实例保留唯一接收器，返回 managed tests pending。只有单独授权 card / group、没有管理实例、同时取得应用与数据库监听锁，并且已有私有 schema 1 日志时，才保留旧 M0 准备能力。锁后重新核验诊断所用配置与密钥；变更返回冲突。可写打开只接受所属用户的 0700 物理目录 / 私有文件与准确 schema，不创建或迁移。UUID 在 API 前落盘，unknown / rejected 不重发；这不是正式一期 verify。
 
 旧 M0 准备后只能使用保留的历史 M0 二进制处理其回调。当前开发版 m0-listen 的 Store.Open 会拒绝未接管的 schema 1，不能拿它替换运行中的旧实例；正式迁移须另行完成验收。
 
@@ -74,7 +76,7 @@ apply 用部署配置锁，备份旧配置，原子写临时文件并 rename；�
 
 当前开发实现：计划实际核验所选二进制、现有 daemon、密钥文件权限、目录和现有部署；输入、二进制、密钥或配置变化使旧 plan_id 失效，兼容版本 daemon 的临时 socket 变化不影响恢复。已有 host_id 和数据库路径保留。通知 off / snooze 保持原值；向导仅修改本人明确提供的 quiet / timezone，不改变其他接收者。省略 quiet 保留现有规则，显式空字符串清除 quiet。
 
-apply 同时取得应用与数据库监听锁。已有规则的更新要求私有、准确 schema 17 数据库；完整状态比较后在同一 SQLite 事务提交规则与审计，重复执行不增加 revision 或审计。数据库旁的部署标记与配置 prepared 日志在配置替换前持久化，完整更新完成后保存 applied 并清理部署标记。中断返回 `setup-recovery-pending` / 退出 5；保持原输入文件、二进制、密钥、原 plan_id、配置备份和事务文件，再重跑原 apply。不要用新计划覆盖未完成事务，也不要删除日志。serve 在连接或迁移前拒绝未完成事务；改用备份/复制配置或数据库 symlink 别名也不能绕过同一数据库的恢复检查。当前 apply 不创建或迁移数据库，旧 M0 schema 1 仍须单独迁移与绑定接管验收。自动测试证据见[通知配置事务进展](../research/m3-policy-apply-2026-10-12.md)。
+apply 同时取得应用与数据库监听锁。已有规则的更新要求私有、准确 schema 18 数据库；完整状态比较后在同一 SQLite 事务提交规则与审计，重复执行不增加 revision 或审计。数据库旁的部署标记与配置 prepared 日志在配置替换前持久化，完整更新完成后保存 applied 并清理部署标记。中断返回 `setup-recovery-pending` / 退出 5；保持原输入文件、二进制、密钥、原 plan_id、配置备份和事务文件，再重跑原 apply。不要用新计划覆盖未完成事务，也不要删除日志。serve 在连接或迁移前拒绝未完成事务；改用备份/复制配置或数据库 symlink 别名也不能绕过同一数据库的恢复检查。当前 apply 不创建或迁移数据库，旧 M0 schema 1 仍须单独迁移与绑定接管验收。自动测试证据见[通知配置事务进展](../research/m3-policy-apply-2026-10-12.md)。
 
 改变运行中配置前须停止本工具实例，再重新 plan / apply；应用锁或数据库锁被占用时拒绝替换配置。service install 更新正在使用的 unit 后仅报告 restart pending，须明确 stop / start；start 对已运行服务是 no-op。配置 Agent 不应将这两种情况写成更新已经生效。
 
@@ -102,7 +104,7 @@ Linux 首选 systemd --user，ExecStart 使用绝对二进制路径和配置路�
 
 运行中 status/verify/pair 复用现有实例，不另开竞争正式事件的 ws 连接。可以通过仅同用户可访问的本机 Unix 控制通道查询健康与提交测试/配对请求，限制为这些管理用例，不提供额外网络执行 API。
 
-当前新版 serve 提供 Linux Unix socket 管理通道，私有目录 0700、socket 0600，客户端和服务端均核验 SO_PEERCRED 的系统用户；只允许 health 与限时 pair.begin / pair.state / pair.cancel 方法，不提供任务输入或执行 API。请求绑定物理配置路径与当前完整配置摘要，配置已改变而服务未重启时拒绝报告生效。消息大小、并发连接和等待均有上限；退出关闭全部管理连接，清理只删除自己的 socket。
+当前新版 serve 提供 Linux Unix socket 管理通道，私有目录 0700、socket 0600，客户端和服务端均核验 SO_PEERCRED 的系统用户；只允许 health、限时 pair.begin / pair.state / pair.cancel，以及固定 owner 的 verify.card.begin / verify.card.state 方法，不提供任务输入或执行 API。请求绑定物理配置路径与当前完整配置摘要，配置已改变而服务未重启时拒绝报告生效。消息大小、并发连接和等待均有上限；退出关闭全部管理连接，清理只删除自己的 socket。
 
 status 优先从匹配的运行实例读取真实 receiver ready、原生 reader 生命周期、当前代际已核验绑定数及聚合日志；未决 / 未知变更不报告全部健康。前台运行不要求已经安装 systemd unit；用户服务及注销常驻另列事实，安装向导仍须验证其生命周期。旧 M0 没有管理通道，退回只读检查用户服务、daemon 和数据库计数，可读 schema 1 而不迁移；实时连接 unknown、必需项 pending、退出码 5。systemd active、daemon running 或持久记录可读均不能代替实时桥健康证明。
 

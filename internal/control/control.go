@@ -1,5 +1,5 @@
-// Package control exposes local health and ephemeral private-chat pairing.
-// It has no native RPC, message-sending or shell-execution endpoint.
+// Package control exposes same-user health, pairing and owner-only test cards.
+// It has no arbitrary message destination, native RPC or shell endpoint.
 package control
 
 import (
@@ -20,6 +20,7 @@ import (
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/pairing"
 	"codex-feishu/internal/store"
+	"codex-feishu/internal/verification"
 )
 
 const protocol = 1
@@ -36,33 +37,44 @@ var (
 // Snapshot deliberately contains no thread IDs, messages, request bodies,
 // credentials, native policies or error payloads.
 type Snapshot struct {
-	Running          bool                   `json:"running"`
-	NativeConnected  bool                   `json:"native_connected"`
-	FeishuConnected  bool                   `json:"feishu_connected"`
-	HydratedBindings int                    `json:"hydrated_bindings"`
-	DiscoveryEnabled bool                   `json:"discovery_enabled"`
-	PairingSupported bool                   `json:"pairing_supported"`
-	StartedAtMS      int64                  `json:"started_at_ms"`
-	ObservedAtMS     int64                  `json:"observed_at_ms"`
-	Persistent       store.PersistentHealth `json:"durable"`
+	Running                   bool                   `json:"running"`
+	NativeConnected           bool                   `json:"native_connected"`
+	FeishuConnected           bool                   `json:"feishu_connected"`
+	HydratedBindings          int                    `json:"hydrated_bindings"`
+	DiscoveryEnabled          bool                   `json:"discovery_enabled"`
+	PairingSupported          bool                   `json:"pairing_supported"`
+	VerificationCardSupported bool                   `json:"verification_card_supported"`
+	StartedAtMS               int64                  `json:"started_at_ms"`
+	ObservedAtMS              int64                  `json:"observed_at_ms"`
+	Persistent                store.PersistentHealth `json:"durable"`
 }
 
 type request struct {
-	Schema   int          `json:"schema_version"`
-	Method   string       `json:"method"`
-	Identity string       `json:"identity"`
-	Pair     *pairRequest `json:"pair,omitempty"`
+	Schema       int                  `json:"schema_version"`
+	Method       string               `json:"method"`
+	Identity     string               `json:"identity"`
+	Pair         *pairRequest         `json:"pair,omitempty"`
+	Verification *verificationRequest `json:"verification,omitempty"`
+}
+type verificationRequest struct {
+	RequestID string `json:"request_id"`
 }
 type pairRequest struct {
 	RequestID  string `json:"request_id"`
 	TTLSeconds int    `json:"ttl_seconds,omitempty"`
 }
 type response struct {
-	Schema   int                `json:"schema_version"`
-	Identity string             `json:"identity"`
-	Code     string             `json:"code"`
-	Snapshot *Snapshot          `json:"snapshot,omitempty"`
-	Pair     *pairing.Challenge `json:"pair,omitempty"`
+	Schema       int                  `json:"schema_version"`
+	Identity     string               `json:"identity"`
+	Code         string               `json:"code"`
+	Snapshot     *Snapshot            `json:"snapshot,omitempty"`
+	Pair         *pairing.Challenge   `json:"pair,omitempty"`
+	Verification *verification.Result `json:"verification,omitempty"`
+}
+
+type VerificationProvider interface {
+	Begin(context.Context, string) (verification.Result, error)
+	State(context.Context, string) (verification.Result, error)
 }
 
 type PairingProvider interface {
@@ -151,17 +163,20 @@ func socketInfo(path string) (os.FileInfo, error) {
 }
 
 type Server struct {
-	listener *net.UnixListener
-	path     string
-	identity string
-	info     os.FileInfo
-	provider func(context.Context) (Snapshot, error)
-	pairing  PairingProvider
-	mu       sync.Mutex
-	closing  bool
-	conns    map[*net.UnixConn]struct{}
-	workers  sync.WaitGroup
-	once     sync.Once
+	// Set before Serve; production binds the manager to the same service,
+	// configured owner and already-locked database as the receiver.
+	Verification VerificationProvider
+	listener     *net.UnixListener
+	path         string
+	identity     string
+	info         os.FileInfo
+	provider     func(context.Context) (Snapshot, error)
+	pairing      PairingProvider
+	mu           sync.Mutex
+	closing      bool
+	conns        map[*net.UnixConn]struct{}
+	workers      sync.WaitGroup
+	once         sync.Once
 }
 
 // Listen must be called while the caller owns the application's receiver lock.
@@ -305,14 +320,31 @@ func (s *Server) handle(parent context.Context, conn *net.UnixConn) {
 		result.Code = "unsupported"
 	case r.Identity != s.identity:
 		result.Code = "identity-conflict"
-	case r.Method == "health" && r.Pair == nil:
+	case r.Method == "health" && r.Pair == nil && r.Verification == nil:
 		snapshot, err := s.provider(ctx)
 		if err != nil {
 			result.Code = "health-unavailable"
 		} else {
 			result.Code, result.Snapshot = "ok", &snapshot
 		}
-	case (r.Method == "pair.begin" || r.Method == "pair.state" || r.Method == "pair.cancel") && s.pairing != nil && r.Pair != nil:
+	case (r.Method == "verify.card.begin" || r.Method == "verify.card.state") && s.Verification != nil && r.Verification != nil && r.Pair == nil:
+		var probe verification.Result
+		var err error
+		if !verification.ValidRequestID(r.Verification.RequestID) {
+			err = verification.ErrInvalid
+		} else if r.Method == "verify.card.begin" {
+			probe, err = s.Verification.Begin(ctx, r.Verification.RequestID)
+		} else {
+			probe, err = s.Verification.State(ctx, r.Verification.RequestID)
+		}
+		if err == nil {
+			result.Code, result.Verification = "ok", &probe
+		} else if errors.Is(err, verification.ErrInvalid) {
+			result.Code = "verification-invalid"
+		} else {
+			result.Code = "verification-unavailable"
+		}
+	case (r.Method == "pair.begin" || r.Method == "pair.state" || r.Method == "pair.cancel") && s.pairing != nil && r.Pair != nil && r.Verification == nil:
 		var challenge pairing.Challenge
 		var err error
 		switch r.Method {
@@ -399,6 +431,8 @@ func exchange(ctx context.Context, path string, req request) (response, error) {
 		return result, pairing.ErrInvalid
 	case "pair-closed":
 		return result, pairing.ErrClosed
+	case "verification-invalid":
+		return result, verification.ErrInvalid
 	default:
 		return result, ErrUnavailable
 	}
@@ -409,7 +443,7 @@ func Query(ctx context.Context, path, identity string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if result.Snapshot == nil || result.Pair != nil {
+	if result.Snapshot == nil || result.Pair != nil || result.Verification != nil {
 		return Snapshot{}, ErrUnavailable
 	}
 	now := time.Now().UnixMilli()

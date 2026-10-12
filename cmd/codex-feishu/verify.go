@@ -12,9 +12,13 @@ import (
 	"codex-feishu/internal/control"
 	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/store"
+	"codex-feishu/internal/verification"
 )
 
-type verifyOptions struct{ Card, Group, Thread bool }
+type verifyOptions struct {
+	Card, Group, Thread bool
+	RequestID           string
+}
 type verifyGateway interface {
 	SendCard(context.Context, string, string, string, string) (string, error)
 	CreateGroup(context.Context, string, string, []string, string) (string, error)
@@ -26,6 +30,7 @@ type verifyDependencies struct {
 	open    func(context.Context, string, int) (*store.Store, error)
 	gateway func(config.Config, string) verifyGateway
 	emit    func(output)
+	managed func(context.Context, config.Config, string, string, bool) (verification.Result, error)
 }
 
 func defaultVerifyDependencies() verifyDependencies {
@@ -36,6 +41,13 @@ func defaultVerifyDependencies() verifyDependencies {
 		open:    store.OpenExisting,
 		gateway: func(cfg config.Config, secret string) verifyGateway { return feishu.New(cfg.Feishu.AppID, secret) },
 		emit:    emit,
+		managed: func(ctx context.Context, cfg config.Config, identity, id string, begin bool) (verification.Result, error) {
+			path, err := control.Path(cfg.Feishu.AppID)
+			if err != nil {
+				return verification.Result{}, err
+			}
+			return control.VerifyCard(ctx, path, identity, id, begin)
+		},
 	}
 }
 
@@ -46,17 +58,18 @@ func runVerifyWithDependencies(ctx context.Context, args []string, deps verifyDe
 	flags := flag.NewFlagSet("verify", flag.ContinueOnError)
 	path := flags.String("config", "", "absolute TOML config path")
 	target := flags.String("target", "self", "verify supports only self")
-	card := flags.Bool("allow-test-card", false, "authorize owner-only legacy M0 card preparation when no bridge is running")
+	card := flags.Bool("allow-test-card", false, "authorize owner-only test card; managed probes require --request-id")
 	group := flags.Bool("allow-test-group", false, "authorize private owner-only legacy M0 group preparation when no bridge is running")
 	thread := flags.Bool("allow-test-thread", false, "authorize isolated thread verification; managed implementation pending")
+	requestID := flags.String("request-id", "", "32 lowercase hexadecimal characters; resume a managed card probe without writes when no authorization flags are supplied")
 	_ = flags.Bool("json", false, "JSON output (default)")
-	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" || *target != "self" {
+	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" || *target != "self" || *requestID != "" && !verification.ValidRequestID(*requestID) {
 		deps.emit(output{Command: "verify", State: "invalid-arguments"})
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	o, code := inspectVerify(ctx, *path, verifyOptions{*card, *group, *thread}, deps)
+	o, code := inspectVerify(ctx, *path, verifyOptions{Card: *card, Group: *group, Thread: *thread, RequestID: *requestID}, deps)
 	deps.emit(o)
 	return code
 }
@@ -97,10 +110,70 @@ func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps ve
 	if !writes {
 		o.Checks = append(o.Checks, check{"verification.test_writes", "skipped", false, "no test mutations authorized; no database creation/migration or extra receiver/native connection"})
 	}
-	if code != 0 {
+	live, managedInstance := data["instance"].(control.Snapshot)
+	// A local journal read stays available when another diagnostic is
+	// degraded; preserve its exit code and never authorize a mutation there.
+	readProbe := managedInstance && !writes && verification.ValidRequestID(opts.RequestID) && identityErr == nil && identity != ""
+	pendingCode := code
+	if pendingCode == 0 {
+		pendingCode = 5
+	}
+	if code != 0 && !readProbe {
 		return o, code
 	}
 	o.State = "verification-pending"
+	if managedInstance && (opts.Card || opts.RequestID != "") && !opts.Group && !opts.Thread {
+		if !live.VerificationCardSupported || deps.managed == nil {
+			o.State = "verification-managed-tests-pending"
+			o.Checks = append(o.Checks, check{"verification.managed_card", "pending", true, "running build has no managed card verifier; no test mutation performed"})
+			return o, pendingCode
+		}
+		if opts.RequestID == "" || !verification.ValidRequestID(opts.RequestID) {
+			o.State = "verification-request-id-required"
+			o.NextSteps = append(o.NextSteps, "generate and retain a cryptographically random 32-character lowercase hexadecimal request ID; rerun with --request-id and --allow-test-card")
+			return o, 2
+		}
+		data["verification_scope"] = "managed-owner-card-components"
+		data["read_only"] = !opts.Card
+		data["request_id"] = opts.RequestID
+		if identityErr != nil || identity == "" {
+			o.State = "verification-config-conflict"
+			return o, 6
+		}
+		probe, err := deps.managed(ctx, cfg, identity, opts.RequestID, opts.Card)
+		if err != nil {
+			o.State = "verification-managed-card-pending"
+			o.Checks = append(o.Checks, check{"verification.managed_card", "pending", true, "managed result unavailable; retain original request ID and query without authorization flags; do not assume rejection or create a replacement request"})
+			return o, pendingCode
+		}
+		data["verification_card"] = probe
+		o.Checks = append(o.Checks, check{"verification.test_card", probe.CardStatus, true, "journaled owner-only card send"}, check{"verification.card_callback", probe.CallbackStatus, true, "actual owner callback matching the confirmed card message ID"}, check{"verification.private_message", probe.PrivateMessageStatus, true, "actual owner private-chat command matching this probe token"})
+		o.State = "verification-managed-card-pending"
+		if probe.CardStatus == "fail" {
+			o.NextSteps = append(o.NextSteps, "test card was explicitly rejected; fix its prerequisites before requesting another authorized probe; retain this immutable request record")
+			return o, 4
+		}
+		switch {
+		case probe.BuildChanged:
+			o.State = "verification-managed-card-other-build"
+			o.NextSteps = append(o.NextSteps, "probe belongs to another bridge build; retain historical evidence, do not re-send its request ID or treat it as current-build verification")
+		case probe.State == "unknown":
+			o.NextSteps = append(o.NextSteps, "card send outcome is unknown; retain original request ID and query without authorization flags; no resend or standalone fallback")
+		case probe.CallbackStatus == "pass" && probe.PrivateMessageStatus == "pass":
+			o.State = "verification-managed-card-observed"
+			o.NextSteps = append(o.NextSteps, "owner-only card, callback and private-message components observed; full P1 scenarios and UI acceptance remain pending")
+		case probe.Expired:
+			o.NextSteps = append(o.NextSteps, "probe expired without all observations; retain its record; another send requires a new request ID and explicit card authorization")
+		default:
+			o.NextSteps = append(o.NextSteps, "click the private test card and send its /verify command within 5 minutes, then query with the original --request-id and no authorization flags; component observations do not pass the P1 matrix")
+		}
+		return o, pendingCode
+	}
+	if opts.RequestID != "" {
+		o.State = "verification-managed-probe-unavailable"
+		o.Checks = append(o.Checks, check{"verification.managed_card", "pending", true, "a matching managed receiver is required; no standalone fallback or test mutation performed"})
+		return o, 5
+	}
 	if !writes {
 		return o, 5
 	}

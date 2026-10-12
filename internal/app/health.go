@@ -8,12 +8,15 @@ import (
 	"codex-feishu/internal/store"
 )
 
+func (s *Service) HealthReadyForVerification() bool { return s.running.Load() }
+
 // Health reads the existing receiver and native generation, not a parallel
 // connection. Durable facts are aggregates; thread routing stays in process.
 func (s *Service) Health(ctx context.Context) (control.Snapshot, error) {
 	result := control.Snapshot{Running: s.running.Load(), StartedAtMS: s.startedAtMS.Load(), ObservedAtMS: s.now().UnixMilli()}
 	result.DiscoveryEnabled = s.Config.Discovery.Enabled
 	result.PairingSupported = s.Pairing != nil
+	result.VerificationCardSupported = s.Verification != nil
 	if s.Store == nil {
 		return result, errors.New("service health unavailable")
 	}

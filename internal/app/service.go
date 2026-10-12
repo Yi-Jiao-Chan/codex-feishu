@@ -17,6 +17,7 @@ import (
 	"codex-feishu/internal/store"
 	"codex-feishu/internal/submissions"
 	messages "codex-feishu/internal/sync"
+	"codex-feishu/internal/verification"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	im "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
@@ -50,6 +51,7 @@ type Service struct {
 	Now             func() time.Time
 	RetryInterval   time.Duration    // Tests may shorten; production starts at 1s.
 	Pairing         *pairing.Manager // Ephemeral local management; never persisted as a task.
+	Verification    *verification.Manager
 	mu              sync.RWMutex
 	current         *Runtime
 	tasks           map[string]*TaskControls
@@ -157,7 +159,7 @@ func (s *Service) Run(parent context.Context) error {
 	var workers sync.WaitGroup
 	defer func() { cancel(); workers.Wait(); s.nativeConnected.Store(false) }()
 	commands := &Commands{Store: s.Store, Config: s.Config, Wake: s.Wake, Now: s.Now}
-	receiver := &Receiver{Store: s.Store, Config: s.Config, BotID: s.BotID, Wake: s.Wake, Command: commands.Handle, Notice: s.Notice}
+	receiver := &Receiver{Store: s.Store, Config: s.Config, BotID: s.BotID, Wake: s.Wake, Command: commands.Handle, Notice: s.Notice, Verification: s.Verification}
 	receiver.TaskAction = s.claimTask
 	receiver.ActionAllowed = s.actionAvailable
 	errorsCh := make(chan error, 2)

@@ -160,7 +160,7 @@ CLI 已通过能力检查且 plan 无必需缺项时：
 
 逐步检查退出码，不用 shell 链把后续步骤在失败后继续跑。setup 生成正式 TOML，备份现有配置并原子写入；目录 0700，配置/secret 0600。保留原 host_id、数据库和绑定。重复配置差异为空时 no-op，不换身份、不清空历史、不重建群。
 
-重配已有部署时，先读 plan 的现有通知规则与独立差异。省略 quiet / timezone 保留有效规则；只有用户明确要求清除免打扰时才传 `quiet_hours: ""`。更新仅影响 owner 的明确字段，保留关闭 @ 与 snooze，其他接收者保持原值。已有规则更新需当前 schema 17；旧 M0 数据库不能由配置任务顺手迁移。普通启动也会拒绝未接管的 schema 1。迁移命令、备份和中断恢复已有隔离测试，但开发版拒绝真实迁移；不要改 user_version、清空日志或启动新实例绕过该边界，见[接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
+重配已有部署时，先读 plan 的现有通知规则与独立差异。省略 quiet / timezone 保留有效规则；只有用户明确要求清除免打扰时才传 `quiet_hours: ""`。更新仅影响 owner 的明确字段，保留关闭 @ 与 snooze，其他接收者保持原值。已有规则更新需当前 schema 18；旧 M0 数据库不能由配置任务顺手迁移。普通启动也会拒绝未接管的 schema 1。迁移命令、备份和中断恢复已有隔离测试，但开发版拒绝真实迁移；不要改 user_version、清空日志或启动新实例绕过该边界，见[接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
 
 **检测到旧 M0 schema 1 时：**先检查 `capabilities.setup_migrate` 和 `phase1_released`。开发版最多做迁移预览，报告 `migration-plan-needs-release`；不能为配置任务切换现有桥。发布版且用户已授权迁移时，使用原配置绝对路径：
 
@@ -184,6 +184,17 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 ## G. 真实验证
 
 先检查 `version` 的 `capabilities.verify_managed_tests`。当前开发版为 false，完整受控验收尚未接入；默认 verify 可以做只读前置检查，但必需 UI / P1 证据仍 pending。不要把旧 M0 测试准备当作正式验收，也不要为了绕过实例锁停止用户现有桥或用开发版 m0-listen 迁移旧数据库。
+
+当前 `capabilities.verify_managed_card=true` 只表示本人测试卡组件已开发，不表示完整受控验收通过。仅在已准备的测试实例和明确本人测试卡授权下使用，不为了此能力安装 / 替换未发布服务。运行实例还须报告 `verification_card_supported=true`。
+
+先用安全随机源生成并保留 32 位小写十六进制 ID，例如 Python 的 `secrets.token_hex(16)`；将它赋给普通变量 `cfb_verify_id`（不是秘密凭据）。发送与后续查询分别为：
+
+```sh
+"$cfb_cli" verify --config "$cfb_config" --target self --allow-test-card --request-id "$cfb_verify_id" --json
+"$cfb_cli" verify --config "$cfb_config" --target self --request-id "$cfb_verify_id" --json
+```
+
+本人在私聊卡片点一次按钮，再发送卡中 `/verify` 命令；5 分钟内的实际 owner 回调 / 私聊入站由原接收器记录。第二条命令不发送，重复第一条也不重发原未知或终态请求；unknown 不换 ID 盲重试，过期保留证据，新探针仍需明确测试授权。正常诊断失败时不启动探针；匹配实例的只读查询可返回现有证据，并保留诊断失败的退出码。`verification-managed-card-observed` 仅代表这三个组件，仍 `ok=false` / 退出 5、全部 P1 pending。命令会返回组件记录的原 `bridge_commit` 和 `binary_sha256`，后者由运行实例从 `/proc/self/exe` 计算；`build_changed=true` 时为历史组件证据，不能当作当前版本验证。
 
 已验收版本具备该能力且有提示词中的本人测试授权时，运行：
 

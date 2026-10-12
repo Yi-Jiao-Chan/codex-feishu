@@ -46,6 +46,9 @@ func Queue(state, token string) string {
 func Probe(token string) string {
 	return render([]element{{"tag": "markdown", "content": "**Codex × 飞书 · M0 联调**\n验证原生卡片渲染与交互。点击下方按钮后应收到回调确认。"}, Button("确认卡片可用", "probe", token), footer("验证消息 · 仅本人")})
 }
+func Verification(token string) string {
+	return render([]element{{"tag": "markdown", "content": "**连接验证**\n点击按钮验证卡片回调，再给机器人私聊发送下方命令。有效期 5 分钟。", "text_size": "normal"}, Button("确认卡片可用", "verification_confirm", token), {"tag": "markdown", "content": "`/verify " + Safe(token) + "`", "text_size": "notation"}, footer("验证消息 · 仅本人")})
+}
 func Mention(openID string) string { return "<at id=\"" + html.EscapeString(openID) + "\"></at>" }
 
 // Progress is a compact, mutable per-turn card. Final replies use Message.

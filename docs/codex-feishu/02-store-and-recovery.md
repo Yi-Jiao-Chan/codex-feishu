@@ -26,6 +26,8 @@ schema 16 新增 `outbound_request_markers`：新镜像 attempt 的隐藏 elemen
 
 schema 17 新增 `card_request_markers`，在镜像、命令确认、待处理提醒之间统一保留唯一标记；原 schema 16 镜像映射原样保留，并登记到共享表，原镜像检查 deadline 不变。命令和提醒只核验原不可变 attempt 的实际带标记载荷；登记、原卡冻结和领取在同一事务，缺 source / 忽略 proof write 均不发请求。检查失败继续投递独立 ready 回复；已解决的 App 请求仍可确认此前送达，不恢复 pending 或通知资格。旧无标记命令 / 提醒继续保持 unknown。status 提供 `command_replies.readback_available`、`requests.reminder_readback_available`，仍不输出卡正文。
 
+schema 18 新增 `verification_cards`，保存同一管理实例内显式授权的本人测试卡：原 build commit、运行二进制 SHA-256、UUID、令牌、完整卡和到期先落盘，随后 CAS 领取。重复 ready 仅匹配当前运行二进制摘要的构建可继续，dispatching 对外按 unknown 不重发；confirmed / rejected 均保持原结果。实际回调可能先于发送响应，记录原 message/chat ID，只有匹配 confirmed send ID 才报告回调组件 pass。私聊验证命令只记录证据，不产生任务收据。完整 P1 / App UI 不从组件记录推导；日志 DTO 不输出 token 或原卡，真实 M0 未迁移。
+
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 
 | 表 | 主键 / 唯一约束 | 主要字段 |
