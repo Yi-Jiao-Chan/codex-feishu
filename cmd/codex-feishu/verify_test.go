@@ -484,3 +484,115 @@ func TestManagedReadOnlyProbeRemainsAvailableDuringNativeDegradation(t *testing.
 		t.Fatal("degraded native allowed new probe", o, code, reads)
 	}
 }
+
+func TestManagedGroupFlagsDoNotAuthorizeCardOrNativeThread(t *testing.T) {
+	path, _, d, _ := doctorFixture(t)
+	original := d.health
+	d.health = func(ctx context.Context, p string, c config.Config) (control.Snapshot, error) {
+		s, err := original(ctx, p, c)
+		s.VerificationCardSupported = true
+		s.VerificationGroupSupported = true
+		return s, err
+	}
+	deps := readonlyVerifyDependencies(t, d)
+	id := store.ID()
+	cardStarts, cardReads, groupStarts, groupReads := 0, 0, 0, 0
+	deps.managed = func(_ context.Context, _ config.Config, _ string, got string, begin bool) (verification.Result, error) {
+		if got != id {
+			t.Fatal(got)
+		}
+		if begin {
+			cardStarts++
+		} else {
+			cardReads++
+			return verification.Result{}, verification.ErrNotFound
+		}
+		return verification.Result{RequestID: id, BridgeCommit: "build", BinarySHA256: strings.Repeat("b", 64), State: "confirmed", CardStatus: "pass", CallbackStatus: "pending", PrivateMessageStatus: "pending", MessageID: "om_card", ExpiresAtMS: 100}, nil
+	}
+	deps.managedGroup = func(_ context.Context, _ config.Config, _ string, got string, begin bool) (verification.GroupResult, error) {
+		if got != id {
+			t.Fatal(got)
+		}
+		if begin {
+			groupStarts++
+		} else {
+			groupReads++
+		}
+		return verification.GroupResult{RequestID: id, BridgeCommit: "build", BinarySHA256: strings.Repeat("b", 64), State: "confirmed", GroupStatus: "pass", MembershipStatus: "pass", GroupMessageStatus: "pass", ChatID: "oc_test", ExpiresAtMS: 100}, nil
+	}
+	o, code := inspectVerify(context.Background(), path, verifyOptions{Group: true, RequestID: id}, deps)
+	if code != 5 || o.OK || o.State != "verification-managed-group-observed" || groupStarts != 1 || cardStarts != 0 || cardReads != 0 {
+		t.Fatal(o, code, cardStarts, cardReads, groupStarts)
+	}
+	o, code = inspectVerify(context.Background(), path, verifyOptions{RequestID: id}, deps)
+	if code != 5 || o.OK || o.State != "verification-managed-group-observed" || groupStarts != 1 || groupReads != 1 || cardStarts != 0 || cardReads != 1 || o.Data.(map[string]any)["read_only"] != true {
+		t.Fatal("read query started missing card", o, code)
+	}
+	pending := 0
+	for _, c := range o.Checks {
+		if strings.HasPrefix(c.ID, "acceptance.P1-") {
+			pending++
+			if c.Status != "pending" {
+				t.Fatal("group component became P1 pass", c)
+			}
+		}
+	}
+	if pending != 12 {
+		t.Fatal(pending)
+	}
+	o, code = inspectVerify(context.Background(), path, verifyOptions{Card: true, Group: true, RequestID: id}, deps)
+	if code != 5 || o.OK || cardStarts != 1 || groupStarts != 2 || o.State != "verification-managed-components-pending" {
+		t.Fatal(o, code)
+	}
+	for _, opts := range []verifyOptions{{Card: true, Group: true, Thread: true, RequestID: id}, {Group: true, Thread: true, RequestID: id}} {
+		inspectVerify(context.Background(), path, opts, deps)
+	}
+	if cardStarts != 1 || groupStarts != 2 {
+		t.Fatal("unsupported native request partially mutated")
+	}
+	d.health = func(ctx context.Context, p string, c config.Config) (control.Snapshot, error) {
+		s, err := original(ctx, p, c)
+		s.VerificationCardSupported = true
+		return s, err
+	}
+	deps.doctor = d
+	inspectVerify(context.Background(), path, verifyOptions{Card: true, Group: true, RequestID: id}, deps)
+	if cardStarts != 1 || groupStarts != 2 {
+		t.Fatal("missing group capability partially sent card")
+	}
+}
+
+func TestManagedQueryAbsentComponentIsNotNewAuthorization(t *testing.T) {
+	path, _, d, _ := doctorFixture(t)
+	original := d.health
+	d.health = func(ctx context.Context, p string, c config.Config) (control.Snapshot, error) {
+		s, err := original(ctx, p, c)
+		s.VerificationCardSupported = true
+		s.VerificationGroupSupported = true
+		return s, err
+	}
+	deps := readonlyVerifyDependencies(t, d)
+	reads := 0
+	deps.managed = func(_ context.Context, _ config.Config, _ string, _ string, begin bool) (verification.Result, error) {
+		if begin {
+			t.Fatal("query started card")
+		}
+		reads++
+		return verification.Result{}, verification.ErrNotFound
+	}
+	deps.managedGroup = func(_ context.Context, _ config.Config, _ string, _ string, begin bool) (verification.GroupResult, error) {
+		if begin {
+			t.Fatal("query created group")
+		}
+		reads++
+		return verification.GroupResult{}, verification.ErrNotFound
+	}
+	o, code := inspectVerify(context.Background(), path, verifyOptions{RequestID: store.ID()}, deps)
+	if code != 5 || o.OK || o.State != "verification-managed-probe-not-found" || reads != 2 {
+		t.Fatal(o, code, reads)
+	}
+	o, code = inspectVerify(context.Background(), path, verifyOptions{Group: true}, deps)
+	if code != 2 || reads != 2 || o.State != "verification-request-id-required" {
+		t.Fatal(o, code, reads)
+	}
+}

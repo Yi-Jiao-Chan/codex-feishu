@@ -17,6 +17,7 @@ func (s *Service) Health(ctx context.Context) (control.Snapshot, error) {
 	result.DiscoveryEnabled = s.Config.Discovery.Enabled
 	result.PairingSupported = s.Pairing != nil
 	result.VerificationCardSupported = s.Verification != nil
+	result.VerificationGroupSupported = s.VerificationGroups != nil
 	if s.Store == nil {
 		return result, errors.New("service health unavailable")
 	}

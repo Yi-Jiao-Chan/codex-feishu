@@ -4,6 +4,7 @@ package verification
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"regexp"
 	"time"
@@ -106,6 +107,9 @@ func (m *Manager) State(ctx context.Context, id string) (Result, error) {
 		return Result{}, ErrInvalid
 	}
 	c, err := m.Store.VerificationCard(ctx, id, m.HostID, m.AppID, m.OwnerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Result{}, ErrNotFound
+	}
 	if err != nil {
 		return Result{}, err
 	}

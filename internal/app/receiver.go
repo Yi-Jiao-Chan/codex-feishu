@@ -28,15 +28,16 @@ type InboundCommand struct {
 // APIs cannot hold callbacks open; thread actors consume committed receipts.
 // There is intentionally no Native field or client policy configuration.
 type Receiver struct {
-	Store         *store.Store
-	Config        config.Config
-	BotID         string
-	Wake          func(string)
-	Command       func(context.Context, InboundCommand) error
-	TaskAction    func(context.Context, string, string, string, string, int64) (string, error)
-	ActionAllowed func(string) bool
-	Notice        func(string)
-	Verification  *verification.Manager
+	Store              *store.Store
+	Config             config.Config
+	BotID              string
+	Wake               func(string)
+	Command            func(context.Context, InboundCommand) error
+	TaskAction         func(context.Context, string, string, string, string, int64) (string, error)
+	ActionAllowed      func(string) bool
+	Notice             func(string)
+	Verification       *verification.Manager
+	VerificationGroups *verification.GroupManager
 }
 
 func (r *Receiver) notice(code string) {
@@ -84,6 +85,10 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 	}
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
+	if r.VerificationGroups != nil && chatType == "group" && !unsupported && strings.HasPrefix(strings.TrimSpace(text), "/verify-group ") {
+		_, err := r.VerificationGroups.Message(ctx, user, strings.TrimPrefix(strings.TrimSpace(text), "/verify-group "), ptr(msg.MessageId), ptr(msg.ChatId))
+		return err
+	}
 	if r.Verification != nil && chatType == "p2p" && !unsupported && strings.HasPrefix(strings.TrimSpace(text), "/verify ") {
 		_, err := r.Verification.PrivateMessage(ctx, user, strings.TrimPrefix(strings.TrimSpace(text), "/verify "), ptr(msg.MessageId))
 		return err

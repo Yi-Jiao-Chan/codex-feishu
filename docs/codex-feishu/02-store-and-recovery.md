@@ -28,6 +28,8 @@ schema 17 新增 `card_request_markers`，在镜像、命令确认、待处理�
 
 schema 18 新增 `verification_cards`，保存同一管理实例内显式授权的本人测试卡：原 build commit、运行二进制 SHA-256、UUID、令牌、完整卡和到期先落盘，随后 CAS 领取。重复 ready 仅匹配当前运行二进制摘要的构建可继续，dispatching 对外按 unknown 不重发；confirmed / rejected 均保持原结果。实际回调可能先于发送响应，记录原 message/chat ID，只有匹配 confirmed send ID 才报告回调组件 pass。私聊验证命令只记录证据，不产生任务收据。完整 P1 / App UI 不从组件记录推导；日志 DTO 不输出 token 或原卡，真实 M0 未迁移。
 
+schema 19 新增 `verification_groups`：固定 owner 的名称、成员 JSON、UUID、commit / 运行二进制 SHA-256 与有效期在创建前保存，ready CAS 领取，未决不重建。创建与成员 GET / owner 群 @ 观察独立保存；只有原 confirmed chat 才能记录入站，不生成线程 binding 或输入收据。成员观察的首次时间不被重放延长，私有结构不输出成员名单 / UUID。只读查询不触发成员 GET，两个组件均通过也不提升 P1。
+
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 
 | 表 | 主键 / 唯一约束 | 主要字段 |

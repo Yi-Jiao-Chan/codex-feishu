@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -67,12 +68,14 @@ func TestReceiverRoutesVerificationOutsideCommandsAndNativeReceipts(t *testing.T
 	}
 }
 
-func TestServiceManagedProbeUsesExistingReceiverAndJournal(t *testing.T) {
+func TestServiceManagedCardAndGroupUseExistingReceiverAndJournal(t *testing.T) {
 	db, cfg, _ := serviceFixture(t)
 	g := &serviceGateway{runtimeGateway: &runtimeGateway{}, listening: make(chan struct{})}
 	s := &Service{Config: cfg, Store: db, Gateway: g, BotID: "ou_bot", RetryInterval: 5 * time.Millisecond, Connect: func(context.Context) (ServiceNative, error) { return nil, errors.New("offline native") }}
 	m := &verification.Manager{Store: db, Gateway: g, HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, Commit: "running-test-build", BinarySHA256: strings.Repeat("b", 64), Ready: func() bool { return g.Ready() && s.HealthReadyForVerification() }}
 	s.Verification = m
+	gm := &verification.GroupManager{Store: db, Gateway: g, HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, BotID: s.BotID, Commit: m.Commit, BinarySHA256: m.BinarySHA256, Ready: m.Ready}
+	s.VerificationGroups = gm
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serviceDone := make(chan error, 1)
@@ -96,6 +99,7 @@ func TestServiceManagedProbeUsesExistingReceiverAndJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.Verification = m
+	server.VerificationGroups = gm
 	controlDone := make(chan error, 1)
 	go func() { controlDone <- server.Serve(ctx) }()
 	defer func() {
@@ -139,14 +143,48 @@ func TestServiceManagedProbeUsesExistingReceiverAndJournal(t *testing.T) {
 			t.Fatal(result, err)
 		}
 	}
+	groupResult, err := control.VerifyGroup(ctx, endpoint, identity, id, true)
+	if err != nil || groupResult.GroupStatus != "pass" || groupResult.MembershipStatus != "pass" || groupResult.GroupMessageStatus != "pending" {
+		t.Fatal(groupResult, err)
+	}
+	for _, args := range []struct {
+		chat, user string
+		at         bool
+	}{{groupResult.ChatID, "ou_other", true}, {"chat", cfg.Access.OwnerOpenID, true}, {groupResult.ChatID, cfg.Access.OwnerOpenID, false}} {
+		event := receiverMessage(t, args.chat, args.user, "ignored-group-ping", "group", args.at)
+		body, _ := json.Marshal(map[string]string{"text": "@_user_1 /verify-group " + id})
+		*event.Event.Message.Content = string(body)
+		if err := g.message(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	groupResult, err = control.VerifyGroup(ctx, endpoint, identity, id, false)
+	if err != nil || groupResult.GroupMessageStatus != "pending" {
+		t.Fatal("invalid group event passed", groupResult, err)
+	}
+	groupMessage := receiverMessage(t, groupResult.ChatID, cfg.Access.OwnerOpenID, "om_group_ping", "group", true)
+	groupBody, _ := json.Marshal(map[string]string{"text": "@_user_1 /verify-group " + id})
+	*groupMessage.Event.Message.Content = string(groupBody)
+	if err := g.message(ctx, groupMessage); err != nil {
+		t.Fatal(err)
+	}
+	for _, begin := range []bool{false, true} {
+		groupResult, err = control.VerifyGroup(ctx, endpoint, identity, id, begin)
+		if err != nil || groupResult.GroupMessageStatus != "pass" {
+			t.Fatal(groupResult, err)
+		}
+	}
+	if _, err := db.BindingByChat(ctx, cfg.Host.ID, groupResult.ChatID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal("verification group bound to native thread", err)
+	}
 	health, err := control.Query(ctx, endpoint, identity)
-	if err != nil || !health.VerificationCardSupported || health.NativeConnected {
+	if err != nil || !health.VerificationCardSupported || !health.VerificationGroupSupported || health.NativeConnected {
 		t.Fatal(health, err)
 	}
 	g.mu.Lock()
 	writes, groups := append([]runtimeWrite(nil), g.writes...), g.groups
 	g.mu.Unlock()
-	if len(writes) != 1 || writes[0].target != cfg.Access.OwnerOpenID || groups != 0 || g.listens.Load() != 1 {
+	if len(writes) != 1 || writes[0].target != cfg.Access.OwnerOpenID || groups != 1 || g.listens.Load() != 1 {
 		t.Fatal("probe duplicated receiver/group/card", writes, groups)
 	}
 	receipts, err := db.Receipts(ctx, "thread")

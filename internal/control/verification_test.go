@@ -78,3 +78,48 @@ func TestManagedCardOverRealUnixSocketAndMethodBoundaries(t *testing.T) {
 		}
 	}
 }
+
+type controlGroupProbe struct{ begins, reads atomic.Int32 }
+
+func (p *controlGroupProbe) Begin(_ context.Context, id string) (verification.GroupResult, error) {
+	p.begins.Add(1)
+	return verification.GroupResult{RequestID: id, BridgeCommit: "fixture", BinarySHA256: strings.Repeat("b", 64), State: "confirmed", GroupStatus: "pass", MembershipStatus: "pass", GroupMessageStatus: "pending", ChatID: "oc_test", ExpiresAtMS: time.Now().Add(time.Minute).UnixMilli()}, nil
+}
+func (p *controlGroupProbe) State(_ context.Context, id string) (verification.GroupResult, error) {
+	p.reads.Add(1)
+	return verification.GroupResult{}, verification.ErrNotFound
+}
+
+func TestGroupManagementMethodsCannotCarryCardOrPairPayload(t *testing.T) {
+	path, identity := controlFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s, err := Listen(ctx, path, identity, func(context.Context) (Snapshot, error) { return snapshot(), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := &controlGroupProbe{}
+	s.VerificationGroups = groups
+	s.Verification = &controlProbe{}
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(ctx) }()
+	defer func() { cancel(); s.Close(); <-done }()
+	id := store.ID()
+	result, err := VerifyGroup(ctx, path, identity, id, true)
+	if err != nil || result.MembershipStatus != "pass" {
+		t.Fatal(result, err)
+	}
+	if _, err := VerifyGroup(ctx, path, identity, store.ID(), false); err != verification.ErrNotFound || groups.begins.Load() != 1 || groups.reads.Load() != 1 {
+		t.Fatal("not-found query invoked begin", err)
+	}
+	for _, extra := range []string{`,"pair":{"request_id":"` + id + `"}`, `,"verification":{"request_id":"` + id + `"}`} {
+		body := `{"schema_version":1,"identity":"` + identity + `","method":"verify.group.begin","verification_group":{"request_id":"` + id + `"}` + extra + `}`
+		wire(t, path, body)
+		if groups.begins.Load() != 1 {
+			t.Fatal("mixed authorization reached group creator")
+		}
+	}
+	if _, err := VerifyGroup(ctx, path, strings.Repeat("d", 64), id, true); err != ErrIdentity || groups.begins.Load() != 1 {
+		t.Fatal(err)
+	}
+}

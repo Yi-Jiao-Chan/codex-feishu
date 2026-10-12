@@ -124,6 +124,8 @@ func runServe(ctx context.Context, args []string) int {
 	}
 	verificationManager := &verification.Manager{Store: db, Gateway: gateway, HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, Commit: commit, BinarySHA256: binaryHash, Ready: func() bool { return gateway.Ready() && service.HealthReadyForVerification() }}
 	service.Verification = verificationManager
+	verificationGroups := &verification.GroupManager{Store: db, Gateway: gateway, HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, BotID: bot, Commit: commit, BinarySHA256: binaryHash, Ready: func() bool { return gateway.Ready() && service.HealthReadyForVerification() }}
+	service.VerificationGroups = verificationGroups
 	endpoint, err := control.Path(cfg.Feishu.AppID)
 	if err != nil {
 		emit(output{Command: "serve", State: "control-endpoint-unavailable"})
@@ -136,6 +138,7 @@ func runServe(ctx context.Context, args []string) int {
 	}
 	defer server.Close()
 	server.Verification = verificationManager
+	server.VerificationGroups = verificationGroups
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	var workers sync.WaitGroup

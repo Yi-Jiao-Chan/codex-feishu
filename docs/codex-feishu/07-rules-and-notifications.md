@@ -4,7 +4,7 @@
 
 当前实现边界：目录物理匹配 / 注册工作树规则、严格目录命令解析和 host/app 隔离持久化、通知 `Policy` 计算、严格 `/notify at` 解析与纯更新函数、通知规则 revision 持久化已实现。默认初始化不会覆盖用户已有的 off / snooze / quiet，deadline 使用 UTC RFC3339Nano，不因重启延长。completed / failed 的首次提醒资格、历史策略审计、发送前策略与群成员核验、载荷冻结、送达去重和不确定结果恢复已接入多会话运行时，并通过自动测试。目录与自己的通知命令已接入新版 serve 的原子命令 / 回复日志；needs_user 也已有持久提醒日志，但新事件资格存在下述原生时间证据限制。现有 M0 listener 尚不能使用本页新增命令，新版尚未部署。详见[实现与只读证据](../research/m1-history-sync-and-rules-2026-10-12.md)、[运行时整合进展](../research/m1-runtime-and-m2-inputs-2026-10-12.md)、[接收器与通知出站进展](../research/m2-receiver-and-notification-delivery-2026-10-12.md)、[正式服务整合进展](../research/m2-service-and-task-controls-2026-10-12.md)和[待处理提醒进展](../research/m3-setup-and-request-reminders-2026-10-12.md)。
 
-命令确认回复已有持久限流恢复。等待期间继续执行其他命令；旧的 off / mute 回复到期只投递原结果，不回退后来 on / unmute 设置，也不新增 stop / continue 操作。原文关系保持引用原命令，unknown 不盲重发。当前开发 schema 为 18，隔离证据见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)。
+命令确认回复已有持久限流恢复。等待期间继续执行其他命令；旧的 off / mute 回复到期只投递原结果，不回退后来 on / unmute 设置，也不新增 stop / continue 操作。原文关系保持引用原命令，unknown 不盲重发。当前开发 schema 为 19，隔离证据见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)。
 
 ## 目录命令与匹配
 

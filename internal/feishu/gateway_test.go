@@ -213,3 +213,19 @@ func TestReplyCardRetainsParentAndNeverFallsBack(t *testing.T) {
 		t.Fatal("rejected reply was hidden or retried")
 	}
 }
+
+func TestMemberListMissingPaginationOrIdentityCannotClaimCompleteness(t *testing.T) {
+	for _, body := range []string{`{"code":0,"data":{"items":[{"member_id":"ou_owner"}]}}`, `{"code":0,"data":{"items":[{"member_id":"ou_owner"},{}],"has_more":false}}`} {
+		g := apiFixture(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.Contains(r.URL.Path, "tenant_access_token") {
+				w.Write([]byte(`{"code":0,"tenant_access_token":"fixture-token","expire":7200}`))
+				return
+			}
+			w.Write([]byte(body))
+		})
+		if ids, err := g.MemberIDs(context.Background(), "oc_test"); err == nil || ids != nil {
+			t.Fatal("incomplete roster treated as complete", ids, err)
+		}
+	}
+}

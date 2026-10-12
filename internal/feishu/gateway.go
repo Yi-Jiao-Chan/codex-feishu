@@ -207,7 +207,7 @@ func (g *Gateway) MemberIDs(ctx context.Context, chatID string) ([]string, error
 				Items []struct {
 					ID string `json:"member_id"`
 				} `json:"items"`
-				More      bool   `json:"has_more"`
+				More      *bool  `json:"has_more"`
 				Token     string `json:"page_token"`
 				Truncated bool   `json:"trigger_security_conf_limit"`
 			} `json:"data"`
@@ -222,12 +222,16 @@ func (g *Gateway) MemberIDs(ctx context.Context, chatID string) ([]string, error
 		if r.Data.Truncated {
 			return nil, errors.New("member list restricted by security configuration")
 		}
-		for _, member := range r.Data.Items {
-			if member.ID != "" {
-				ids = append(ids, member.ID)
-			}
+		if r.Data.More == nil {
+			return nil, errors.New("member list pagination is unknown")
 		}
-		if !r.Data.More {
+		for _, member := range r.Data.Items {
+			if member.ID == "" {
+				return nil, errors.New("member list contains an unidentified member")
+			}
+			ids = append(ids, member.ID)
+		}
+		if !*r.Data.More {
 			return ids, nil
 		}
 		if r.Data.Token == "" || seen[r.Data.Token] {

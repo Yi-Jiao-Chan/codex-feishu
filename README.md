@@ -31,3 +31,5 @@ M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fo
 开发验收包入口为 `go run ./cmd/dev-package --output /absolute/private/dist --json`。包只含本次构建、校验和、兼容 / 权限清单、自包含 Agent 指南、配置和验收模板，不包含本机密钥、真实配置、数据库或研究日志。必须先提交并保持 Git 干净；输出是 development 包，保留未发布边界，不安装、启动或替换服务。见[CLI 与配置手册](docs/codex-feishu/10-cli-and-setup.md)。
 
 管理实例的本人测试卡组件已接入现有接收器：显式 card 授权与固定 request ID，原子领取和私有记录，重复 / unknown 不重发，回调与私聊探针不进入 Codex 输入。真实部署、受控群 / 线程及完整 P1 仍 pending。见[管理测试卡进展](docs/research/m3-managed-card-verification-2026-10-12.md)。
+
+管理测试群组件已接入：固定本人和机器人，持久领取后一次创建，成员 GET 与群 @ 验证记录在原接收器内；不绑定线程、不发测试群消息。卡 / 群标志独立授权，查询不生成缺失的组件，完整 P1 和受控线程仍 pending。见[管理测试群进展](docs/research/m3-managed-group-verification-2026-10-12.md)。
