@@ -3,6 +3,8 @@ package codexclient
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,17 +84,18 @@ type reply struct {
 	err  error
 }
 type Client struct {
-	conn       *websocket.Conn
-	ctx        context.Context
-	cancel     context.CancelFunc
-	mu         sync.Mutex
-	pending    map[string]chan reply
-	seq        atomic.Uint64
-	events     chan Event
-	done       chan struct{}
-	closeOnce  sync.Once
-	generation uint64
-	terminal   error
+	conn         *websocket.Conn
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.Mutex
+	pending      map[string]chan reply
+	seq          atomic.Uint64
+	events       chan Event
+	done         chan struct{}
+	closeOnce    sync.Once
+	generation   uint64
+	connectionID string
+	terminal     error
 }
 
 var generation atomic.Uint64
@@ -100,6 +103,10 @@ var generation atomic.Uint64
 func Connect(ctx context.Context, path string) (*Client, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("socket must be absolute")
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return nil, errors.New("cannot create connection identity")
 	}
 	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", path)
@@ -116,7 +123,7 @@ func Connect(ctx context.Context, path string) (*Client, error) {
 	}
 	conn.SetReadLimit(32 << 20)
 	life, cancel := context.WithCancel(ctx)
-	c := &Client{conn: conn, ctx: life, cancel: cancel, pending: map[string]chan reply{}, events: make(chan Event, 512), done: make(chan struct{}), generation: generation.Add(1)}
+	c := &Client{conn: conn, ctx: life, cancel: cancel, pending: map[string]chan reply{}, events: make(chan Event, 512), done: make(chan struct{}), generation: generation.Add(1), connectionID: hex.EncodeToString(nonce[:])}
 	go c.read()
 	err = c.Call(setupCtx, "initialize", map[string]any{"clientInfo": map[string]string{"name": "codex-feishu", "title": "Codex Feishu Bridge", "version": "0.0.1-dev"}, "capabilities": map[string]bool{"experimentalApi": true}}, nil)
 	if err == nil {
@@ -131,8 +138,12 @@ func Connect(ctx context.Context, path string) (*Client, error) {
 }
 func (c *Client) Events() <-chan Event  { return c.events }
 func (c *Client) Done() <-chan struct{} { return c.done }
-func (c *Client) Err() error            { c.mu.Lock(); defer c.mu.Unlock(); return c.terminal }
-func (c *Client) Close()                { c.closeOnce.Do(func() { c.cancel(); c.conn.CloseNow() }); <-c.done }
+func (c *Client) GenerationID() uint64  { return c.generation }
+
+// ConnectionID remains unique across process restarts, unlike GenerationID.
+func (c *Client) ConnectionID() string { return c.connectionID }
+func (c *Client) Err() error           { c.mu.Lock(); defer c.mu.Unlock(); return c.terminal }
+func (c *Client) Close()               { c.closeOnce.Do(func() { c.cancel(); c.conn.CloseNow() }); <-c.done }
 
 // Call sends exactly once. Ambiguity after write begins is unknown, even on timeout.
 func (c *Client) Call(ctx context.Context, method string, params, dst any) error {

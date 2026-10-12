@@ -2,6 +2,7 @@ package codexclient
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -182,5 +183,30 @@ func TestVerifierLostResponse(t *testing.T) {
 	var unknown *UnknownError
 	if !errors.As(err, &unknown) || calls.Load() != 1 {
 		t.Fatal("lost creation retried", err, calls.Load())
+	}
+}
+
+func TestConnectionIdentityIsUniqueForInitializedClients(t *testing.T) {
+	socket := fixture(t, func(ctx context.Context, c *websocket.Conn, w wire) { send(ctx, c, w.ID, map[string]any{}) })
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	first, err := Connect(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Connect(ctx, socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	for _, c := range []*Client{first, second} {
+		b, err := hex.DecodeString(c.ConnectionID())
+		if err != nil || len(b) != 16 || c.GenerationID() == 0 {
+			t.Fatal("invalid initialized identity")
+		}
+	}
+	if first.ConnectionID() == second.ConnectionID() {
+		t.Fatal("connection nonce reused")
 	}
 }

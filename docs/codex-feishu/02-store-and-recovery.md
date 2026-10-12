@@ -30,6 +30,8 @@ schema 18 新增 `verification_cards`，保存同一管理实例内显式授权�
 
 schema 19 新增 `verification_groups`：固定 owner 的名称、成员 JSON、UUID、commit / 运行二进制 SHA-256 与有效期在创建前保存，ready CAS 领取，未决不重建。创建与成员 GET / owner 群 @ 观察独立保存；只有原 confirmed chat 才能记录入站，不生成线程 binding 或输入收据。成员观察的首次时间不被重放延长，私有结构不输出成员名单 / UUID。只读查询不触发成员 GET，两个组件均通过也不提升 P1。
 
+schema 20 新增 `verification_native`：内部隔离创建步骤冻结受限制请求与构建摘要，调用前单次领取并记录 generation 和每连接随机身份。重启后的相同数值 generation 不构成同连接证明；unknown / dispatching / rejected / confirmed 不重新创建。确定响应保存原出生历史，不代表新连接已附着。私有请求不输出，完整 verify、绑定与真实 UI 仍待完成，见[创建日志进展](../research/m3-native-verification-journal-2026-10-12.md)。
+
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 
 | 表 | 主键 / 唯一约束 | 主要字段 |

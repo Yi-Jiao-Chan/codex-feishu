@@ -22,6 +22,18 @@ var verificationRunID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // It cannot select a production provider, model, prompt or policy override.
 type LocalVerificationSpec struct{ RunID, CWD, ModelURL string }
 
+// LocalVerificationRequestJSON freezes the same validated wire params used
+// by StartLocalVerification. It contains private paths and a loopback URL;
+// callers must keep it in the private journal, not normal diagnostic output.
+func LocalVerificationRequestJSON(s LocalVerificationSpec) (string, error) {
+	params, err := localVerificationParams(s)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(params)
+	return string(b), err
+}
+
 func localVerificationParams(s LocalVerificationSpec) (map[string]any, error) {
 	if !verificationRunID.MatchString(s.RunID) || !filepath.IsAbs(s.CWD) || filepath.Clean(s.CWD) != s.CWD {
 		return nil, errors.New("invalid local verification scope")

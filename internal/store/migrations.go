@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 19
+const SchemaVersion = 20
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -274,6 +274,15 @@ PRAGMA user_version=4;
 			return err
 		}
 		if _, err = tx.Exec("PRAGMA user_version=19"); err != nil {
+			return err
+		}
+	}
+
+	if version < 20 {
+		if _, err = tx.Exec(VerificationNativeSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=20"); err != nil {
 			return err
 		}
 	}

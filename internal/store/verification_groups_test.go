@@ -83,7 +83,7 @@ func TestVerificationGroupMigrationFromEighteenPreservesM0AndCard(t *testing.T) 
 		t.Fatal("migration lost card evidence", gotCard, err)
 	}
 	var version int
-	if err := s.DB.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 19 {
+	if err := s.DB.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatal("unexpected schema version", version, err)
 	}
 	var groups int
