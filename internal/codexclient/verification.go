@@ -72,29 +72,54 @@ func (c *Client) StartLocalVerification(ctx context.Context, s LocalVerification
 	if err != nil {
 		return Thread{}, err
 	}
-	var r struct {
-		Thread         json.RawMessage `json:"thread"`
-		CWD            string          `json:"cwd"`
-		Model          string          `json:"model"`
-		ModelProvider  string          `json:"modelProvider"`
-		ApprovalPolicy string          `json:"approvalPolicy"`
-		Sandbox        struct {
-			Type          string `json:"type"`
-			NetworkAccess bool   `json:"networkAccess"`
-		} `json:"sandbox"`
-	}
+	var r localVerificationReply
 	if err = c.Call(ctx, "thread/start", params, &r); err != nil {
 		return Thread{}, err
 	}
+	return r.checked(s, "thread/start", "", true)
+}
+
+// AttachLocalVerification joins only the journaled, owned fixture thread.
+// No model, policy or config overrides are sent. Unlike birth, a running
+// thread may have preview/history; the returned provider and effective legacy
+// sandbox/approval policy must still match the constrained fixture. This is
+// neither a new creation attempt nor proof of App UI or full verification.
+func (c *Client) AttachLocalVerification(ctx context.Context, id string, s LocalVerificationSpec) (Thread, error) {
+	if id == "" {
+		return Thread{}, errors.New("verification thread ID is required")
+	}
+	if _, err := localVerificationParams(s); err != nil {
+		return Thread{}, err
+	}
+	var r localVerificationReply
+	if err := c.Call(ctx, "thread/resume", map[string]any{"threadId": id, "excludeTurns": true}, &r); err != nil {
+		return Thread{}, err
+	}
+	return r.checked(s, "thread/resume", id, false)
+}
+
+type localVerificationReply struct {
+	Thread         json.RawMessage `json:"thread"`
+	CWD            string          `json:"cwd"`
+	Model          string          `json:"model"`
+	ModelProvider  string          `json:"modelProvider"`
+	ApprovalPolicy string          `json:"approvalPolicy"`
+	Sandbox        struct {
+		Type          string          `json:"type"`
+		NetworkAccess json.RawMessage `json:"networkAccess"`
+	} `json:"sandbox"`
+}
+
+func (r localVerificationReply) checked(s LocalVerificationSpec, method, id string, birth bool) (Thread, error) {
 	var t Thread
 	var shape struct {
 		Ephemeral     *bool  `json:"ephemeral"`
 		ModelProvider string `json:"modelProvider"`
 	}
 	invalid := func() (Thread, error) {
-		return Thread{}, &UnknownError{Method: "thread/start", Cause: errors.New("local verification creation proof is incomplete")}
+		return Thread{}, &UnknownError{Method: method, Cause: errors.New("local verification thread proof is incomplete")}
 	}
-	if json.Unmarshal(r.Thread, &t) != nil || json.Unmarshal(r.Thread, &shape) != nil || shape.Ephemeral == nil || *shape.Ephemeral || t.ID == "" || t.CWD != s.CWD || r.CWD != s.CWD || r.Model != "fixture-model" || r.ModelProvider != params["modelProvider"] || shape.ModelProvider != r.ModelProvider || r.ApprovalPolicy != "never" || r.Sandbox.Type != "readOnly" || r.Sandbox.NetworkAccess || t.ParentThreadID != nil || t.ForkedFromID != nil || t.Preview != "" || len(t.Turns) != 0 {
+	if json.Unmarshal(r.Thread, &t) != nil || json.Unmarshal(r.Thread, &shape) != nil || shape.Ephemeral == nil || *shape.Ephemeral || t.ID == "" || id != "" && t.ID != id || t.CWD != s.CWD || r.CWD != s.CWD || r.Model != "fixture-model" || r.ModelProvider != "cfb_verify_"+s.RunID || shape.ModelProvider != r.ModelProvider || r.ApprovalPolicy != "never" || r.Sandbox.Type != "readOnly" || !readOnlyNetworkDisabled(r.Sandbox.NetworkAccess) || t.ParentThreadID != nil || t.ForkedFromID != nil || birth && (t.Preview != "" || len(t.Turns) != 0) {
 		return invalid()
 	}
 	var label string
@@ -102,4 +127,14 @@ func (c *Client) StartLocalVerification(ctx context.Context, s LocalVerification
 		return invalid()
 	}
 	return t, nil
+}
+
+func readOnlyNetworkDisabled(raw json.RawMessage) bool {
+	// The 0.162.0 readOnly schema defaults an omitted boolean to false.
+	// Decode into *bool so an explicit null cannot masquerade as that default.
+	if len(raw) == 0 {
+		return true
+	}
+	var access *bool
+	return json.Unmarshal(raw, &access) == nil && access != nil && !*access
 }

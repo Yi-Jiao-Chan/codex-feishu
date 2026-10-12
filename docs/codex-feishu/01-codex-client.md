@@ -69,4 +69,6 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 
 内部 `NativeManager` 已补齐准确请求落盘和单次创建领取。`Client.ConnectionID` 提供每连接随机身份，与进程内 generation 共同核验；新连接不能复用旧连接创建尝试。创建证据与附着 / 完整 UI 验收分开，见[创建日志进展](../research/m3-native-verification-journal-2026-10-12.md)。
 
+验收专用 `AttachLocalVerification` 仍只发送 `thread/resume` 的 threadId 和 excludeTurns，不覆盖原配置；同时检查完整返回中的固定模拟模型、provider、原 cwd、never 与只读无网络策略，以及验收标签和原线程身份。出生时要求空历史，附着时允许已有 preview / turns。它仅是本地协议 fixture 已通过的内部适配器，尚未接入正式运行时，真实 daemon / UI 不由此推导，见[绑定基础进展](../research/m3-verification-binding-foundation-2026-10-12.md)。
+
 `NativeSessions` 已组合私有目录、固定 loopback 模型和上述创建步骤；资源到期、关闭和进程重启不更换原请求端点或重建线程。模型 Release 只是本地时序控制，不是原生 steer / start。开发管理通道 / CLI 已接入创建组件，绑定、输入、远端清理与真实重验仍待完成，见[本地资源进展](../research/m3-native-verification-resources-2026-10-12.md)和[管理创建组件](../research/m3-managed-thread-creation-2026-10-12.md)。

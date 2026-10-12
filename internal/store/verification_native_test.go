@@ -79,7 +79,7 @@ func TestVerificationNativeMigrationFromNineteenPreservesJournals(t *testing.T) 
 		t.Fatal("migration lost group evidence", gotGroup, err)
 	}
 	var version int
-	if err := s.DB.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 20 {
+	if err := s.DB.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != SchemaVersion {
 		t.Fatal("unexpected schema version", version, err)
 	}
 	var nativeTables int
