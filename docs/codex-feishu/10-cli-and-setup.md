@@ -33,6 +33,8 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 
 两个 allow 标志可独立或一起使用；所有请求能力在第一项 mutation 前检查。无 allow 且有 ID 时查询运行实例支持的卡 / 群日志，缺日志返回 skipped / not-found，不生成测试。受控线程尚未接入；请求 `--allow-test-thread` 时仍不部分发送卡片或建群。已有管理实例保留唯一接收器。只有单独授权 card / group、没有管理实例、同时取得应用与数据库监听锁，并且已有私有 schema 1 日志时，才保留旧 M0 准备能力。锁后重新核验诊断所用配置与密钥；变更返回冲突。可写打开只接受所属用户的 0700 物理目录 / 私有文件与准确 schema，不创建或迁移。UUID 在 API 前落盘，unknown / rejected 不重发；这不是正式一期 verify。
 
+内部受控线程创建已有私有目录、固定本机模型、发送前持久领取和资源期限 / 重启保护的开发组合；尚未接入管理通道、绑定与输入，`--allow-test-thread` 的上述拒绝行为保持。不得由配置 Agent 直接调用内部 Go 组件来绕过 CLI 授权和完整验收，见[本地资源进展](../research/m3-native-verification-resources-2026-10-12.md)。
+
 旧 M0 准备后只能使用保留的历史 M0 二进制处理其回调。当前开发版 m0-listen 的 Store.Open 会拒绝未接管的 schema 1，不能拿它替换运行中的旧实例；正式迁移须另行完成验收。
 
 ## JSON 与退出码
