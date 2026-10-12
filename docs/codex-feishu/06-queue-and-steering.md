@@ -35,6 +35,8 @@ delete + steer 是两个 RPC，没有事务保证。删除成功保存前崩溃�
 
 原生 clientUserMessageId 只是关联字段。桥同一收据最多一个未完成提交尝试；重复卡片事件读取原动作结果，不能因为相关 ID 一样就安全再发一次。
 
+受控验收的专属绑定使用 Controller.BeginWrite：每个原生写阶段在领取 attempt 前单独检查，操作上下文贯穿该次 RPC 与结果保存。删除成功不使下一次 steer / restore 自动获授权，拒绝或取消不新发输入；nil hook 保持普通路径。完整受控 CLI 编排和真实双客户端重验仍 pending，见[操作授权进展](../research/m3-verification-operation-guards-2026-10-12.md)。
+
 ## 允许的卡片状态
 
 | 后端事实 | 卡片文案 / 操作 |

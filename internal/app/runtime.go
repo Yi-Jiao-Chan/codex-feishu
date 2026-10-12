@@ -30,6 +30,8 @@ type RuntimeNative interface {
 	Err() error
 }
 
+// VerificationAuthorize must keep recognized markers handled on failure and
+// reject their automatic use; it owns the dedicated verification policy.
 type Runtime struct {
 	Store                      *store.Store
 	Native                     RuntimeNative
@@ -45,6 +47,7 @@ type Runtime struct {
 	MinProgressIntervalMS      int64
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
+	VerificationAuthorize      func(context.Context, codexclient.Thread, bool) (handled bool, err error)
 	ActorTick                  func(context.Context, string) error
 	HistoryPreparing           func(context.Context, string, []codexclient.Turn) error
 	HistoryStaged              func(context.Context, string, []codexclient.Turn) error
@@ -55,18 +58,20 @@ type Runtime struct {
 	EventObservedContext       func(context.Context, codexclient.Event) error
 	RenderProgress             func(string, string, string, string) string
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
-	Notice  func(string)
-	Now     func() time.Time
-	mu      sync.Mutex
-	actors  map[string]*threadActor
-	running bool
-	checks  chan string
+	Notice      func(string)
+	Now         func() time.Time
+	mu          sync.Mutex
+	actors      map[string]*threadActor
+	running     bool
+	checks      chan string
+	activations chan string
 }
 
 type threadActor struct {
-	thread string
-	wake   chan struct{}
-	replay bool
+	thread    string
+	wake      chan struct{}
+	replay    bool
+	boundOnly bool
 }
 
 func (r *Runtime) now() time.Time {
@@ -106,30 +111,57 @@ func (r *Runtime) Wake(thread string) {
 	}
 }
 
+// Activate queues an explicit existing route for this native generation. Only
+// Run may add actors, so activation cannot race the worker join on shutdown.
+func (r *Runtime) Activate(thread string) {
+	if thread == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.running {
+		return
+	}
+	select {
+	case r.activations <- thread:
+	default:
+	}
+}
+
 // Authorize checks actual current native metadata, including registered Git
 // worktrees. Directory mute affects only a future automatic group, not an
 // existing binding. Fork following remains deliberately deferred.
 func (r *Runtime) Authorize(ctx context.Context, t codexclient.Thread, automatic bool) error {
+	_, err := r.authorize(ctx, t, automatic)
+	return err
+}
+
+func (r *Runtime) authorize(ctx context.Context, t codexclient.Thread, automatic bool) (bool, error) {
+	if r.VerificationAuthorize != nil {
+		if handled, err := r.VerificationAuthorize(ctx, t, automatic); handled || err != nil {
+			return handled, err
+		}
+	}
 	if !t.InteractiveMain() || t.ForkedFromID != nil {
-		return store.ErrIneligible
+		return false, store.ErrIneligible
 	}
 	scope, err := rules.ResolveScope(ctx, t.CWD, r.AllowedRoots)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !scope.Allowed {
-		return store.ErrIneligible
+		return false, store.ErrIneligible
 	}
 	if automatic && r.DirectoryRules != nil {
 		dirs, err := r.DirectoryRules(ctx)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if _, muted := rules.Muted(scope, dirs); muted {
-			return store.ErrIneligible
+			return false, store.ErrIneligible
 		}
 	}
-	return nil
+	return false, nil
 }
 
 // Run requires the caller's exclusive deployment lock. It drains births while
@@ -146,6 +178,7 @@ func (r *Runtime) Run(parent context.Context) error {
 	}
 	r.actors = map[string]*threadActor{}
 	r.checks = make(chan string, 256)
+	r.activations = make(chan string, 256)
 	r.running = true
 	r.mu.Unlock()
 	ctx, cancel := context.WithCancel(parent)
@@ -156,6 +189,7 @@ func (r *Runtime) Run(parent context.Context) error {
 		r.mu.Lock()
 		r.running = false
 		r.actors = nil
+		r.activations = nil
 		r.mu.Unlock()
 	}()
 	e := &discovery.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, AppID: r.AppID, AllowedRoots: r.AllowedRoots, DirectoryRules: r.DirectoryRules, Now: r.Now}
@@ -177,21 +211,21 @@ func (r *Runtime) Run(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	startActor := func(id string, replay bool) {
+	startActor := func(id string, replay, boundOnly bool) {
 		r.mu.Lock()
 		if r.actors[id] != nil {
 			r.mu.Unlock()
 			r.Wake(id)
 			return
 		}
-		a := &threadActor{thread: id, wake: make(chan struct{}, 1), replay: replay}
+		a := &threadActor{thread: id, wake: make(chan struct{}, 1), replay: replay, boundOnly: boundOnly}
 		r.actors[id] = a
 		r.mu.Unlock()
 		workers.Add(1)
 		go func() { defer workers.Done(); r.runActor(ctx, a) }()
 	}
 	for _, b := range bounds {
-		startActor(b.ThreadID, true)
+		startActor(b.ThreadID, true, false)
 	}
 	// Persisted eligible candidates may have accumulated content while offline.
 	initial, err := r.Store.PendingObservations(ctx, r.HostID)
@@ -211,6 +245,24 @@ func (r *Runtime) Run(parent context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case id := <-r.activations:
+			activationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			_, err := r.Store.Binding(activationCtx, r.HostID, id)
+			if err == nil {
+				var meta codexclient.Thread
+				meta, err = r.Native.Metadata(activationCtx, id)
+				if err == nil && meta.ID == id {
+					err = r.Authorize(activationCtx, meta, false)
+				} else if err == nil {
+					err = store.ErrConflict
+				}
+			}
+			cancel()
+			if err != nil {
+				r.notice("thread.activation_pending")
+			} else if ctx.Err() == nil {
+				startActor(id, true, true)
+			}
 		case <-scanned:
 			pending, err := r.Store.PendingObservations(ctx, r.HostID)
 			if err != nil {
@@ -218,7 +270,7 @@ func (r *Runtime) Run(parent context.Context) error {
 			}
 			for _, o := range pending {
 				if o.State == "eligible" {
-					startActor(o.ThreadID, old[o.ThreadID])
+					startActor(o.ThreadID, old[o.ThreadID], false)
 				}
 			}
 		case event, open := <-r.Native.Events():
@@ -376,8 +428,9 @@ actorLoop:
 			if attached {
 				readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				meta, err := r.Native.Metadata(readCtx, a.thread)
+				verificationHandled := false
 				if err == nil && meta.ID == a.thread {
-					err = r.Authorize(readCtx, meta, false)
+					verificationHandled, err = r.authorize(readCtx, meta, false)
 				} else if err == nil {
 					err = store.ErrConflict
 				}
@@ -396,6 +449,11 @@ actorLoop:
 				// Read and persist first, regardless of group network latency. A
 				// failed or unknown creation never discards the first/final items.
 				turns, err := r.Native.Turns(readCtx, a.thread)
+				if verificationHandled && codexclient.BeforeFirstInput(err) {
+					// Native verification drafts can be authorized before their
+					// first input; never invent a user item to unlock hydration.
+					turns, err = nil, nil
+				}
 				if err == nil {
 					if title == "Codex" {
 						for _, turn := range turns {
@@ -472,7 +530,7 @@ actorLoop:
 					}
 				} else if !errors.Is(bindingErr, sql.ErrNoRows) {
 					r.notice("binding.read_pending")
-				} else if hydrated && r.DiscoveryEnabled && r.ready() && !groupRunning && !groupBlocked && r.now().UnixMilli() >= groupRetryAtMS {
+				} else if hydrated && !a.boundOnly && !verificationHandled && r.DiscoveryEnabled && r.ready() && !groupRunning && !groupBlocked && r.now().UnixMilli() >= groupRetryAtMS {
 					groupRunning = true
 					groupWG.Add(1)
 					// Capture the chosen title: later history/name changes must

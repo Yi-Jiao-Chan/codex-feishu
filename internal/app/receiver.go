@@ -24,8 +24,8 @@ type InboundCommand struct {
 	Unsupported                               bool
 }
 
-// Receiver performs local durable work only. Slow/offline native and Feishu
-// APIs cannot hold callbacks open; thread actors consume committed receipts.
+// Receiver authorizes bound routes before local durable work. Callbacks are
+// bounded; thread actors consume committed receipts after their claims.
 // There is intentionally no Native field or client policy configuration.
 type Receiver struct {
 	Store              *store.Store
@@ -35,6 +35,7 @@ type Receiver struct {
 	Command            func(context.Context, InboundCommand) error
 	TaskAction         func(context.Context, string, string, string, string, int64) (string, error)
 	ActionAllowed      func(string) bool
+	BeginBound         func(context.Context, store.Binding, string) (context.Context, func(), error)
 	Notice             func(string)
 	Verification       *verification.Manager
 	VerificationGroups *verification.GroupManager
@@ -49,6 +50,24 @@ func (r *Receiver) wake(thread string) {
 	if r.Wake != nil {
 		r.Wake(thread)
 	}
+}
+
+func (r *Receiver) beginBound(ctx context.Context, b store.Binding, user string) (context.Context, func(), error) {
+	if r.BeginBound != nil {
+		opctx, release, err := r.BeginBound(ctx, b, user)
+		if err == nil && opctx != nil && release != nil && opctx.Err() == nil {
+			return opctx, release, nil
+		}
+		if release != nil {
+			release()
+		}
+		return nil, nil, store.ErrIneligible
+	}
+	_, err := r.Store.VerificationBindingForThread(ctx, r.Config.Host.ID, b.ThreadID)
+	if errors.Is(err, sql.ErrNoRows) && ctx.Err() == nil {
+		return ctx, func() {}, nil
+	}
+	return nil, nil, store.ErrIneligible
 }
 
 func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) error {
@@ -97,6 +116,14 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 	bound := bindingErr == nil && chatType == "group"
 	if bindingErr != nil && !errors.Is(bindingErr, sql.ErrNoRows) {
 		return bindingErr
+	}
+	if bound {
+		opctx, release, err := r.beginBound(ctx, b, user)
+		if err != nil {
+			return err
+		}
+		defer release()
+		ctx = opctx
 	}
 	if unsupported || strings.HasPrefix(strings.TrimSpace(text), "/") || !bound {
 		if r.Command != nil {
@@ -150,6 +177,16 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 	if (kind == "stop" || kind == "continue") && token != "" && validRevision && r.TaskAction != nil {
 		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 		defer cancel()
+		b, err := r.Store.BindingByChat(ctx, r.Config.Host.ID, a.Context.OpenChatID)
+		if err != nil {
+			return respond("info", "会话已失效"), nil
+		}
+		opctx, release, err := r.beginBound(ctx, b, a.Operator.OpenID)
+		if err != nil {
+			return respond("info", "会话暂不可用，请恢复同步后重试"), nil
+		}
+		defer release()
+		ctx = opctx
 		thread, err := r.TaskAction(ctx, a.Context.OpenChatID, a.Context.OpenMessageID, kind, token, revision)
 		if err != nil {
 			if errors.Is(err, store.ErrSubmissionStale) || errors.Is(err, store.ErrSubmissionBusy) || errors.Is(err, store.ErrConflict) {
@@ -167,6 +204,12 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 		if err != nil {
 			return respond("info", "会话已失效"), nil
 		}
+		opctx, release, err := r.beginBound(ctx, b, a.Operator.OpenID)
+		if err != nil {
+			return respond("info", "会话暂不可用，请恢复同步后重试"), nil
+		}
+		defer release()
+		ctx = opctx
 		scope := store.SubmissionScope{HostID: r.Config.Host.ID, AppID: r.Config.Feishu.AppID, ThreadID: b.ThreadID}
 		_, err = r.Store.CancelPendingSubmission(ctx, scope, a.Operator.OpenID, r.Config.Access.OperatorOpenIDs, a.Context.OpenChatID, a.Context.OpenMessageID, token, revision)
 		if err != nil {
@@ -187,6 +230,12 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 	if err != nil {
 		return respond("info", "会话已失效"), nil
 	}
+	opctx, release, err := r.beginBound(ctx, b, a.Operator.OpenID)
+	if err != nil {
+		return respond("info", "会话暂不可用，请恢复同步后重试"), nil
+	}
+	defer release()
+	ctx = opctx
 	if r.ActionAllowed != nil && !r.ActionAllowed(b.ThreadID) {
 		return respond("info", "连接暂不可用，请恢复同步后重试"), nil
 	}

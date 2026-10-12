@@ -34,6 +34,7 @@ type Controller struct {
 	Native                  Native
 	Store                   *store.Store
 	HostID, AppID, ThreadID string
+	BeginWrite              func(context.Context) (context.Context, func(), error)
 	mu                      sync.Mutex
 	recovered               bool
 }
@@ -47,6 +48,45 @@ func (c *Controller) valid() error {
 		return store.ErrConflict
 	}
 	return nil
+}
+
+// claimAndDispatch owns one durable native write stage. A stage gets its own
+// write lease, so a later stage cannot reuse a grant that covered an earlier
+// native call. The lease stays held until dispatch has persisted its outcome.
+func (c *Controller) claimAndDispatch(ctx context.Context, n store.Submission, actionID, stage string) (bool, error) {
+	leaseCtx := ctx
+	release := func() {}
+	if c.BeginWrite != nil {
+		var err error
+		leaseCtx, release, err = c.BeginWrite(ctx)
+		if err != nil {
+			if release != nil {
+				release()
+			}
+			return false, err
+		}
+		if leaseCtx == nil {
+			if release != nil {
+				release()
+			}
+			return false, errors.New("write lease unavailable")
+		}
+		if release == nil {
+			return false, errors.New("write lease unavailable")
+		}
+	}
+	defer release()
+	if err := leaseCtx.Err(); err != nil {
+		return false, err
+	}
+	a, claimed, err := c.Store.ClaimSubmissionAttempt(leaseCtx, c.scope(), n.ID, actionID, stage)
+	if err != nil || !claimed {
+		return claimed, err
+	}
+	if err = c.dispatch(leaseCtx, a, n); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 // ClaimAction does local durable work only. The composition root authenticates
@@ -161,7 +201,7 @@ func (c *Controller) Tick(ctx context.Context) error {
 		if n.State != "received" {
 			continue
 		}
-		a, claimed, err := c.Store.ClaimSubmissionAttempt(ctx, c.scope(), n.ID, "", "add")
+		claimed, err := c.claimAndDispatch(ctx, n, "", "add")
 		if errors.Is(err, store.ErrSubmissionStale) || errors.Is(err, store.ErrSubmissionBusy) {
 			continue
 		}
@@ -170,9 +210,6 @@ func (c *Controller) Tick(ctx context.Context) error {
 		}
 		if !claimed {
 			continue
-		}
-		if err = c.dispatch(ctx, a, n); err != nil {
-			return &Error{err}
 		}
 		// Refresh after each add: an idle add may already have been consumed,
 		// and queue ordinals include every App submission as well as ours.
@@ -517,14 +554,11 @@ func (c *Controller) processAction(ctx context.Context, actionID string) error {
 				return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", result)
 			}
 		}
-		a, claimed, err := c.Store.ClaimSubmissionAttempt(ctx, c.scope(), n.ID, op.ID, op.Stage)
+		claimed, err := c.claimAndDispatch(ctx, n, op.ID, op.Stage)
 		if errors.Is(err, store.ErrSubmissionStale) || errors.Is(err, store.ErrSubmissionBusy) {
 			return nil
 		}
 		if err != nil || !claimed {
-			return err
-		}
-		if err = c.dispatch(ctx, a, n); err != nil {
 			return err
 		}
 		fresh, err := c.snapshot(ctx)
@@ -553,6 +587,12 @@ func (c *Controller) dispatch(ctx context.Context, a store.SubmissionAttempt, n 
 	// Recheck the confirmed binding after journaling and immediately before the
 	// RPC. A failed check leaves dispatching for conservative startup recovery.
 	if _, err := c.Store.SubmissionBinding(ctx, c.scope()); err != nil {
+		c.recovered = false
+		return err
+	}
+	// The lease can be revoked after the binding check. Keep the durable
+	// dispatching attempt for conservative recovery, but never issue the RPC.
+	if err := ctx.Err(); err != nil {
 		c.recovered = false
 		return err
 	}

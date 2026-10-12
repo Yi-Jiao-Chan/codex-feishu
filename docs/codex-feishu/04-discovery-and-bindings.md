@@ -45,6 +45,8 @@ creating_group 响应未知 → reconciling_group
 
 开发验收绑定已有内部存储与登记基础：相同授权请求、构建和原连接，重新 GET 确认群仅含 owner / bot，并通过专用无覆盖附着检查后才保存原群与线程关系。它不创建新目标，也不改变普通分类规则；验证标签仍由运行时拒绝。独立授权入口、actor 激活与每次输入 / 投递前的有效性检查尚未接入，不能仅凭普通绑定表已有记录启动验收，见[绑定基础进展](../research/m3-verification-binding-foundation-2026-10-12.md)。
 
+后续切片已提供专属操作授权、Runtime 的显式 Activate 与逐次原生写入上下文：自动发现仍拒绝验证标记，失效标记不回退普通授权，首条输入前的 typed 空历史只由明确授权放行。CLI 绑定入口与完整投递路径仍待接入，不能由内部激活 API 推导真实验收已完成，见[操作授权进展](../research/m3-verification-operation-guards-2026-10-12.md)。
+
 ## 目录与 worktree
 
 调用 07 的同一规范化函数处理 allowed_roots、mute 和二期目录校验。worktree 的实际 cwd 与可核验的原项目路径共同判断；项目 mute 命中任一项目路径即可禁止自动建群。没有可靠项目根时不得猜上级目录，保留 unknown_project_root，并在 M0 用真实 App worktree 解决该信息来源。

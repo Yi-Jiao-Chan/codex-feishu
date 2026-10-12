@@ -42,25 +42,26 @@ type ServiceGateway interface {
 // holds both application and canonical database locks. Connect must discover
 // the running App daemon; it must never launch another native server.
 type Service struct {
-	Config              config.Config
-	Store               *store.Store
-	Gateway             ServiceGateway
-	BotID               string
-	Connect             func(context.Context) (ServiceNative, error)
-	Notice              func(string)
-	Now                 func() time.Time
-	RetryInterval       time.Duration    // Tests may shorten; production starts at 1s.
-	Pairing             *pairing.Manager // Ephemeral local management; never persisted as a task.
-	Verification        *verification.Manager
-	VerificationGroups  *verification.GroupManager
-	VerificationThreads *verification.NativeSessions
-	mu                  sync.RWMutex
-	current             *Runtime
-	tasks               map[string]*TaskControls
-	actionsReady        map[string]bool
-	nativeConnected     atomic.Bool
-	running             atomic.Bool
-	startedAtMS         atomic.Int64
+	Config               config.Config
+	Store                *store.Store
+	Gateway              ServiceGateway
+	BotID                string
+	Connect              func(context.Context) (ServiceNative, error)
+	Notice               func(string)
+	Now                  func() time.Time
+	RetryInterval        time.Duration    // Tests may shorten; production starts at 1s.
+	Pairing              *pairing.Manager // Ephemeral local management; never persisted as a task.
+	Verification         *verification.Manager
+	VerificationGroups   *verification.GroupManager
+	VerificationThreads  *verification.NativeSessions
+	VerificationBindings *verification.BindingManager
+	mu                   sync.RWMutex
+	current              *Runtime
+	tasks                map[string]*TaskControls
+	actionsReady         map[string]bool
+	nativeConnected      atomic.Bool
+	running              atomic.Bool
+	startedAtMS          atomic.Int64
 }
 
 func (s *Service) now() time.Time {
@@ -116,6 +117,63 @@ func (s *Service) actionAvailable(thread string) bool {
 	return s.actionsReady[thread]
 }
 
+func (s *Service) clearActionsReady(thread string) {
+	s.mu.Lock()
+	delete(s.actionsReady, thread)
+	s.mu.Unlock()
+}
+
+func (s *Service) verificationMarker(ctx context.Context, thread string) (store.VerificationBinding, bool, error) {
+	b, err := s.Store.VerificationBindingForThread(ctx, s.Config.Host.ID, thread)
+	if errors.Is(err, sql.ErrNoRows) {
+		return b, false, nil
+	}
+	if err != nil || b.AppID != s.Config.Feishu.AppID || b.OwnerID != s.Config.Access.OwnerOpenID || b.BotID != s.BotID {
+		s.clearActionsReady(thread)
+		return b, true, verification.ErrNotReady
+	}
+	return b, true, nil
+}
+
+func (s *Service) beginVerificationOperation(ctx context.Context, thread string) (context.Context, func(), bool, error) {
+	_, handled, err := s.verificationMarker(ctx, thread)
+	if !handled {
+		return ctx, func() {}, false, err
+	}
+	if err == nil && s.verificationManagerMatches() {
+		opctx, release, accepted, beginErr := s.VerificationBindings.BeginOperation(ctx, thread)
+		if accepted && beginErr == nil && opctx != nil && release != nil && opctx.Err() == nil {
+			return opctx, release, true, nil
+		}
+		if release != nil {
+			release()
+		}
+	}
+	s.clearActionsReady(thread)
+	return nil, nil, true, verification.ErrNotReady
+}
+
+func (s *Service) verificationManagerMatches() bool {
+	m := s.VerificationBindings
+	if m == nil || m.Groups == nil {
+		return false
+	}
+	g := m.Groups
+	return g.Store == s.Store && g.HostID == s.Config.Host.ID && g.AppID == s.Config.Feishu.AppID && g.OwnerID == s.Config.Access.OwnerOpenID && g.BotID == s.BotID
+}
+
+func (s *Service) beginBound(ctx context.Context, b store.Binding, user string) (context.Context, func(), error) {
+	marker, handled, err := s.verificationMarker(ctx, b.ThreadID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if handled && (user != marker.OwnerID || b.HostID != marker.HostID || b.ChatID != marker.ChatID || b.IntentID != marker.IntentID) {
+		return nil, nil, store.ErrIneligible
+	}
+	opctx, release, _, err := s.beginVerificationOperation(ctx, b.ThreadID)
+	return opctx, release, err
+}
+
 func (s *Service) Run(parent context.Context) error {
 	if s.Store == nil || s.Gateway == nil || s.Connect == nil || s.BotID == "" {
 		return errors.New("service dependencies are incomplete")
@@ -164,6 +222,7 @@ func (s *Service) Run(parent context.Context) error {
 	receiver := &Receiver{Store: s.Store, Config: s.Config, BotID: s.BotID, Wake: s.Wake, Command: commands.Handle, Notice: s.Notice, Verification: s.Verification, VerificationGroups: s.VerificationGroups}
 	receiver.TaskAction = s.claimTask
 	receiver.ActionAllowed = s.actionAvailable
+	receiver.BeginBound = s.beginBound
 	errorsCh := make(chan error, 2)
 	workers.Add(1)
 	go func() {
@@ -367,17 +426,41 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		},
 	}
 	r.CanDeliver = s.canDeliver
+	r.VerificationAuthorize = func(ctx context.Context, t codexclient.Thread, automatic bool) (bool, error) {
+		_, handled, err := s.verificationMarker(ctx, t.ID)
+		if !handled {
+			return false, err
+		}
+		if err == nil && s.verificationManagerMatches() {
+			accepted, authorizeErr := s.VerificationBindings.Authorize(ctx, t, automatic)
+			if accepted && authorizeErr == nil {
+				return true, nil
+			}
+		}
+		s.clearActionsReady(t.ID)
+		return true, verification.ErrNotReady
+	}
 	r.ActorTick = func(ctx context.Context, thread string) error {
 		controllerMu.Lock()
 		c := controllers[thread]
 		if c == nil {
 			c = &submissions.Controller{Store: s.Store, Native: native, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, ThreadID: thread}
+			c.BeginWrite = func(ctx context.Context) (context.Context, func(), error) {
+				opctx, release, _, err := s.beginVerificationOperation(ctx, thread)
+				return opctx, release, err
+			}
 			controllers[thread] = c
 		}
 		controllerMu.Unlock()
 		return c.Tick(ctx)
 	}
 	r.HistoryPreparing = func(ctx context.Context, thread string, turns []codexclient.Turn) error {
+		opctx, release, _, err := s.beginVerificationOperation(ctx, thread)
+		if err != nil {
+			return err
+		}
+		defer release()
+		ctx = opctx
 		if err := tracker.ReconcileContext(ctx, thread, turns); err != nil {
 			return err
 		}
@@ -385,10 +468,22 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	}
 	r.RenderProgress = func(thread, turn, status, body string) string { return task(thread).Render(thread, turn, status, body) }
 	r.HistoryStaged = func(ctx context.Context, thread string, _ []codexclient.Turn) error {
+		opctx, release, _, err := s.beginVerificationOperation(ctx, thread)
+		if err != nil {
+			return err
+		}
+		defer release()
+		ctx = opctx
 		if _, err := s.Store.Binding(ctx, s.Config.Host.ID, thread); err != nil {
+			s.clearActionsReady(thread)
 			return nil
 		}
 		if err := feedback.Stage(ctx, thread); err != nil {
+			s.clearActionsReady(thread)
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			s.clearActionsReady(thread)
 			return err
 		}
 		s.mu.Lock()
@@ -401,6 +496,20 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 }
 
 func (s *Service) canDeliver(ctx context.Context, b store.Binding) error {
+	marker, handled, err := s.verificationMarker(ctx, b.ThreadID)
+	if err != nil {
+		return err
+	}
+	if handled {
+		if marker.HostID != b.HostID || marker.ChatID != b.ChatID || marker.IntentID != b.IntentID {
+			return verification.ErrNotReady
+		}
+		_, release, _, err := s.beginVerificationOperation(ctx, b.ThreadID)
+		if release != nil {
+			release()
+		}
+		return err
+	}
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	present, err := s.Gateway.BotInChat(checkCtx, b.ChatID)
@@ -474,6 +583,12 @@ func (s *Service) claimTask(ctx context.Context, chat, message, kind, token stri
 	if err != nil || !s.actionAvailable(b.ThreadID) {
 		return "", store.ErrSubmissionStale
 	}
+	opctx, release, _, err := s.beginVerificationOperation(ctx, b.ThreadID)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	ctx = opctx
 	t := TaskControls{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID}
 	thread, err := t.Claim(ctx, chat, message, kind, token, revision)
 	if err == nil {
