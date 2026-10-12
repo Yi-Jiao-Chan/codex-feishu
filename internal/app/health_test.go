@@ -31,7 +31,9 @@ func TestHealthReadsExistingConnectionsAndHydrationWithoutBodies(t *testing.T) {
 		t.Fatal("actual generation facts unavailable", live, err)
 	}
 	b, _ := json.Marshal(live)
-	if strings.Contains(string(b), "thread") || strings.Contains(string(b), cfg.Feishu.AppID) || strings.Contains(string(b), cfg.Access.OwnerOpenID) {
+	// Match the actual quoted routing ID, not a capability field name such as
+	// verification_thread_creation_supported.
+	if strings.Contains(string(b), `"thread"`) || strings.Contains(string(b), cfg.Feishu.AppID) || strings.Contains(string(b), cfg.Access.OwnerOpenID) {
 		t.Fatal("health exposed routing identities", string(b))
 	}
 	s.nativeConnected.Store(false)

@@ -17,7 +17,7 @@ func VerifyCard(ctx context.Context, path, identity, id string, begin bool) (ver
 	if err != nil {
 		return verification.Result{}, err
 	}
-	if r.Verification == nil || r.Snapshot != nil || r.Pair != nil || r.VerificationGroup != nil || r.Verification.RequestID != id || r.Verification.BridgeCommit == "" || !verification.ValidBinaryHash(r.Verification.BinarySHA256) || r.Verification.ExpiresAtMS <= 0 {
+	if r.Verification == nil || r.Snapshot != nil || r.Pair != nil || r.VerificationGroup != nil || r.VerificationThread != nil || r.Verification.RequestID != id || r.Verification.BridgeCommit == "" || !verification.ValidBinaryHash(r.Verification.BinarySHA256) || r.Verification.ExpiresAtMS <= 0 {
 		return verification.Result{}, ErrUnavailable
 	}
 	v := *r.Verification
@@ -45,7 +45,7 @@ func VerifyGroup(ctx context.Context, path, identity, id string, begin bool) (ve
 	if err != nil {
 		return verification.GroupResult{}, err
 	}
-	if r.VerificationGroup == nil || r.Snapshot != nil || r.Pair != nil || r.Verification != nil || r.VerificationGroup.RequestID != id || r.VerificationGroup.BridgeCommit == "" || !verification.ValidBinaryHash(r.VerificationGroup.BinarySHA256) || r.VerificationGroup.ExpiresAtMS <= 0 {
+	if r.VerificationGroup == nil || r.Snapshot != nil || r.Pair != nil || r.Verification != nil || r.VerificationThread != nil || r.VerificationGroup.RequestID != id || r.VerificationGroup.BridgeCommit == "" || !verification.ValidBinaryHash(r.VerificationGroup.BinarySHA256) || r.VerificationGroup.ExpiresAtMS <= 0 {
 		return verification.GroupResult{}, ErrUnavailable
 	}
 	v := *r.VerificationGroup
@@ -57,6 +57,48 @@ func VerifyGroup(ctx context.Context, path, identity, id string, begin bool) (ve
 	}
 	if v.GroupStatus == "pass" && (v.State != "confirmed" || v.ChatID == "") || v.GroupStatus == "fail" && v.State != "rejected" || v.MembershipStatus == "pass" && v.GroupStatus != "pass" || v.GroupMessageStatus == "pass" && v.MembershipStatus != "pass" {
 		return verification.GroupResult{}, ErrUnavailable
+	}
+	return v, nil
+}
+
+func VerifyThreadCreation(ctx context.Context, path, identity, id string, begin bool) (verification.NativeSessionResult, error) {
+	if !verification.ValidRequestID(id) {
+		return verification.NativeSessionResult{}, verification.ErrInvalid
+	}
+	method := "verify.thread.state"
+	if begin {
+		method = "verify.thread.begin"
+	}
+	r, err := exchange(ctx, path, request{Schema: protocol, Method: method, Identity: identity, VerificationThread: &verificationRequest{RequestID: id}})
+	if err != nil {
+		return verification.NativeSessionResult{}, err
+	}
+	if r.VerificationThread == nil || r.Snapshot != nil || r.Pair != nil || r.Verification != nil || r.VerificationGroup != nil || r.VerificationThread.RequestID != id || r.VerificationThread.BridgeCommit == "" || !verification.ValidBinaryHash(r.VerificationThread.BinarySHA256) || r.VerificationThread.ExpiresAtMS <= 0 {
+		return verification.NativeSessionResult{}, ErrUnavailable
+	}
+	v := *r.VerificationThread
+	if v.ModelRequests < 0 || v.ResourcesReady == v.ResourceRecoveryRequired || v.CreatorConnected && v.CreatorGeneration <= 0 {
+		return verification.NativeSessionResult{}, ErrUnavailable
+	}
+	switch v.State {
+	case "ready":
+		if v.CreationStatus != "pending" || v.CreatorGeneration != 0 || v.ThreadID != "" {
+			return verification.NativeSessionResult{}, ErrUnavailable
+		}
+	case "unknown":
+		if v.CreationStatus != "pending" || v.CreatorGeneration <= 0 || v.ThreadID != "" {
+			return verification.NativeSessionResult{}, ErrUnavailable
+		}
+	case "confirmed":
+		if v.CreationStatus != "pass" || v.CreatorGeneration <= 0 || v.ThreadID == "" {
+			return verification.NativeSessionResult{}, ErrUnavailable
+		}
+	case "rejected":
+		if v.CreationStatus != "fail" || v.CreatorGeneration <= 0 || v.ThreadID != "" {
+			return verification.NativeSessionResult{}, ErrUnavailable
+		}
+	default:
+		return verification.NativeSessionResult{}, ErrUnavailable
 	}
 	return v, nil
 }

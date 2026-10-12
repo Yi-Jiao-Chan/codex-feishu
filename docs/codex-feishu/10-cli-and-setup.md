@@ -31,9 +31,9 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 
 管理测试群组件已接入：`--allow-test-group --request-id ID` 只创建 owner 与 bot 的验证群，冻结名称、成员与 UUID，不继承额外生产成员，不发卡 / 消息或绑定线程。创建后用 GET 核验 bot、owner 和完整名单，再记录本人在原群 @ 机器人发送 `/verify-group ID`。成员检查失败时，相同授权 ID 只重做 GET；unknown / rejected / confirmed / 遗留 dispatching 均不重复建群。schema 19 保存私有证据，状态查询不做成员 API 或其他外部写入。
 
-两个 allow 标志可独立或一起使用；所有请求能力在第一项 mutation 前检查。无 allow 且有 ID 时查询运行实例支持的卡 / 群日志，缺日志返回 skipped / not-found，不生成测试。受控线程尚未接入；请求 `--allow-test-thread` 时仍不部分发送卡片或建群。已有管理实例保留唯一接收器。只有单独授权 card / group、没有管理实例、同时取得应用与数据库监听锁，并且已有私有 schema 1 日志时，才保留旧 M0 准备能力。锁后重新核验诊断所用配置与密钥；变更返回冲突。可写打开只接受所属用户的 0700 物理目录 / 私有文件与准确 schema，不创建或迁移。UUID 在 API 前落盘，unknown / rejected 不重发；这不是正式一期 verify。
+三个 allow 标志独立授权；所有请求能力在第一项 mutation 前检查。无 allow 且有 ID 时查询运行实例支持的卡 / 群 / 线程创建日志，缺日志返回 skipped / not-found，不生成测试。旧实例缺少受控创建能力时，组合 thread 标志不部分发送卡片或建群。已有管理实例保留唯一接收器。只有单独授权 card / group、没有管理实例、同时取得应用与数据库监听锁，并且已有私有 schema 1 日志时，才保留旧 M0 准备能力；线程不退回独立连接。锁后重新核验诊断所用配置与密钥；变更返回冲突。可写打开只接受所属用户的 0700 物理目录 / 私有文件与准确 schema，不创建或迁移。UUID 在 API 前落盘，unknown / rejected 不重发；这不是正式一期 verify。
 
-内部受控线程创建已有私有目录、固定本机模型、发送前持久领取和资源期限 / 重启保护的开发组合；尚未接入管理通道、绑定与输入，`--allow-test-thread` 的上述拒绝行为保持。不得由配置 Agent 直接调用内部 Go 组件来绕过 CLI 授权和完整验收，见[本地资源进展](../research/m3-native-verification-resources-2026-10-12.md)。
+受控线程创建已接入开发实例管理通道：`--allow-test-thread --request-id ID` 只使用既有 initialized 原生连接，创建固定本机模型 / 只读策略的隔离线程，不启动 turn、绑定群、提交输入或 archive。私有资源在 5 分钟窗口内，断开 / unknown / 重启不替换原端点或重发；查询只读原记录。`verification-managed-thread-creation-observed` 仍 `ok=false` / 退出 5、12 项 P1 pending，创建不证明群绑定、排队 / 引导或 App UI。不得由配置 Agent 绕过完整验收安装未发布服务，见[管理创建组件](../research/m3-managed-thread-creation-2026-10-12.md)。
 
 旧 M0 准备后只能使用保留的历史 M0 二进制处理其回调。当前开发版 m0-listen 的 Store.Open 会拒绝未接管的 schema 1，不能拿它替换运行中的旧实例；正式迁移须另行完成验收。
 

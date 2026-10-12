@@ -37,26 +37,28 @@ var (
 // Snapshot deliberately contains no thread IDs, messages, request bodies,
 // credentials, native policies or error payloads.
 type Snapshot struct {
-	Running                    bool                   `json:"running"`
-	NativeConnected            bool                   `json:"native_connected"`
-	FeishuConnected            bool                   `json:"feishu_connected"`
-	HydratedBindings           int                    `json:"hydrated_bindings"`
-	DiscoveryEnabled           bool                   `json:"discovery_enabled"`
-	PairingSupported           bool                   `json:"pairing_supported"`
-	VerificationCardSupported  bool                   `json:"verification_card_supported"`
-	VerificationGroupSupported bool                   `json:"verification_group_supported"`
-	StartedAtMS                int64                  `json:"started_at_ms"`
-	ObservedAtMS               int64                  `json:"observed_at_ms"`
-	Persistent                 store.PersistentHealth `json:"durable"`
+	Running                             bool                   `json:"running"`
+	NativeConnected                     bool                   `json:"native_connected"`
+	FeishuConnected                     bool                   `json:"feishu_connected"`
+	HydratedBindings                    int                    `json:"hydrated_bindings"`
+	DiscoveryEnabled                    bool                   `json:"discovery_enabled"`
+	PairingSupported                    bool                   `json:"pairing_supported"`
+	VerificationCardSupported           bool                   `json:"verification_card_supported"`
+	VerificationGroupSupported          bool                   `json:"verification_group_supported"`
+	VerificationThreadCreationSupported bool                   `json:"verification_thread_creation_supported"`
+	StartedAtMS                         int64                  `json:"started_at_ms"`
+	ObservedAtMS                        int64                  `json:"observed_at_ms"`
+	Persistent                          store.PersistentHealth `json:"durable"`
 }
 
 type request struct {
-	Schema            int                  `json:"schema_version"`
-	Method            string               `json:"method"`
-	Identity          string               `json:"identity"`
-	Pair              *pairRequest         `json:"pair,omitempty"`
-	Verification      *verificationRequest `json:"verification,omitempty"`
-	VerificationGroup *verificationRequest `json:"verification_group,omitempty"`
+	Schema             int                  `json:"schema_version"`
+	Method             string               `json:"method"`
+	Identity           string               `json:"identity"`
+	Pair               *pairRequest         `json:"pair,omitempty"`
+	Verification       *verificationRequest `json:"verification,omitempty"`
+	VerificationGroup  *verificationRequest `json:"verification_group,omitempty"`
+	VerificationThread *verificationRequest `json:"verification_thread,omitempty"`
 }
 type verificationRequest struct {
 	RequestID string `json:"request_id"`
@@ -66,13 +68,14 @@ type pairRequest struct {
 	TTLSeconds int    `json:"ttl_seconds,omitempty"`
 }
 type response struct {
-	Schema            int                       `json:"schema_version"`
-	Identity          string                    `json:"identity"`
-	Code              string                    `json:"code"`
-	Snapshot          *Snapshot                 `json:"snapshot,omitempty"`
-	Pair              *pairing.Challenge        `json:"pair,omitempty"`
-	Verification      *verification.Result      `json:"verification,omitempty"`
-	VerificationGroup *verification.GroupResult `json:"verification_group,omitempty"`
+	Schema             int                               `json:"schema_version"`
+	Identity           string                            `json:"identity"`
+	Code               string                            `json:"code"`
+	Snapshot           *Snapshot                         `json:"snapshot,omitempty"`
+	Pair               *pairing.Challenge                `json:"pair,omitempty"`
+	Verification       *verification.Result              `json:"verification,omitempty"`
+	VerificationGroup  *verification.GroupResult         `json:"verification_group,omitempty"`
+	VerificationThread *verification.NativeSessionResult `json:"verification_thread,omitempty"`
 }
 
 type GroupVerificationProvider interface {
@@ -83,6 +86,11 @@ type GroupVerificationProvider interface {
 type VerificationProvider interface {
 	Begin(context.Context, string) (verification.Result, error)
 	State(context.Context, string) (verification.Result, error)
+}
+
+type ThreadVerificationProvider interface {
+	Begin(context.Context, string) (verification.NativeSessionResult, error)
+	State(context.Context, string) (verification.NativeSessionResult, error)
 }
 
 type PairingProvider interface {
@@ -173,19 +181,20 @@ func socketInfo(path string) (os.FileInfo, error) {
 type Server struct {
 	// Set before Serve; production binds the manager to the same service,
 	// configured owner and already-locked database as the receiver.
-	Verification       VerificationProvider
-	VerificationGroups GroupVerificationProvider
-	listener           *net.UnixListener
-	path               string
-	identity           string
-	info               os.FileInfo
-	provider           func(context.Context) (Snapshot, error)
-	pairing            PairingProvider
-	mu                 sync.Mutex
-	closing            bool
-	conns              map[*net.UnixConn]struct{}
-	workers            sync.WaitGroup
-	once               sync.Once
+	Verification        VerificationProvider
+	VerificationGroups  GroupVerificationProvider
+	VerificationThreads ThreadVerificationProvider
+	listener            *net.UnixListener
+	path                string
+	identity            string
+	info                os.FileInfo
+	provider            func(context.Context) (Snapshot, error)
+	pairing             PairingProvider
+	mu                  sync.Mutex
+	closing             bool
+	conns               map[*net.UnixConn]struct{}
+	workers             sync.WaitGroup
+	once                sync.Once
 }
 
 // Listen must be called while the caller owns the application's receiver lock.
@@ -329,14 +338,14 @@ func (s *Server) handle(parent context.Context, conn *net.UnixConn) {
 		result.Code = "unsupported"
 	case r.Identity != s.identity:
 		result.Code = "identity-conflict"
-	case r.Method == "health" && r.Pair == nil && r.Verification == nil && r.VerificationGroup == nil:
+	case r.Method == "health" && r.Pair == nil && r.Verification == nil && r.VerificationGroup == nil && r.VerificationThread == nil:
 		snapshot, err := s.provider(ctx)
 		if err != nil {
 			result.Code = "health-unavailable"
 		} else {
 			result.Code, result.Snapshot = "ok", &snapshot
 		}
-	case (r.Method == "verify.group.begin" || r.Method == "verify.group.state") && s.VerificationGroups != nil && r.VerificationGroup != nil && r.Pair == nil && r.Verification == nil:
+	case (r.Method == "verify.group.begin" || r.Method == "verify.group.state") && s.VerificationGroups != nil && r.VerificationGroup != nil && r.Pair == nil && r.Verification == nil && r.VerificationThread == nil:
 		var probe verification.GroupResult
 		var err error
 		if !verification.ValidRequestID(r.VerificationGroup.RequestID) {
@@ -356,7 +365,7 @@ func (s *Server) handle(parent context.Context, conn *net.UnixConn) {
 		default:
 			result.Code = "verification-unavailable"
 		}
-	case (r.Method == "verify.card.begin" || r.Method == "verify.card.state") && s.Verification != nil && r.Verification != nil && r.Pair == nil && r.VerificationGroup == nil:
+	case (r.Method == "verify.card.begin" || r.Method == "verify.card.state") && s.Verification != nil && r.Verification != nil && r.Pair == nil && r.VerificationGroup == nil && r.VerificationThread == nil:
 		var probe verification.Result
 		var err error
 		if !verification.ValidRequestID(r.Verification.RequestID) {
@@ -375,7 +384,27 @@ func (s *Server) handle(parent context.Context, conn *net.UnixConn) {
 		} else {
 			result.Code = "verification-unavailable"
 		}
-	case (r.Method == "pair.begin" || r.Method == "pair.state" || r.Method == "pair.cancel") && s.pairing != nil && r.Pair != nil && r.Verification == nil && r.VerificationGroup == nil:
+	case (r.Method == "verify.thread.begin" || r.Method == "verify.thread.state") && s.VerificationThreads != nil && r.VerificationThread != nil && r.Pair == nil && r.Verification == nil && r.VerificationGroup == nil:
+		var probe verification.NativeSessionResult
+		var err error
+		if !verification.ValidRequestID(r.VerificationThread.RequestID) {
+			err = verification.ErrInvalid
+		} else if r.Method == "verify.thread.begin" {
+			probe, err = s.VerificationThreads.Begin(ctx, r.VerificationThread.RequestID)
+		} else {
+			probe, err = s.VerificationThreads.State(ctx, r.VerificationThread.RequestID)
+		}
+		switch {
+		case err == nil:
+			result.Code, result.VerificationThread = "ok", &probe
+		case errors.Is(err, verification.ErrInvalid):
+			result.Code = "verification-invalid"
+		case errors.Is(err, verification.ErrNotFound):
+			result.Code = "verification-not-found"
+		default:
+			result.Code = "verification-unavailable"
+		}
+	case (r.Method == "pair.begin" || r.Method == "pair.state" || r.Method == "pair.cancel") && s.pairing != nil && r.Pair != nil && r.Verification == nil && r.VerificationGroup == nil && r.VerificationThread == nil:
 		var challenge pairing.Challenge
 		var err error
 		switch r.Method {
@@ -476,7 +505,7 @@ func Query(ctx context.Context, path, identity string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if result.Snapshot == nil || result.Pair != nil || result.Verification != nil || result.VerificationGroup != nil {
+	if result.Snapshot == nil || result.Pair != nil || result.Verification != nil || result.VerificationGroup != nil || result.VerificationThread != nil {
 		return Snapshot{}, ErrUnavailable
 	}
 	now := time.Now().UnixMilli()

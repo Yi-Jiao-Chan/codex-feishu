@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -126,6 +128,26 @@ func runServe(ctx context.Context, args []string) int {
 	service.Verification = verificationManager
 	verificationGroups := &verification.GroupManager{Store: db, Gateway: gateway, HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, BotID: bot, Commit: commit, BinarySHA256: binaryHash, Ready: func() bool { return gateway.Ready() && service.HealthReadyForVerification() }}
 	service.VerificationGroups = verificationGroups
+	// This dedicated root is local service state, not a model selected by
+	// management requests. No model/listener/workspace starts until Begin.
+	physicalDatabase, err := filepath.EvalSymlinks(cfg.Storage.DatabaseFile)
+	if err != nil {
+		emit(output{Command: "serve", State: "verification-resources-unavailable"})
+		return 7
+	}
+	verificationRoot := filepath.Join(filepath.Dir(physicalDatabase), "verification-native")
+	if err := os.Mkdir(verificationRoot, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		emit(output{Command: "serve", State: "verification-resources-unavailable"})
+		return 7
+	}
+	nativeVerification := &verification.NativeManager{Store: db, HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, Commit: commit, BinarySHA256: binaryHash, Current: service.VerificationCreator}
+	verificationThreads, err := verification.NewNativeSessions(ctx, nativeVerification, verificationRoot)
+	if err != nil {
+		emit(output{Command: "serve", State: "verification-resources-unavailable"})
+		return 7
+	}
+	defer verificationThreads.Close()
+	service.VerificationThreads = verificationThreads
 	endpoint, err := control.Path(cfg.Feishu.AppID)
 	if err != nil {
 		emit(output{Command: "serve", State: "control-endpoint-unavailable"})
@@ -139,6 +161,7 @@ func runServe(ctx context.Context, args []string) int {
 	defer server.Close()
 	server.Verification = verificationManager
 	server.VerificationGroups = verificationGroups
+	server.VerificationThreads = verificationThreads
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	var workers sync.WaitGroup

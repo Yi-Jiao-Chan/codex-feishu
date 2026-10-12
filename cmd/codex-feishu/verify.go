@@ -24,14 +24,15 @@ type verifyGateway interface {
 	CreateGroup(context.Context, string, string, []string, string) (string, error)
 }
 type verifyDependencies struct {
-	doctor       doctorDependencies
-	appLock      func(string) (io.Closer, error)
-	dbLock       func(string) (io.Closer, error)
-	open         func(context.Context, string, int) (*store.Store, error)
-	gateway      func(config.Config, string) verifyGateway
-	emit         func(output)
-	managed      func(context.Context, config.Config, string, string, bool) (verification.Result, error)
-	managedGroup func(context.Context, config.Config, string, string, bool) (verification.GroupResult, error)
+	doctor        doctorDependencies
+	appLock       func(string) (io.Closer, error)
+	dbLock        func(string) (io.Closer, error)
+	open          func(context.Context, string, int) (*store.Store, error)
+	gateway       func(config.Config, string) verifyGateway
+	emit          func(output)
+	managed       func(context.Context, config.Config, string, string, bool) (verification.Result, error)
+	managedGroup  func(context.Context, config.Config, string, string, bool) (verification.GroupResult, error)
+	managedThread func(context.Context, config.Config, string, string, bool) (verification.NativeSessionResult, error)
 }
 
 func defaultVerifyDependencies() verifyDependencies {
@@ -56,6 +57,13 @@ func defaultVerifyDependencies() verifyDependencies {
 			}
 			return control.VerifyGroup(ctx, path, identity, id, begin)
 		},
+		managedThread: func(ctx context.Context, cfg config.Config, identity, id string, begin bool) (verification.NativeSessionResult, error) {
+			path, err := control.Path(cfg.Feishu.AppID)
+			if err != nil {
+				return verification.NativeSessionResult{}, err
+			}
+			return control.VerifyThreadCreation(ctx, path, identity, id, begin)
+		},
 	}
 }
 
@@ -68,8 +76,8 @@ func runVerifyWithDependencies(ctx context.Context, args []string, deps verifyDe
 	target := flags.String("target", "self", "verify supports only self")
 	card := flags.Bool("allow-test-card", false, "authorize owner-only test card; managed probes require --request-id")
 	group := flags.Bool("allow-test-group", false, "authorize owner-and-bot test group; managed probes require --request-id")
-	thread := flags.Bool("allow-test-thread", false, "authorize isolated thread verification; managed implementation pending")
-	requestID := flags.String("request-id", "", "32 lowercase hexadecimal characters; query existing managed card/group records without writes when no authorization flags are supplied")
+	thread := flags.Bool("allow-test-thread", false, "authorize isolated local-model thread creation only; binding, inputs and full acceptance remain pending")
+	requestID := flags.String("request-id", "", "32 lowercase hexadecimal characters; query existing managed card/group/thread creation records without writes when no authorization flags are supplied")
 	_ = flags.Bool("json", false, "JSON output (default)")
 	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" || *target != "self" || *requestID != "" && !verification.ValidRequestID(*requestID) {
 		deps.emit(output{Command: "verify", State: "invalid-arguments"})
@@ -130,7 +138,7 @@ func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps ve
 		return o, code
 	}
 	o.State = "verification-pending"
-	if managedInstance && (opts.Card || opts.Group || opts.RequestID != "") && !opts.Thread {
+	if managedInstance && (opts.Card || opts.Group || opts.Thread || opts.RequestID != "") {
 		if identityErr != nil || identity == "" {
 			o.State = "verification-config-conflict"
 			return o, 6

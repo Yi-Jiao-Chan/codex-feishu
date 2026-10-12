@@ -36,6 +36,6 @@ M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fo
 
 隔离原生创建适配器已有受限制的开发入口与本地协议测试，固定本机模拟模型和只读策略，拒绝出生证明不符或缺失。管理线程编排与真实重验仍 pending，未开放完整 verify。见[隔离创建适配器进展](docs/research/m3-native-verification-adapter-2026-10-12.md)。
 
-内部隔离创建步骤已补齐不可变请求日志、单次领取及随机连接身份，unknown 与重连不重新创建。管理通道、绑定、输入、远端清理和真实 UI 仍待完成，完整 verify 未开放；见[创建日志进展](docs/research/m3-native-verification-journal-2026-10-12.md)。
+内部隔离创建步骤已补齐不可变请求日志、单次领取及随机连接身份，unknown 与重连不重新创建。绑定、输入、远端清理和真实 UI 仍待完成，完整 verify 未开放；见[创建日志进展](docs/research/m3-native-verification-journal-2026-10-12.md)。
 
-受控验收的私有目录和固定本机模拟模型已接入内部创建步骤，包含时序控制、五分钟资源期限、取消与重启保护；未接入控制通道或开放 thread 标志。绑定、输入、远端清理和真实验收继续待完成，见[本地资源进展](docs/research/m3-native-verification-resources-2026-10-12.md)。
+受控验收的私有目录和固定本机模拟模型已接入内部创建步骤，包含时序控制、五分钟资源期限、取消与重启保护。开发管理通道 / CLI 已提供显式 thread 创建组件，仍不启动 turn、绑定群、提交输入或清理远端；完整验收待完成，见[本地资源进展](docs/research/m3-native-verification-resources-2026-10-12.md)和[管理创建组件](docs/research/m3-managed-thread-creation-2026-10-12.md)。

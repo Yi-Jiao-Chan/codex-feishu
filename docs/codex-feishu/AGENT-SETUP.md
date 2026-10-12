@@ -205,12 +205,21 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 
 查看返回的 `verification_group.chat_id` 对应验证群，5 分钟内在该群 @ 机器人发送 `/verify-group <原 request ID>`，再执行只读查询。成员证明来自完整 GET；missing has_more、未识别成员、受限分页或额外人员不会报告通过。GET 失败时相同授权 ID 可以只重做成员检查，不重建群；查询自身只读日志，不发 GET 或建群。群入站可能先于成员 GET 成功，两份观察都取得才显示组件 pass，不据此证明发消息瞬间的完整成员名单。验证群无 thread binding，不证明 App 自动建群或输入回显。
 
-无 allow 的原 ID 查询会检查该实例支持的卡 / 群日志。不存在的组件为 skipped，全部无日志为 `verification-managed-probe-not-found`；不新开探针、不当作飞书拒绝证据。group / components 的 observed 状态仍 `ok=false` / 退出 5、12 项 P1 pending。unknown 群不按名字找、自动换 ID 或再建；过期保留原群和证据。`--allow-test-thread` 暂未接入，即使与 card / group 一起指定，也不会部分执行。
+无 allow 的原 ID 查询会检查该实例支持的卡 / 群 / 线程创建日志。不存在的组件为 skipped，全部无日志为 `verification-managed-probe-not-found`；不新开探针、不当作拒绝证据。组件 observed 状态仍 `ok=false` / 退出 5、12 项 P1 pending。unknown 群不按名字找、自动换 ID 或再建；过期保留原群和证据。请求任一未支持的组件时，组合 allow 不部分执行。
+
+当前 `capabilities.verify_managed_thread_creation=true` 只表示隔离出生组件已开发；`verify_managed_thread_ui_verified=false`，完整 `verify_managed_tests` 仍 false。只在已准备的测试实例、本人独立线程测试授权和实例 `verification_thread_creation_supported=true` 时使用；不为此能力部署未发布服务。
+
+```sh
+"$cfb_cli" verify --config "$cfb_config" --target self --allow-test-thread --request-id "$cfb_verify_id" --json
+"$cfb_cli" verify --config "$cfb_config" --target self --request-id "$cfb_verify_id" --json
+```
+
+它在专用私有目录使用固定本机模型和只读策略，只复用当前已初始化原生连接。不启动 turn、不发飞书消息、绑定测试群、提交输入或 archive；group 标志也不会替它完成 binding。出生 pass、原 creator 连接仍当前和本机资源可用分别检查，`verification-managed-thread-creation-observed` 仍非完整验收。`resource_recovery_required=true`、连接变更、unknown 或到期时保留原 ID / 目录 / 创建日志，不绑定旧端口、更换 URL 或重建线程。不能用创建确认声称 App 页面、排队 / 引导或配置完成。
 
 已验收版本具备该能力且有提示词中的本人测试授权时，运行：
 
 ```sh
-"$cfb_cli" verify --config "$cfb_config" --target self --allow-test-card --allow-test-group --allow-test-thread --json
+"$cfb_cli" verify --config "$cfb_config" --target self --allow-test-card --allow-test-group --allow-test-thread --request-id "$cfb_verify_id" --json
 ```
 
 删除未经授权的对应 allow 标志。运行实例负责验证事件，verify 不另开一个竞争收消息的正式长连接。测试会话在独立临时目录，使用已发布的受控测试流程；不向用户正在工作的线程注入消息，不改变原会话权限。

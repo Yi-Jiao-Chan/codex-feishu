@@ -65,8 +65,8 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 
 复用[本地验证脚本与结果](../research/codex-feishu-probes-2026-10-10/)作为协议测试依据。重新运行脚本会创建测试线程，按 11 的环境边界执行；无需每改一张卡就重跑全部原生实验。
 
-隔离验证创建入口已有 `Client.StartLocalVerification` 的开发实现：只接受本人私有物理目录与本机 loopback 模拟模型，固定 readonly / never 和测试标签，并核验返回策略 / 元数据。它只复用既有连接、一次创建、不启动 turn；上层仍须发送前持久领取。默认 WebSocket fixture 已通过，新入口的真实隔离重验、管理实例编排 / 绑定 / 清理与完整 UI 仍 pending，不能开放 verify thread。见[隔离创建适配器进展](../research/m3-native-verification-adapter-2026-10-12.md)。
+隔离验证创建入口已有 `Client.StartLocalVerification` 的开发实现：只接受本人私有物理目录与本机 loopback 模拟模型，固定 readonly / never 和测试标签，并核验返回策略 / 元数据。它只复用既有连接、一次创建、不启动 turn；上层须发送前持久领取。默认 WebSocket fixture 已通过，新入口的真实隔离重验、绑定 / 清理与完整 UI 仍 pending；完整 verify 尚未开放。见[隔离创建适配器进展](../research/m3-native-verification-adapter-2026-10-12.md)。
 
-内部 `NativeManager` 已补齐准确请求落盘和单次创建领取。`Client.ConnectionID` 提供每连接随机身份，与进程内 generation 共同核验；新连接不能复用旧连接创建尝试。该步骤未接入 CLI，创建证据与附着 / 完整 UI 验收分开，见[创建日志进展](../research/m3-native-verification-journal-2026-10-12.md)。
+内部 `NativeManager` 已补齐准确请求落盘和单次创建领取。`Client.ConnectionID` 提供每连接随机身份，与进程内 generation 共同核验；新连接不能复用旧连接创建尝试。创建证据与附着 / 完整 UI 验收分开，见[创建日志进展](../research/m3-native-verification-journal-2026-10-12.md)。
 
-`NativeSessions` 已组合私有目录、固定 loopback 模型和上述创建步骤；资源到期、关闭和进程重启不更换原请求端点或重建线程。模型 Release 只是本地时序控制，不是原生 steer / start。CLI、绑定、输入、远端清理与真实重验仍待完成，见[本地资源进展](../research/m3-native-verification-resources-2026-10-12.md)。
+`NativeSessions` 已组合私有目录、固定 loopback 模型和上述创建步骤；资源到期、关闭和进程重启不更换原请求端点或重建线程。模型 Release 只是本地时序控制，不是原生 steer / start。开发管理通道 / CLI 已接入创建组件，绑定、输入、远端清理与真实重验仍待完成，见[本地资源进展](../research/m3-native-verification-resources-2026-10-12.md)和[管理创建组件](../research/m3-managed-thread-creation-2026-10-12.md)。

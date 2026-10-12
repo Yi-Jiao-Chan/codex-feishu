@@ -12,25 +12,26 @@ import (
 // Each supplied allow flag authorizes just that component. A read-only request
 // queries available journals; an absent component never starts a new probe.
 func inspectManagedVerification(ctx context.Context, cfg config.Config, identity string, opts verifyOptions, live control.Snapshot, deps verifyDependencies, o output, pendingCode int) (output, int) {
-	writes := opts.Card || opts.Group
+	writes := opts.Card || opts.Group || opts.Thread
 	cardWanted := opts.Card || !writes && live.VerificationCardSupported
 	groupWanted := opts.Group || !writes && live.VerificationGroupSupported
+	threadWanted := opts.Thread || !writes && live.VerificationThreadCreationSupported
 	// Check every requested capability before the first mutation. In particular,
 	// a combined request against an older card-only build must not partially send.
-	if !cardWanted && !groupWanted || cardWanted && (!live.VerificationCardSupported || deps.managed == nil) || groupWanted && (!live.VerificationGroupSupported || deps.managedGroup == nil) {
+	if !cardWanted && !groupWanted && !threadWanted || cardWanted && (!live.VerificationCardSupported || deps.managed == nil) || groupWanted && (!live.VerificationGroupSupported || deps.managedGroup == nil) || threadWanted && (!live.VerificationThreadCreationSupported || deps.managedThread == nil) {
 		o.State = "verification-managed-tests-pending"
 		o.Checks = append(o.Checks, check{"verification.managed_components", "pending", true, "running build lacks a requested managed verifier; no test mutation performed"})
 		return o, pendingCode
 	}
 	if !verification.ValidRequestID(opts.RequestID) {
 		o.State = "verification-request-id-required"
-		o.NextSteps = append(o.NextSteps, "generate and retain a cryptographically random 32-character lowercase hexadecimal request ID; rerun with --request-id and only the explicitly authorized card/group flags")
+		o.NextSteps = append(o.NextSteps, "generate and retain a cryptographically random 32-character lowercase hexadecimal request ID; rerun with --request-id and only the explicitly authorized component flags")
 		return o, 2
 	}
 	data := o.Data.(map[string]any)
 	data["read_only"] = !writes
 	data["request_id"] = opts.RequestID
-	cardSeen, groupSeen := false, false
+	cardSeen, groupSeen, threadSeen := false, false, false
 	allObserved, changed, failed, unavailable := true, false, false, false
 	if cardWanted {
 		p, err := deps.managed(ctx, cfg, identity, opts.RequestID, opts.Card)
@@ -106,28 +107,81 @@ func inspectManagedVerification(ctx context.Context, cfg config.Config, identity
 			}
 		}
 	}
+	if threadWanted {
+		var p verification.NativeSessionResult
+		var err error
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		} else {
+			p, err = deps.managedThread(ctx, cfg, identity, opts.RequestID, opts.Thread)
+		}
+		switch {
+		case !opts.Thread && errors.Is(err, verification.ErrNotFound):
+			o.Checks = append(o.Checks, check{"verification.managed_thread_creation", "skipped", false, "no thread journal for this request ID; query performed no mutation"})
+		case err != nil:
+			unavailable, allObserved = true, false
+			o.Checks = append(o.Checks, check{"verification.managed_thread_creation", "pending", true, "managed thread result unavailable; retain original ID and query without authorization flags; no new connection, replacement workspace or standalone fallback"})
+		default:
+			threadSeen = true
+			data["verification_thread_creation"] = p
+			resources, connection := "pending", "pending"
+			if p.ResourcesReady && !p.Expired {
+				resources = "pass"
+			}
+			if p.CreatorConnected {
+				connection = "pass"
+			}
+			o.Checks = append(o.Checks, check{"verification.thread_birth", p.CreationStatus, true, "journaled isolated readonly local-model thread creation; no turn, input or group binding"}, check{"verification.thread_resources", resources, true, "original private workspace and local-model resources in the current verification window"}, check{"verification.thread_creator_connection", connection, true, "original creator connection identity is still current; this does not prove App UI or attachment recovery"})
+			observed := p.CreationStatus == "pass" && resources == "pass" && connection == "pass"
+			allObserved = allObserved && observed
+			changed = changed || p.BuildChanged
+			failed = failed || p.CreationStatus == "fail"
+			switch {
+			case p.BuildChanged:
+				o.NextSteps = append(o.NextSteps, "thread birth belongs to another binary build; retain historical proof without reusing its intent for a current-build test")
+			case p.CreationStatus == "fail":
+				o.NextSteps = append(o.NextSteps, "native creation was explicitly rejected; retain this record and repair prerequisites before any new explicitly authorized intent")
+			case p.State == "unknown":
+				o.NextSteps = append(o.NextSteps, "native creation outcome is unknown; query original ID without authorization flags; never recreate or archive an unproven thread")
+			case p.ResourceRecoveryRequired || !p.CreatorConnected:
+				o.NextSteps = append(o.NextSteps, "original model resources or creator connection unavailable; preserve birth history, private workspace and journal; do not replace its endpoint or infer fresh binding")
+			case p.Expired:
+				o.NextSteps = append(o.NextSteps, "thread creation verification window expired; retain original resources and evidence; a new creation requires a new ID and explicit thread authorization")
+			case observed:
+				o.NextSteps = append(o.NextSteps, "isolated thread birth and original local resources observed; group binding, queue/steer, remote cleanup, actual App UI and complete P1 acceptance remain pending")
+			default:
+				o.NextSteps = append(o.NextSteps, "thread creation remains pending; retain original ID and inspect without authorization flags; no turn or input was started")
+			}
+		}
+	}
 	kind := "components"
 	scope := "managed-owner-components"
-	if cardSeen && !groupSeen && !unavailable {
+	if cardSeen && !groupSeen && !threadSeen && !unavailable {
 		kind = "card"
 		scope = "managed-owner-card-components"
-	} else if groupSeen && !cardSeen && !unavailable {
+	} else if groupSeen && !cardSeen && !threadSeen && !unavailable {
 		kind = "group"
 		scope = "managed-owner-group-components"
-	} else if cardWanted && !groupWanted {
+	} else if threadSeen && !cardSeen && !groupSeen && !unavailable {
+		kind = "thread-creation"
+		scope = "managed-local-thread-creation-components"
+	} else if cardWanted && !groupWanted && !threadWanted {
 		kind = "card"
 		scope = "managed-owner-card-components"
-	} else if groupWanted && !cardWanted {
+	} else if groupWanted && !cardWanted && !threadWanted {
 		kind = "group"
 		scope = "managed-owner-group-components"
+	} else if threadWanted && !cardWanted && !groupWanted {
+		kind = "thread-creation"
+		scope = "managed-local-thread-creation-components"
 	}
 	data["verification_scope"] = scope
 	o.State = "verification-managed-" + kind + "-pending"
 	if changed {
 		o.State = "verification-managed-" + kind + "-other-build"
-	} else if allObserved && (cardSeen || groupSeen) {
+	} else if allObserved && (cardSeen || groupSeen || threadSeen) {
 		o.State = "verification-managed-" + kind + "-observed"
-	} else if !cardSeen && !groupSeen && !unavailable {
+	} else if !cardSeen && !groupSeen && !threadSeen && !unavailable {
 		o.State = "verification-managed-probe-not-found"
 	}
 	if failed {

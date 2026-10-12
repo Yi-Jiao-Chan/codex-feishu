@@ -42,24 +42,25 @@ type ServiceGateway interface {
 // holds both application and canonical database locks. Connect must discover
 // the running App daemon; it must never launch another native server.
 type Service struct {
-	Config             config.Config
-	Store              *store.Store
-	Gateway            ServiceGateway
-	BotID              string
-	Connect            func(context.Context) (ServiceNative, error)
-	Notice             func(string)
-	Now                func() time.Time
-	RetryInterval      time.Duration    // Tests may shorten; production starts at 1s.
-	Pairing            *pairing.Manager // Ephemeral local management; never persisted as a task.
-	Verification       *verification.Manager
-	VerificationGroups *verification.GroupManager
-	mu                 sync.RWMutex
-	current            *Runtime
-	tasks              map[string]*TaskControls
-	actionsReady       map[string]bool
-	nativeConnected    atomic.Bool
-	running            atomic.Bool
-	startedAtMS        atomic.Int64
+	Config              config.Config
+	Store               *store.Store
+	Gateway             ServiceGateway
+	BotID               string
+	Connect             func(context.Context) (ServiceNative, error)
+	Notice              func(string)
+	Now                 func() time.Time
+	RetryInterval       time.Duration    // Tests may shorten; production starts at 1s.
+	Pairing             *pairing.Manager // Ephemeral local management; never persisted as a task.
+	Verification        *verification.Manager
+	VerificationGroups  *verification.GroupManager
+	VerificationThreads *verification.NativeSessions
+	mu                  sync.RWMutex
+	current             *Runtime
+	tasks               map[string]*TaskControls
+	actionsReady        map[string]bool
+	nativeConnected     atomic.Bool
+	running             atomic.Bool
+	startedAtMS         atomic.Int64
 }
 
 func (s *Service) now() time.Time {
