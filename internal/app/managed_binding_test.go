@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,9 +45,13 @@ func (n *managedBindingNative) AttachLocalVerification(ctx context.Context, id s
 
 type managedBindingGateway struct {
 	*serviceGateway
-	owner   string
-	creates atomic.Int32
-	reads   atomic.Int32
+	owner           string
+	creates         atomic.Int32
+	reads           atomic.Int32
+	finalStarted    chan struct{}
+	finalRelease    chan struct{}
+	finalOnce       sync.Once
+	reactionParents []string
 }
 
 func (g *managedBindingGateway) CreateGroup(context.Context, string, string, []string, string) (string, error) {
@@ -58,9 +63,29 @@ func (g *managedBindingGateway) MemberIDs(context.Context, string) ([]string, er
 	return []string{g.owner, "ou_bot"}, nil
 }
 
+func (g *managedBindingGateway) ReplyCard(ctx context.Context, parent, card, uuid string) (string, error) {
+	if g.finalStarted != nil && strings.Contains(card, "fixture-final-ready") {
+		g.finalOnce.Do(func() { close(g.finalStarted) })
+		select {
+		case <-g.finalRelease:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return g.runtimeGateway.ReplyCard(ctx, parent, card, uuid)
+}
+
+func (g *managedBindingGateway) AddReaction(_ context.Context, message, emoji string) (string, error) {
+	g.muFeedback.Lock()
+	defer g.muFeedback.Unlock()
+	g.reactions = append(g.reactions, emoji)
+	g.reactionParents = append(g.reactionParents, message)
+	return "reaction-" + emoji, nil
+}
+
 func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T) {
 	db, cfg, _ := serviceFixture(t)
-	g := &managedBindingGateway{serviceGateway: &serviceGateway{runtimeGateway: &runtimeGateway{}, listening: make(chan struct{})}, owner: cfg.Access.OwnerOpenID}
+	g := &managedBindingGateway{serviceGateway: &serviceGateway{runtimeGateway: &runtimeGateway{}, listening: make(chan struct{})}, owner: cfg.Access.OwnerOpenID, finalStarted: make(chan struct{}), finalRelease: make(chan struct{})}
 	n := &managedBindingNative{verificationServiceNative: &verificationServiceNative{serviceNative: &serviceNative{runtimeNative: &runtimeNative{threads: map[string]codexclient.Thread{}, turns: map[string][]codexclient.Turn{}, events: make(chan codexclient.Event, 64)}}, done: make(chan struct{})}}
 	var connections atomic.Int32
 	s := &Service{Config: cfg, Store: db, Gateway: g, BotID: "ou_bot", Connect: func(context.Context) (ServiceNative, error) { connections.Add(1); return n, nil }}
@@ -271,6 +296,130 @@ func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T
 		})
 		if connections.Load() != 1 || g.listens.Load() != 1 || n.starts.Load() != 1 || g.creates.Load() != 1 || n.adds.Load() != 1 {
 			t.Fatal("input observation recreated service/components or resent input")
+		}
+	})
+	t.Run("progress and final retain original reply and completion feedback", func(t *testing.T) {
+		thread, parent := result.ThreadID, "fixture-owner-followup"
+		phase := "commentary"
+		n.mu.Lock()
+		user := n.turns[thread][0].Items[0]
+		n.turns[thread][0].Items = []codexclient.Item{user, {ID: "fixture-progress-one", Type: "agentMessage", Phase: &phase, Text: "fixture progress one"}}
+		n.mu.Unlock()
+		s.Wake(thread)
+		var progress store.Mirror
+		runtimeWait(t, func() bool {
+			mirrors, err := db.Mirrors(life, cfg.Host.ID, thread)
+			if err != nil {
+				return false
+			}
+			for _, m := range mirrors {
+				if m.Kind == "progress" && m.TurnID == "fixture-followup-turn" && m.RemoteID != "" && strings.Contains(m.Card, "fixture progress one") && m.DeliveredRevision == m.Revision {
+					progress = m
+					return true
+				}
+			}
+			return false
+		})
+		n.mu.Lock()
+		n.turns[thread][0].Items = []codexclient.Item{user, {ID: "fixture-progress-one", Type: "agentMessage", Phase: &phase, Text: "fixture progress one"}, {ID: "fixture-progress-two", Type: "agentMessage", Phase: &phase, Text: "fixture progress two"}, {ID: "fixture-private-reasoning", Type: "reasoning", Text: "PRIVATE_REASONING"}, {ID: "fixture-command", Type: "commandExecution", Status: "completed", Text: "PRIVATE_TOOL_OUTPUT"}}
+		n.mu.Unlock()
+		s.Wake(thread)
+		runtimeWait(t, func() bool {
+			mirrors, err := db.Mirrors(life, cfg.Host.ID, thread)
+			if err != nil {
+				return false
+			}
+			for _, m := range mirrors {
+				if m.Kind == "progress" && m.TurnID == "fixture-followup-turn" && m.RemoteID == progress.RemoteID && strings.Contains(m.Card, "fixture progress two") && m.DeliveredRevision == m.Revision {
+					return true
+				}
+			}
+			return false
+		})
+		finalPhase := "final_answer"
+		now := time.Now().Unix()
+		n.mu.Lock()
+		n.turns[thread][0].Status, n.turns[thread][0].CompletedAt = "completed", &now
+		n.turns[thread][0].Items = append(append([]codexclient.Item(nil), n.turns[thread][0].Items...), codexclient.Item{ID: "fixture-final", Type: "agentMessage", Phase: &finalPhase, Text: "fixture-final-ready"})
+		n.mu.Unlock()
+		s.Wake(thread)
+		select {
+		case <-g.finalStarted:
+		case <-time.After(8 * time.Second):
+			t.Fatal("final reply was not dispatched")
+		}
+		g.muFeedback.Lock()
+		premature := false
+		for _, emoji := range g.reactions {
+			premature = premature || emoji == "CheckMark"
+		}
+		g.muFeedback.Unlock()
+		if premature {
+			t.Fatal("completion reaction preceded final delivery acknowledgement")
+		}
+		close(g.finalRelease)
+		runtimeWait(t, func() bool {
+			g.muFeedback.Lock()
+			defer g.muFeedback.Unlock()
+			for _, emoji := range g.reactions {
+				if emoji == "CheckMark" {
+					return true
+				}
+			}
+			return false
+		})
+		mirrors, err := db.Mirrors(life, cfg.Host.ID, thread)
+		if err != nil {
+			t.Fatal(err)
+		}
+		progressCount, finalCount := 0, 0
+		var finalID string
+		for _, m := range mirrors {
+			if m.Kind == "human" || strings.Contains(m.Card, "fixture owner follow-up") || strings.Contains(m.Card, "PRIVATE_REASONING") || strings.Contains(m.Card, "PRIVATE_TOOL_OUTPUT") {
+				t.Fatal("human echo or private content mirrored", m.Kind)
+			}
+			if m.Kind == "progress" && m.TurnID == "fixture-followup-turn" {
+				progressCount++
+				if m.RemoteID != progress.RemoteID || !m.Terminal || m.ParentMessageID != parent || m.DeliveredRevision != m.Revision {
+					t.Fatal("progress lost original card, final state or reply relation", m.Key)
+				}
+			}
+			if m.Kind == "final" {
+				finalCount++
+				finalID = m.RemoteID
+				if m.RemoteID == "" || m.RemoteID == progress.RemoteID || m.ParentMessageID != parent || m.DeliveredRevision != m.Revision || !strings.Contains(m.Card, "fixture-final-ready") {
+					t.Fatal("final was not a separate confirmed reply", m.Key)
+				}
+			}
+		}
+		if progressCount != 1 || finalCount != 1 {
+			t.Fatal("unexpected per-turn card counts", progressCount, finalCount)
+		}
+		g.mu.Lock()
+		writes := append([]runtimeWrite(nil), g.writes...)
+		g.mu.Unlock()
+		progressUpdates, finalReplies := 0, 0
+		for _, write := range writes {
+			if write.op == "send" || write.op == "reply" && write.parent != parent {
+				t.Fatal("message was not a reply to original user input", write.op, write.parent)
+			}
+			if write.op == "update" && write.target == progress.RemoteID {
+				progressUpdates++
+			}
+			if write.op == "reply" && strings.Contains(write.card, "fixture-final-ready") {
+				finalReplies++
+			}
+		}
+		if progressUpdates < 2 || finalReplies != 1 || finalID == "" || n.adds.Load() != 1 {
+			t.Fatal("progress was reposted, final duplicated or input resent", progressUpdates, finalReplies)
+		}
+		g.muFeedback.Lock()
+		reactionParents := append([]string(nil), g.reactionParents...)
+		g.muFeedback.Unlock()
+		for _, target := range reactionParents {
+			if target != parent {
+				t.Fatal("reaction did not target original user message", target)
+			}
 		}
 	})
 }
