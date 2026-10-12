@@ -44,6 +44,7 @@ type NativeSessionResult struct {
 	ResourcesReady           bool  `json:"resources_ready"`
 	ResourceRecoveryRequired bool  `json:"resource_recovery_required"`
 	ModelRequests            int64 `json:"model_requests"`
+	ModelReleased            bool  `json:"model_released"`
 }
 
 // NewNativeSessions only validates the existing private physical resource root.
@@ -199,6 +200,7 @@ func (s *NativeSessions) resultLocked(id string, result NativeResult) NativeSess
 	r := NativeSessionResult{NativeResult: result, ResourcesReady: ready, ResourceRecoveryRequired: !ready}
 	if entry != nil {
 		r.ModelRequests = entry.model.Calls()
+		r.ModelReleased = entry.model.Released()
 	}
 	return r
 }

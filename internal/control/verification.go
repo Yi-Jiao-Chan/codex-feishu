@@ -120,25 +120,50 @@ func VerifyBinding(ctx context.Context, path, identity, id string, begin bool) (
 		return verification.BindingResult{}, ErrUnavailable
 	}
 	v := *r.VerificationBinding
-	if v.BridgeCommit == "" || !verification.ValidBinaryHash(v.BinarySHA256) || v.ExpiresAtMS <= 0 || v.BoundAtMS <= 0 || v.ExpiresAtMS <= v.BoundAtMS {
+	if err := validateBindingResult(v, id, begin); err != nil {
 		return verification.BindingResult{}, ErrUnavailable
+	}
+	return v, nil
+}
+
+func validateBindingResult(v verification.BindingResult, id string, begin bool) error {
+	if v.RequestID != id || v.BridgeCommit == "" || !verification.ValidBinaryHash(v.BinarySHA256) || v.ExpiresAtMS <= 0 || v.BoundAtMS <= 0 || v.ExpiresAtMS <= v.BoundAtMS {
+		return ErrUnavailable
 	}
 	if v.BindingStatus != "pass" && v.BindingStatus != "pending" {
-		return verification.BindingResult{}, ErrUnavailable
+		return ErrUnavailable
 	}
 	if v.BindingStatus == "pass" && (v.ThreadID == "" || v.ChatID == "") {
-		return verification.BindingResult{}, ErrUnavailable
+		return ErrUnavailable
 	}
 	if v.BindingStatus == "pending" && (v.ActorStarted || v.ActivationRequested) {
-		return verification.BindingResult{}, ErrUnavailable
+		return ErrUnavailable
 	}
 	if !begin && v.ActivationRequested {
-		return verification.BindingResult{}, ErrUnavailable
+		return ErrUnavailable
 	}
 	if v.Expired != (time.Now().UnixMilli() >= v.ExpiresAtMS) {
-		return verification.BindingResult{}, ErrUnavailable
+		return ErrUnavailable
 	}
 	if (v.ActorStarted || v.ActivationRequested) && (v.BuildChanged || v.Expired || !v.ResourcesReady || !v.CreatorConnected) {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+func VerifyTurnRelease(ctx context.Context, path, identity, id string) (verification.BindingResult, error) {
+	if !verification.ValidRequestID(id) {
+		return verification.BindingResult{}, verification.ErrInvalid
+	}
+	r, err := exchange(ctx, path, request{Schema: protocol, Method: "verify.binding.release", Identity: identity, VerificationBinding: &verificationRequest{RequestID: id}})
+	if err != nil {
+		return verification.BindingResult{}, err
+	}
+	if r.VerificationBinding == nil || r.Snapshot != nil || r.Pair != nil || r.Verification != nil || r.VerificationGroup != nil || r.VerificationThread != nil || r.VerificationBinding.RequestID != id {
+		return verification.BindingResult{}, ErrUnavailable
+	}
+	v := *r.VerificationBinding
+	if err := validateBindingResult(v, id, false); err != nil || v.ModelReleased != true || v.ActivationRequested || v.BindingStatus != "pass" || v.BuildChanged || v.Expired || !v.ResourcesReady || !v.CreatorConnected {
 		return verification.BindingResult{}, ErrUnavailable
 	}
 	return v, nil

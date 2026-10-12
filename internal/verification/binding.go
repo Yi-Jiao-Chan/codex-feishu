@@ -42,6 +42,7 @@ type BindingResult struct {
 	CreatorConnected    bool   `json:"creator_connected"`
 	ActivationRequested bool   `json:"activation_requested"`
 	ActorStarted        bool   `json:"actor_started"`
+	ModelReleased       bool   `json:"model_released"`
 }
 
 func (m *BindingManager) configured() bool {
@@ -185,6 +186,7 @@ func (m *BindingManager) result(ctx context.Context, b store.VerificationBinding
 	if err == nil {
 		r.ResourcesReady = p.ResourcesReady
 		r.CreatorConnected = p.CreatorConnected
+		r.ModelReleased = p.ModelReleased
 	}
 	if m.ActorStarted != nil && r.BindingStatus == "pass" && !r.BuildChanged && !r.Expired && r.ResourcesReady && r.CreatorConnected {
 		r.ActorStarted = m.ActorStarted(b)

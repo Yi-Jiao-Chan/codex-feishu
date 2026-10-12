@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,6 +152,71 @@ func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T
 	if health, err := s.Health(life); err != nil || !health.VerificationBindingSupported {
 		t.Fatal("binding capability missing", err)
 	}
+	t.Run("release original local model via existing service", func(t *testing.T) {
+		birth, err := db.VerificationNative(life, id, cfg.Host.ID, cfg.Feishu.AppID, cfg.Access.OwnerOpenID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := control.VerifyTurnRelease(life, endpoint, identity, id); !errors.Is(err, control.ErrUnavailable) {
+			t.Fatal("release opened an unstarted fixture", err)
+		}
+		modelContext, cancel := context.WithTimeout(life, 3*time.Second)
+		defer cancel()
+		responseDone := make(chan error, 1)
+		go func() {
+			request, err := http.NewRequestWithContext(modelContext, http.MethodPost, birth.ModelURL+"/responses", strings.NewReader(`{"model":"fixture-model","stream":true}`))
+			if err != nil {
+				responseDone <- err
+				return
+			}
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				responseDone <- err
+				return
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err == nil && !strings.Contains(string(body), `"type":"response.completed"`) {
+				err = errors.New("local fixture response did not complete")
+			}
+			responseDone <- err
+		}()
+		// Calls plus the flushed Started gate are not exposed in health. The
+		// idempotent release method returns not-ready until that gate is reached.
+		deadline := time.Now().Add(2 * time.Second)
+		var released verification.BindingResult
+		for time.Now().Before(deadline) {
+			released, err = control.VerifyTurnRelease(life, endpoint, identity, id)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, control.ErrUnavailable) {
+				t.Fatal(err)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if err != nil || !released.ModelReleased || released.ActivationRequested {
+			t.Fatal(released, err)
+		}
+		select {
+		case err := <-responseDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-modelContext.Done():
+			t.Fatal("managed release did not open original model response")
+		}
+		if _, err := control.VerifyTurnRelease(life, endpoint, identity, id); err != nil {
+			t.Fatal("repeat release was not idempotent", err)
+		}
+		state, err := control.VerifyBinding(life, endpoint, identity, id, false)
+		if err != nil || !state.ModelReleased || state.ActivationRequested || state.ExpiresAtMS != released.ExpiresAtMS || connections.Load() != 1 || g.listens.Load() != 1 || n.starts.Load() != 1 || g.creates.Load() != 1 || n.adds.Load() != 0 {
+			t.Fatal("release/query recreated component, submitted input or changed window", state, err)
+		}
+		if health, err := s.Health(life); err != nil || !health.VerificationTurnReleaseSupported {
+			t.Fatal("release capability missing", health, err)
+		}
+	})
 }
 
 func TestRuntimeActivationReportsQueueAdmissionAndLocalPresence(t *testing.T) {

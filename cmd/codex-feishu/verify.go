@@ -16,8 +16,8 @@ import (
 )
 
 type verifyOptions struct {
-	Card, Group, Thread, Binding bool
-	RequestID                    string
+	Card, Group, Thread, Binding, Release bool
+	RequestID                             string
 }
 type verifyGateway interface {
 	SendCard(context.Context, string, string, string, string) (string, error)
@@ -34,6 +34,7 @@ type verifyDependencies struct {
 	managedGroup   func(context.Context, config.Config, string, string, bool) (verification.GroupResult, error)
 	managedThread  func(context.Context, config.Config, string, string, bool) (verification.NativeSessionResult, error)
 	managedBinding func(context.Context, config.Config, string, string, bool) (verification.BindingResult, error)
+	managedRelease func(context.Context, config.Config, string, string) (verification.BindingResult, error)
 }
 
 func defaultVerifyDependencies() verifyDependencies {
@@ -72,6 +73,13 @@ func defaultVerifyDependencies() verifyDependencies {
 			}
 			return control.VerifyBinding(ctx, path, identity, id, begin)
 		},
+		managedRelease: func(ctx context.Context, cfg config.Config, identity, id string) (verification.BindingResult, error) {
+			path, err := control.Path(cfg.Feishu.AppID)
+			if err != nil {
+				return verification.BindingResult{}, err
+			}
+			return control.VerifyTurnRelease(ctx, path, identity, id)
+		},
 	}
 }
 
@@ -86,15 +94,16 @@ func runVerifyWithDependencies(ctx context.Context, args []string, deps verifyDe
 	group := flags.Bool("allow-test-group", false, "authorize owner-and-bot test group; managed probes require --request-id")
 	thread := flags.Bool("allow-test-thread", false, "authorize isolated local-model thread creation only; does not bind, submit inputs or prove acceptance")
 	binding := flags.Bool("allow-test-binding", false, "authorize following the already-confirmed test group and thread for this request ID; no automatic fixture input")
+	release := flags.Bool("release-test-turn", false, "open the already-started original test model response gate; separate from creation/binding and not proof of completion")
 	requestID := flags.String("request-id", "", "32 lowercase hexadecimal characters; query existing managed card/group/thread/binding records without writes when no authorization flags are supplied")
 	_ = flags.Bool("json", false, "JSON output (default)")
-	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" || *target != "self" || *requestID != "" && !verification.ValidRequestID(*requestID) || *binding && !verification.ValidRequestID(*requestID) {
+	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" || *target != "self" || *requestID != "" && !verification.ValidRequestID(*requestID) || (*binding || *release) && !verification.ValidRequestID(*requestID) || *release && (*card || *group || *thread || *binding) {
 		deps.emit(output{Command: "verify", State: "invalid-arguments"})
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	o, code := inspectVerify(ctx, *path, verifyOptions{Card: *card, Group: *group, Thread: *thread, Binding: *binding, RequestID: *requestID}, deps)
+	o, code := inspectVerify(ctx, *path, verifyOptions{Card: *card, Group: *group, Thread: *thread, Binding: *binding, Release: *release, RequestID: *requestID}, deps)
 	deps.emit(o)
 	return code
 }
@@ -102,7 +111,7 @@ func runVerifyWithDependencies(ctx context.Context, args []string, deps verifyDe
 // No flags means GET-only diagnostics through the existing managed instance
 // and read-only snapshots. Native connections and receivers are never opened.
 func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps verifyDependencies) (output, int) {
-	writes := opts.Card || opts.Group || opts.Thread || opts.Binding
+	writes := opts.Card || opts.Group || opts.Thread || opts.Binding || opts.Release
 	var cfg config.Config
 	var secret, identity string
 	var identityErr error
@@ -152,6 +161,9 @@ func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps ve
 			o.State = "verification-config-conflict"
 			return o, 6
 		}
+		if opts.Release {
+			return inspectManagedTurnRelease(ctx, cfg, identity, opts, live, deps, o, pendingCode)
+		}
 		return inspectManagedVerification(ctx, cfg, identity, opts, live, deps, o, pendingCode)
 	}
 	if opts.RequestID != "" {
@@ -164,10 +176,13 @@ func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps ve
 	}
 	// Do not partially run card/group mutations when an unsupported isolated
 	// thread was requested. A future managed verifier will own the whole flow.
-	if opts.Thread || opts.Binding {
+	if opts.Thread || opts.Binding || opts.Release {
 		o.State = "verification-thread-not-integrated"
 		if opts.Binding {
 			o.State = "verification-binding-not-integrated"
+		}
+		if opts.Release {
+			o.State = "verification-turn-release-not-integrated"
 		}
 		o.Checks = append(o.Checks, check{"verification.managed_tests", "pending", true, "isolated managed test flow unavailable; none of the requested test mutations performed"})
 		return o, 5

@@ -121,6 +121,17 @@ func (m *LocalModel) Done() <-chan struct{} { return m.stop }
 // Release allows the first valid request to continue. It is idempotent.
 func (m *LocalModel) Release() { m.releaseOnce.Do(func() { close(m.release) }) }
 
+// Released only reports that the local response gate was opened, not that a
+// native turn, delivery or UI acceptance completed.
+func (m *LocalModel) Released() bool {
+	select {
+	case <-m.release:
+		return true
+	default:
+		return false
+	}
+}
+
 // Close stops accepting requests, closes active connections, and waits for
 // handlers and the serving goroutine to exit. It is safe to call repeatedly
 // and concurrently with Release.

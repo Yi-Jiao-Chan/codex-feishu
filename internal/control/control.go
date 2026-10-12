@@ -47,6 +47,7 @@ type Snapshot struct {
 	VerificationGroupSupported          bool                   `json:"verification_group_supported"`
 	VerificationThreadCreationSupported bool                   `json:"verification_thread_creation_supported"`
 	VerificationBindingSupported        bool                   `json:"verification_binding_supported"`
+	VerificationTurnReleaseSupported    bool                   `json:"verification_turn_release_supported"`
 	StartedAtMS                         int64                  `json:"started_at_ms"`
 	ObservedAtMS                        int64                  `json:"observed_at_ms"`
 	Persistent                          store.PersistentHealth `json:"durable"`
@@ -99,6 +100,10 @@ type ThreadVerificationProvider interface {
 type BindingVerificationProvider interface {
 	Begin(context.Context, string) (verification.BindingResult, error)
 	State(context.Context, string) (verification.BindingResult, error)
+}
+
+type bindingReleaseProvider interface {
+	Release(context.Context, string) (verification.BindingResult, error)
 }
 
 type PairingProvider interface {
@@ -422,6 +427,29 @@ func (s *Server) handle(parent context.Context, conn *net.UnixConn) {
 			probe, err = s.VerificationBindings.Begin(ctx, r.VerificationBinding.RequestID)
 		} else {
 			probe, err = s.VerificationBindings.State(ctx, r.VerificationBinding.RequestID)
+		}
+		switch {
+		case err == nil:
+			result.Code, result.VerificationBinding = "ok", &probe
+		case errors.Is(err, verification.ErrInvalid):
+			result.Code = "verification-invalid"
+		case errors.Is(err, verification.ErrNotFound):
+			result.Code = "verification-not-found"
+		default:
+			result.Code = "verification-unavailable"
+		}
+	case r.Method == "verify.binding.release" && s.VerificationBindings != nil && r.VerificationBinding != nil && r.Pair == nil && r.Verification == nil && r.VerificationGroup == nil && r.VerificationThread == nil:
+		provider, ok := s.VerificationBindings.(bindingReleaseProvider)
+		if !ok {
+			result.Code = "unsupported"
+			break
+		}
+		var probe verification.BindingResult
+		var err error
+		if !verification.ValidRequestID(r.VerificationBinding.RequestID) {
+			err = verification.ErrInvalid
+		} else {
+			probe, err = provider.Release(ctx, r.VerificationBinding.RequestID)
 		}
 		switch {
 		case err == nil:

@@ -226,6 +226,15 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 
 第一条保存原群 / 线程关系并请求现有 runtime 跟进；启用后仅 owner 的新群消息可进入该测试线程。结果 `verification_binding.binding_status=pass` 仅为本地登记，`activation_requested` 为本次入队，`actor_started` 为本地 actor 存在，均不证明 UI、输入或送达。第二条不请求激活；历史登记不会自动续期或重建模型。`verification-managed-binding-observed` 仍 `ok=false` / 退出 5、12 项 P1 pending。创建授权与绑定授权四项独立；用户未允许的字段保持 false。不要为组件能力安装未发布版本，也不要把 owner 群跟进当作自动化 queue / steer 场景已验收。
 
+当前开发版也提供受控测试模型的本轮释放入口。只有用户要求结束这次受控忙时测试、原绑定仍有效、第一条模型请求已经开始，且 CLI / 实例分别报告 `verify_managed_turn_release=true` / `verification_turn_release_supported=true` 时，单独执行：
+
+```sh
+"$cfb_cli" verify --config "$cfb_config" --target self --release-test-turn --request-id "$cfb_verify_id" --json
+"$cfb_cli" verify --config "$cfb_config" --target self --request-id "$cfb_verify_id" --json
+```
+
+不要与任何 allow 标志组合，也不要从创建 / 绑定授权推导自动释放。第一条只放行原本机模型的回复门，不新建或激活、不提交输入、steer 或归档；未开始 / 过期 / 原资源缺失时拒绝。第二条只读原记录。`model_released=true` 不是原生轮次完成或飞书结果送达证据；继续核验实际历史、最终卡和 App 页面，P1 仍 pending。原五分钟窗口不会因释放延长；未发布版本的安装门槛不变。
+
 已验收版本具备该能力且有提示词中的本人测试授权时，运行：
 
 ```sh
