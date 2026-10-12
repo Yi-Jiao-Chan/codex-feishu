@@ -33,3 +33,5 @@ M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fo
 管理实例的本人测试卡组件已接入现有接收器：显式 card 授权与固定 request ID，原子领取和私有记录，重复 / unknown 不重发，回调与私聊探针不进入 Codex 输入。真实部署、受控群 / 线程及完整 P1 仍 pending。见[管理测试卡进展](docs/research/m3-managed-card-verification-2026-10-12.md)。
 
 管理测试群组件已接入：固定本人和机器人，持久领取后一次创建，成员 GET 与群 @ 验证记录在原接收器内；不绑定线程、不发测试群消息。卡 / 群标志独立授权，查询不生成缺失的组件，完整 P1 和受控线程仍 pending。见[管理测试群进展](docs/research/m3-managed-group-verification-2026-10-12.md)。
+
+隔离原生创建适配器已有受限制的开发入口与本地协议测试，固定本机模拟模型和只读策略，拒绝出生证明不符或缺失。管理线程编排与真实重验仍 pending，未开放完整 verify。见[隔离创建适配器进展](docs/research/m3-native-verification-adapter-2026-10-12.md)。

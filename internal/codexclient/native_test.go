@@ -2,6 +2,8 @@ package codexclient
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,7 +79,11 @@ func TestNativeDaemonQueueAndSteer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	provider := fmt.Sprintf("cfb_go_fixture_%d", time.Now().UnixNano())
+	var runBytes [16]byte
+	if _, err := rand.Read(runBytes[:]); err != nil {
+		t.Fatal(err)
+	}
+	runID := hex.EncodeToString(runBytes[:])
 	repository := filepath.Join(t.TempDir(), "repository")
 	worktree := filepath.Join(t.TempDir(), "worktree")
 	if err := os.Mkdir(repository, 0700); err != nil {
@@ -102,14 +108,19 @@ func TestNativeDaemonQueueAndSteer(t *testing.T) {
 	git(repository, "init", "--quiet")
 	git(repository, "-c", "user.name=M0 fixture", "-c", "user.email=m0@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "M0 isolated worktree fixture")
 	git(repository, "worktree", "add", "--quiet", "--detach", worktree, "HEAD")
-	var created struct {
-		Thread Thread `json:"thread"`
-	}
-	err = a.Call(ctx, "thread/start", map[string]any{"cwd": repository, "model": "fixture-model", "modelProvider": provider, "approvalPolicy": "never", "sandbox": "read-only", "threadSource": "feishu.bridge.validation", "config": map[string]any{"model_providers." + provider: map[string]any{"name": "Isolated Go fixture", "base_url": fixture.URL + "/v1", "wire_api": "responses", "requires_openai_auth": false, "supports_websockets": false, "request_max_retries": 0}, "model_reasoning_effort": "low"}}, &created)
+	spec := LocalVerificationSpec{RunID: runID, CWD: repository, ModelURL: fixture.URL + "/v1"}
+	intent, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := created.Thread.ID
+	if err := os.WriteFile(filepath.Join(t.TempDir(), "verification-intent.json"), intent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := a.StartLocalVerification(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := created.ID
 	defer func() {
 		once.Do(func() { close(release) })
 		cleanup, stop := context.WithTimeout(context.Background(), 10*time.Second)
