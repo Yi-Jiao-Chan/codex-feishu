@@ -20,6 +20,7 @@
 | 第二期飞书新建任务 | [09 任务创建](09-feishu-task-creation.md) |
 | CLI、安装、配置与诊断 | [10 CLI 与配置](10-cli-and-setup.md) |
 | 实施顺序、联调和发布门槛 | [11 集成与验收](11-integration-and-acceptance.md) |
+| M0 后的新版集中联调 | [12 集中验收清单](12-live-acceptance-handoff.md) |
 | 交给 Agent 自动配置 | [Agent 一键配置指南](AGENT-SETUP.md) |
 
 开发文档是功能与验收契约；当前实现以各模块说明、实际 CLI 输出和验证证据为准。真实可用的软件必须完成相应验收，不能因为文档中出现了命令就声称安装成功。配置指南为自包含执行说明；给配置 Agent 单独提供它即可，开发 Agent 则从本手册开始。
