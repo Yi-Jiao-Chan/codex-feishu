@@ -55,6 +55,66 @@ func (s *Store) VerificationBindingForChat(ctx context.Context, host, chat strin
 	return b, err
 }
 
+// BindingHydrationScope classifies original private fixtures separately from
+// ordinary routes. It is not an authorization check: expired or previous-build
+// fixtures retain their classification. An associated marker with incomplete
+// proof fails closed, while unmarked routes remain ordinary.
+func (s *Store) BindingHydrationScope(ctx context.Context, host, app, owner, bot string) ([]Binding, int, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT b.thread_id,b.intent_id,b.chat_id,
+ COALESCE(CASE WHEN d.host_id IS NOT NULL AND n.request_id IS NOT NULL AND g.request_id IS NOT NULL AND i.intent_id IS NOT NULL
+ AND v.bound_at_ms>0 AND v.membership_verified_at_ms=v.bound_at_ms
+ AND v.expires_at_ms=min(n.expires_at_ms,g.expires_at_ms) AND v.expires_at_ms>v.bound_at_ms
+ AND v.bound_at_ms>=n.created_at_ms AND v.bound_at_ms>=g.created_at_ms
+ THEN v.request_id END,''),COALESCE(v.binary_sha256,''),COALESCE(g.members_json,''),
+ (SELECT COUNT(*) FROM verification_bindings k WHERE k.intent_id=b.intent_id
+ OR k.host_id=b.host_id AND (k.thread_id=b.thread_id OR k.chat_id=b.chat_id))
+ FROM bindings b
+ LEFT JOIN deployment d ON d.host_id=b.host_id AND d.app_id=?
+ LEFT JOIN verification_bindings v ON v.host_id=b.host_id AND v.app_id=? AND v.owner_id=? AND v.bot_id=?
+ AND v.thread_id=b.thread_id AND v.chat_id=b.chat_id AND v.intent_id=b.intent_id
+ AND v.app_id<>'' AND v.owner_id<>'' AND v.bot_id<>'' AND v.bot_id<>v.owner_id AND v.bridge_commit<>'' AND v.cwd<>''
+ LEFT JOIN verification_native n ON n.request_id=v.request_id AND n.host_id=v.host_id AND n.app_id=v.app_id AND n.owner_id=v.owner_id
+ AND n.bridge_commit=v.bridge_commit AND n.binary_sha256=v.binary_sha256 AND n.thread_id=v.thread_id AND n.cwd=v.cwd
+ AND n.state='confirmed' AND n.native_generation>0 AND n.created_at_ms>0
+ AND length(n.connection_id)=32 AND n.connection_id NOT GLOB '*[^0-9a-f]*'
+ LEFT JOIN verification_groups g ON g.request_id=v.request_id AND g.host_id=v.host_id AND g.app_id=v.app_id AND g.owner_id=v.owner_id
+ AND g.bridge_commit=v.bridge_commit AND g.binary_sha256=v.binary_sha256 AND g.chat_id=v.chat_id AND g.state='confirmed'
+ AND g.created_at_ms>0 AND g.group_message_id<>'' AND g.membership_verified_at_ms>=g.created_at_ms AND g.membership_verified_at_ms<g.expires_at_ms
+ LEFT JOIN create_intents i ON i.intent_id=b.intent_id AND i.host_id=b.host_id AND i.thread_id=b.thread_id
+ AND i.owner_id=v.owner_id AND i.chat_id=b.chat_id AND i.state='confirmed' AND i.name=g.name AND i.members_json=g.members_json
+ WHERE b.host_id=? ORDER BY b.thread_id`, app, app, owner, bot, host)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var ordinary []Binding
+	privateCount := 0
+	for rows.Next() {
+		b := Binding{HostID: host}
+		var request, hash, membersJSON string
+		var associated int
+		if err := rows.Scan(&b.ThreadID, &b.IntentID, &b.ChatID, &request, &hash, &membersJSON, &associated); err != nil {
+			return nil, 0, err
+		}
+		var members []string
+		if validVerificationBindingID(request) && validVerificationBindingHash(hash) && b.IntentID == verificationBindingIntentID(host, app, owner, request) && json.Unmarshal([]byte(membersJSON), &members) == nil && len(members) == 1 && members[0] == owner {
+			privateCount++
+		} else {
+			if associated != 0 {
+				return nil, 0, ErrConflict
+			}
+			ordinary = append(ordinary, b)
+		}
+		if associated > 1 {
+			return nil, 0, ErrConflict
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return ordinary, privateCount, nil
+}
+
 func (s *Store) RegisterVerificationBinding(ctx context.Context, n VerificationNative, g VerificationGroup, bot string, now int64) (VerificationBinding, error) {
 	if err := validateVerificationBindingInputs(n, g, bot, now); err != nil {
 		return VerificationBinding{}, err

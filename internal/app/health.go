@@ -65,10 +65,11 @@ func (s *Service) Health(ctx context.Context) (control.Snapshot, error) {
 		return result, err
 	}
 	result.Persistent = health
-	bindings, err := s.Store.Bindings(ctx, s.Config.Host.ID)
+	bindings, verificationCount, err := s.Store.BindingHydrationScope(ctx, s.Config.Host.ID, s.Config.Feishu.AppID, s.Config.Access.OwnerOpenID, s.BotID)
 	if err != nil {
 		return result, err
 	}
+	result.BindingHydrationScope = &control.BindingHydrationScope{OrdinaryBindings: len(bindings), VerificationBindings: verificationCount}
 	s.mu.RLock()
 	if result.NativeConnected {
 		for _, b := range bindings {

@@ -187,9 +187,23 @@ func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T
 		t.Fatal("group observation became input", receipts, err)
 	}
 	// The result only proves an actor exists locally, not actual App UI.
-	if health, err := s.Health(life); err != nil || !health.VerificationBindingSupported {
+	if health, err := s.Health(life); err != nil || !health.VerificationBindingSupported || health.BindingHydrationScope == nil || health.BindingHydrationScope.OrdinaryBindings != 1 || health.BindingHydrationScope.VerificationBindings != 1 || health.Persistent.Bindings != 2 {
 		t.Fatal("binding capability missing", err)
 	}
+	t.Run("orphaned private route is not ordinary hydration", func(t *testing.T) {
+		// A new instance has no original local-model session. Both the marker
+		// and actual route persist, while their authorization remains frozen.
+		restarted := &Service{Store: db, Config: cfg, Gateway: g, BotID: "ou_bot", actionsReady: map[string]bool{"thread": true, result.ThreadID: true}}
+		restarted.running.Store(true)
+		restarted.nativeConnected.Store(true)
+		health, err := restarted.Health(life)
+		if err != nil || health.BindingHydrationScope == nil || health.BindingHydrationScope.OrdinaryBindings != 1 || health.BindingHydrationScope.VerificationBindings != 1 || health.HydratedBindings != 1 || health.Persistent.Bindings != 2 {
+			t.Fatal("orphaned fixture altered ordinary readiness or erased persistent facts", health, err)
+		}
+		if _, _, _, err := restarted.beginVerificationOperation(life, result.ThreadID); !errors.Is(err, verification.ErrNotReady) {
+			t.Fatal("health classification authorized an orphaned test route", err)
+		}
+	})
 	t.Run("release original local model via existing service", func(t *testing.T) {
 		birth, err := db.VerificationNative(life, id, cfg.Host.ID, cfg.Feishu.AppID, cfg.Access.OwnerOpenID)
 		if err != nil {

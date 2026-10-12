@@ -43,6 +43,7 @@ type Snapshot struct {
 	NativeConnected                     bool                   `json:"native_connected"`
 	FeishuConnected                     bool                   `json:"feishu_connected"`
 	HydratedBindings                    int                    `json:"hydrated_bindings"`
+	BindingHydrationScope               *BindingHydrationScope `json:"binding_hydration_scope,omitempty"`
 	DiscoveryEnabled                    bool                   `json:"discovery_enabled"`
 	PairingSupported                    bool                   `json:"pairing_supported"`
 	VerificationCardSupported           bool                   `json:"verification_card_supported"`
@@ -53,6 +54,14 @@ type Snapshot struct {
 	StartedAtMS                         int64                  `json:"started_at_ms"`
 	ObservedAtMS                        int64                  `json:"observed_at_ms"`
 	Persistent                          store.PersistentHealth `json:"durable"`
+}
+
+// BindingHydrationScope separates explicitly marked private test routes from
+// ordinary readiness. Nil retains the total-binding semantics of older hosts.
+// Durable operation journals still include both scopes.
+type BindingHydrationScope struct {
+	OrdinaryBindings     int `json:"ordinary_bindings"`
+	VerificationBindings int `json:"verification_bindings"`
 }
 
 type request struct {

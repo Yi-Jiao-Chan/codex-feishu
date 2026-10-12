@@ -102,7 +102,14 @@ func liveStatus(s control.Snapshot) (output, int) {
 	observe("instance.running", s.Running, "current service lifecycle")
 	observe("instance.codex_connection", s.NativeConnected, "existing native generation attachment")
 	observe("instance.feishu_connection", s.FeishuConnected, "existing Feishu receiver ready state")
-	observe("instance.bindings_reconciled", int64(s.HydratedBindings) == s.Persistent.Bindings, "bound threads hydrated in this native generation")
+	target := s.Persistent.Bindings
+	scopeKnown := target >= 0 && s.HydratedBindings >= 0
+	if scope := s.BindingHydrationScope; scope != nil {
+		ordinary, verification := int64(scope.OrdinaryBindings), int64(scope.VerificationBindings)
+		scopeKnown = scopeKnown && ordinary >= 0 && verification >= 0 && ordinary <= target && verification == target-ordinary
+		target = ordinary
+	}
+	observe("instance.bindings_reconciled", scopeKnown && int64(s.HydratedBindings) == target, "ordinary bound threads hydrated in this native generation; explicitly marked private test routes are reported separately")
 	if s.DiscoveryEnabled {
 		observe("instance.discovery_baseline", s.Persistent.BaselineComplete, "initial history baseline must complete before automatic group discovery is ready")
 	}

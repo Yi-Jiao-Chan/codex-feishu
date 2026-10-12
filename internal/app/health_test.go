@@ -48,7 +48,7 @@ func TestHealthReadsExistingConnectionsAndHydrationWithoutBodies(t *testing.T) {
 	s.startedAtMS.Store(time.Now().Add(-time.Second).UnixMilli())
 	s.nativeConnected.Store(true)
 	live, err := s.Health(context.Background())
-	if err != nil || !live.Running || !live.NativeConnected || !live.FeishuConnected || live.HydratedBindings != 1 || live.Persistent.Bindings != 1 {
+	if err != nil || !live.Running || !live.NativeConnected || !live.FeishuConnected || live.HydratedBindings != 1 || live.Persistent.Bindings != 1 || live.BindingHydrationScope == nil || live.BindingHydrationScope.OrdinaryBindings != 1 || live.BindingHydrationScope.VerificationBindings != 0 {
 		t.Fatal("actual generation facts unavailable", live, err)
 	}
 	b, _ := json.Marshal(live)

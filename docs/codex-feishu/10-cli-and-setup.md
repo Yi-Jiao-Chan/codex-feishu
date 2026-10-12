@@ -127,7 +127,7 @@ Linux 首选 systemd --user，ExecStart 使用绝对二进制路径和配置路�
 
 当前新版 serve 提供 Linux Unix socket 管理通道，私有目录 0700、socket 0600，客户端和服务端均核验 SO_PEERCRED 的系统用户；只允许 health、限时 pair.begin / pair.state / pair.cancel，以及固定 owner 的 verify.card.begin / verify.card.state、verify.group.begin / verify.group.state 方法，不提供任务输入或执行 API。请求绑定物理配置路径与当前完整配置摘要，配置已改变而服务未重启时拒绝报告生效。消息大小、并发连接和等待均有上限；退出关闭全部管理连接，清理只删除自己的 socket。
 
-status 优先从匹配的运行实例读取真实 receiver ready、原生 reader 生命周期、当前代际已核验绑定数及聚合日志；未决 / 未知变更不报告全部健康。前台运行不要求已经安装 systemd unit；用户服务及注销常驻另列事实，安装向导仍须验证其生命周期。旧 M0 没有管理通道，退回只读检查用户服务、daemon 和数据库计数，可读 schema 1 而不迁移；实时连接 unknown、必需项 pending、退出码 5。systemd active、daemon running 或持久记录可读均不能代替实时桥健康证明。
+status 优先从匹配的运行实例读取真实 receiver ready、原生 reader 生命周期、当前代际已核验绑定数及聚合日志；未决 / 未知变更不报告全部健康。 新版 `binding_hydration_scope` 分别列出普通绑定与有完整原始私有标记的隔离测试绑定；`hydrated_bindings` 只核验普通绑定，持久 `bindings` 仍为总数。测试资源过期或服务重启后不再拥有原资源，不应阻止普通服务就绪；现有私有标记与路由/原始组件不匹配，或读取失败时整体核验失败，不能排除后报告就绪。旧实例未提供 scope 时继续按总数核验；所有 unknown / dispatching 日志仍参与健康判定，分类不续期或授权测试资源。前台运行不要求已经安装 systemd unit；用户服务及注销常驻另列事实，安装向导仍须验证其生命周期。旧 M0 没有管理通道，退回只读检查用户服务、daemon 和数据库计数，可读 schema 1 而不迁移；实时连接 unknown、必需项 pending、退出码 5。systemd active、daemon running 或持久记录可读均不能代替实时桥健康证明。
 
 检测 user manager 与注销后的常驻能力；服务在当前 SSH 中 active 不能证明退出 SSH 后仍在。若 linger/现有 supervisor 条件不足，输出具体系统阻塞，不能用一次后台 nohup 宣称完整常驻。工具不自行申请 sudo、修改系统级服务或暴露 Codex 网络端口。
 
