@@ -86,6 +86,7 @@ M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书
 - [运行时、持久输入与目录规则](../research/m1-runtime-and-m2-inputs-2026-10-12.md)
 - [正式服务、命令与任务控制整合进展](../research/m2-service-and-task-controls-2026-10-12.md)
 - [配置向导、用户服务与待处理提醒进展](../research/m3-setup-and-request-reminders-2026-10-12.md)
+- [受控绑定的只读输入证据](../research/m3-managed-input-evidence-2026-10-12.md)
 - [受控忙时测试的本轮释放](../research/m3-managed-turn-release-2026-10-12.md)
 - [管理通道、状态核验与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)
 - [只读诊断与内嵌权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)

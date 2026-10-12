@@ -226,6 +226,8 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 
 第一条保存原群 / 线程关系并请求现有 runtime 跟进；启用后仅 owner 的新群消息可进入该测试线程。结果 `verification_binding.binding_status=pass` 仅为本地登记，`activation_requested` 为本次入队，`actor_started` 为本地 actor 存在，均不证明 UI、输入或送达。第二条不请求激活；历史登记不会自动续期或重建模型。`verification-managed-binding-observed` 仍 `ok=false` / 退出 5、12 项 P1 pending。创建授权与绑定授权四项独立；用户未允许的字段保持 false。不要为组件能力安装未发布版本，也不要把 owner 群跟进当作自动化 queue / steer 场景已验收。
 
+原绑定的只读查询可返回 `verification_binding.input_evidence_status` 和 `input_evidence`。前者 pass 只说明本地快照成功，所有计数为零时仍没有输入证据。`add_confirmed` 表示默认提交已确认；`history_linked` 表示收据与原生 user item 的真实关联；`steer_confirmed` 要求同一显式动作的 delete 成功及 steer 确认，`steer_history_linked` 还要求进入原目标轮。`queued_snapshot` 仅为已保存的队列观察，`unresolved_attempts` 是尚待核验的输入尝试。缺字段 / pending 时保留证据缺失，不推导无输入或失败，不重发输入。计数不证明 App 页面、忙时顺序、无重复执行或最终卡送达；仍按下表完成实际验收。
+
 当前开发版也提供受控测试模型的本轮释放入口。只有用户要求结束这次受控忙时测试、原绑定仍有效、第一条模型请求已经开始，且 CLI / 实例分别报告 `verify_managed_turn_release=true` / `verification_turn_release_supported=true` 时，单独执行：
 
 ```sh

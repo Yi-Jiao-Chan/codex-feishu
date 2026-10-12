@@ -28,21 +28,23 @@ type BindingManager struct {
 }
 
 type BindingResult struct {
-	RequestID           string `json:"request_id"`
-	BridgeCommit        string `json:"bridge_commit"`
-	BinarySHA256        string `json:"binary_sha256"`
-	BuildChanged        bool   `json:"build_changed"`
-	BindingStatus       string `json:"binding_status"`
-	ThreadID            string `json:"thread_id"`
-	ChatID              string `json:"chat_id"`
-	BoundAtMS           int64  `json:"bound_at_ms"`
-	ExpiresAtMS         int64  `json:"expires_at_ms"`
-	Expired             bool   `json:"expired"`
-	ResourcesReady      bool   `json:"resources_ready"`
-	CreatorConnected    bool   `json:"creator_connected"`
-	ActivationRequested bool   `json:"activation_requested"`
-	ActorStarted        bool   `json:"actor_started"`
-	ModelReleased       bool   `json:"model_released"`
+	RequestID           string                           `json:"request_id"`
+	BridgeCommit        string                           `json:"bridge_commit"`
+	BinarySHA256        string                           `json:"binary_sha256"`
+	BuildChanged        bool                             `json:"build_changed"`
+	BindingStatus       string                           `json:"binding_status"`
+	ThreadID            string                           `json:"thread_id"`
+	ChatID              string                           `json:"chat_id"`
+	BoundAtMS           int64                            `json:"bound_at_ms"`
+	ExpiresAtMS         int64                            `json:"expires_at_ms"`
+	Expired             bool                             `json:"expired"`
+	ResourcesReady      bool                             `json:"resources_ready"`
+	CreatorConnected    bool                             `json:"creator_connected"`
+	ActivationRequested bool                             `json:"activation_requested"`
+	ActorStarted        bool                             `json:"actor_started"`
+	ModelReleased       bool                             `json:"model_released"`
+	InputEvidenceStatus string                           `json:"input_evidence_status,omitempty"`
+	InputEvidence       *store.VerificationInputEvidence `json:"input_evidence,omitempty"`
 }
 
 func (m *BindingManager) configured() bool {
@@ -180,6 +182,14 @@ func (m *BindingManager) result(ctx context.Context, b store.VerificationBinding
 	intent, intentErr := n.Store.GroupIntent(ctx, b.IntentID)
 	if routeErr != nil || intentErr != nil || route.IntentID != b.IntentID || route.ChatID != b.ChatID || intent.HostID != b.HostID || intent.ThreadID != b.ThreadID || intent.OwnerID != b.OwnerID || intent.ChatID != b.ChatID || intent.State != "confirmed" {
 		r.BindingStatus = "pending"
+	}
+	// This is one read-only local snapshot of the exact registered fixture.
+	// It reports persisted native evidence, not fresh queue reads or UI proof.
+	r.InputEvidenceStatus = "pending"
+	if r.BindingStatus == "pass" {
+		if evidence, err := n.Store.VerificationInputEvidence(ctx, b); err == nil {
+			r.InputEvidenceStatus, r.InputEvidence = "pass", &evidence
+		}
 	}
 	// These are current local facts, not roster or policy revalidation.
 	p, err := m.Sessions.State(ctx, b.RequestID)

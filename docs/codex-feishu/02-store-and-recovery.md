@@ -32,7 +32,7 @@ schema 19 新增 `verification_groups`：固定 owner 的名称、成员 JSON、
 
 schema 20 新增 `verification_native`：内部隔离创建步骤冻结受限制请求与构建摘要，调用前单次领取并记录 generation 和每连接随机身份。重启后的相同数值 generation 不构成同连接证明；unknown / dispatching / rejected / confirmed 不重新创建。确定响应保存原出生历史，不代表新连接已附着。私有请求不输出，完整 verify、绑定与真实 UI 仍待完成，见[创建日志进展](../research/m3-native-verification-journal-2026-10-12.md)。
 
-schema 21 新增私有 `verification_bindings`：仅将同一请求中已确认的验收群和验收线程原子登记到 observation、原意图与普通绑定表。记录构建、原目标和两个组件有效期的交集；重放不延长窗口，不覆盖其他绑定，也不修复缺失的派生记录。验收 observation 仍 excluded，不伪造首条输入。内部登记管理器尚未接入运行时授权、输入或 CLI；不能将登记视为已可运行的验证链路，见[绑定基础进展](../research/m3-verification-binding-foundation-2026-10-12.md)。
+schema 21 新增私有 `verification_bindings`：仅将同一请求中已确认的验收群和验收线程原子登记到 observation、原意图与普通绑定表。记录构建、原目标和两个组件有效期的交集；重放不延长窗口，不覆盖其他绑定，也不修复缺失的派生记录。验收 observation 仍 excluded，不伪造首条输入。登记管理器已接入 CLI / 原 runtime 激活与 owner 输入，所有原生及飞书写阶段核验原组件 / 资源 / 窗口。原 ID 查询新增只读输入证据快照，不增加 schema，不回写收据或恢复 unknown；登记 / 本地证据不代表真实 UI 或完整验收，见[绑定基础](../research/m3-verification-binding-foundation-2026-10-12.md)、[管理绑定](../research/m3-managed-binding-2026-10-12.md)与[输入证据](../research/m3-managed-input-evidence-2026-10-12.md)。
 
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 

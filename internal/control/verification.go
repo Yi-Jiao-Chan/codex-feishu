@@ -148,6 +148,25 @@ func validateBindingResult(v verification.BindingResult, id string, begin bool) 
 	if (v.ActorStarted || v.ActivationRequested) && (v.BuildChanged || v.Expired || !v.ResourcesReady || !v.CreatorConnected) {
 		return ErrUnavailable
 	}
+	if err := validateInputEvidence(v); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Missing fields from an older provider remain missing evidence, never zero
+// observations reported as a successful snapshot.
+func validateInputEvidence(v verification.BindingResult) error {
+	e := v.InputEvidence
+	if e == nil {
+		if v.InputEvidenceStatus == "" || v.InputEvidenceStatus == "pending" {
+			return nil
+		}
+		return ErrUnavailable
+	}
+	if v.InputEvidenceStatus != "pass" || v.BindingStatus != "pass" || e.StagedInputs < 0 || e.AddConfirmed < 0 || e.QueuedSnapshot < 0 || e.HistoryLinked < 0 || e.SteerConfirmed < 0 || e.SteerHistoryLinked < 0 || e.UnresolvedAttempts < 0 || e.AddConfirmed > e.StagedInputs || e.QueuedSnapshot > e.StagedInputs || e.HistoryLinked > e.StagedInputs || e.SteerConfirmed > e.StagedInputs || e.SteerHistoryLinked > e.SteerConfirmed || e.SteerHistoryLinked > e.HistoryLinked {
+		return ErrUnavailable
+	}
 	return nil
 }
 

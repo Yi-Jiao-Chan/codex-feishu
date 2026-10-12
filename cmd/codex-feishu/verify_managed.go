@@ -202,6 +202,7 @@ func inspectManagedVerification(ctx context.Context, cfg config.Config, identity
 				check{"verification.binding_creator_connection", connection, true, "original native creator connection is still current"},
 				check{"verification.binding_activation_requested", activation, false, "this begin call enqueued local actor activation; a query never enqueues activation"},
 				check{"verification.binding_actor_started", actor, false, "local actor exists for the current binding; this does not prove native queue, steer, App UI or full P1 acceptance"})
+			appendManagedInputChecks(&o, p)
 			observed := p.BindingStatus == "pass" && build == "pass" && window == "pass" && resources == "pass" && connection == "pass"
 			allObserved = allObserved && observed
 			changed = changed || p.BuildChanged

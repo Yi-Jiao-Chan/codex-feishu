@@ -21,6 +21,19 @@ import (
 
 type managedBindingNative struct{ *verificationServiceNative }
 
+func (n *managedBindingNative) Add(ctx context.Context, thread, body, client string) (codexclient.Queued, error) {
+	if _, err := n.Metadata(ctx, thread); err != nil || !strings.HasPrefix(thread, "probe-") {
+		return codexclient.Queued{}, errors.New("wrong fixture thread")
+	}
+	n.adds.Add(1)
+	input, _ := json.Marshal(codexclient.TextInput(body))
+	q := codexclient.Queued{ID: "fixture-queued-" + client, Input: input, ClientUserMessageID: &client}
+	n.qmu.Lock()
+	n.queue = append(n.queue, q)
+	n.qmu.Unlock()
+	return q, nil
+}
+
 func (n *managedBindingNative) AttachLocalVerification(ctx context.Context, id string, spec codexclient.LocalVerificationSpec) (codexclient.Thread, error) {
 	thread, err := n.Metadata(ctx, id)
 	if err == nil && (thread.ID != id || thread.CWD != spec.CWD) {
@@ -215,6 +228,49 @@ func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T
 		}
 		if health, err := s.Health(life); err != nil || !health.VerificationTurnReleaseSupported {
 			t.Fatal("release capability missing", health, err)
+		}
+	})
+	t.Run("owner input evidence from receiver and actor", func(t *testing.T) {
+		thread := result.ThreadID
+		n.mu.Lock()
+		n.turns[thread] = []codexclient.Turn{{ID: "fixture-followup-turn", Status: "inProgress", ItemsView: "full"}}
+		n.mu.Unlock()
+		message := receiverMessage(t, "verification-chat", cfg.Access.OwnerOpenID, "fixture-owner-followup", "group", true)
+		body, _ := json.Marshal(map[string]string{"text": "@_user_1 fixture owner follow-up"})
+		message.Event.Message.Content = strPointer(string(body))
+		for range 2 {
+			if err := g.message(life, message); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var queued verification.BindingResult
+		runtimeWait(t, func() bool {
+			var err error
+			queued, err = control.VerifyBinding(life, endpoint, identity, id, false)
+			return err == nil && queued.InputEvidenceStatus == "pass" && queued.InputEvidence != nil && queued.InputEvidence.StagedInputs == 1 && queued.InputEvidence.AddConfirmed == 1 && queued.InputEvidence.QueuedSnapshot == 1
+		})
+		if n.adds.Load() != 1 || queued.InputEvidence.HistoryLinked != 0 || queued.InputEvidence.SteerConfirmed != 0 || queued.InputEvidence.SteerHistoryLinked != 0 {
+			t.Fatal("duplicate input or queued evidence promoted to history/steer", queued)
+		}
+		receipts, err := db.ReceiptsForDeployment(life, cfg.Host.ID, thread)
+		if err != nil || len(receipts) != 1 {
+			t.Fatal(receipts, err)
+		}
+		client := receipts[0].ClientID
+		content, _ := json.Marshal(map[string]string{"type": "text", "text": "fixture owner follow-up"})
+		n.qmu.Lock()
+		n.queue = nil
+		n.qmu.Unlock()
+		n.mu.Lock()
+		n.turns[thread][0].Items = []codexclient.Item{{ID: "fixture-native-user-item", Type: "userMessage", ClientID: &client, Content: []json.RawMessage{content}}}
+		n.mu.Unlock()
+		s.Wake(thread)
+		runtimeWait(t, func() bool {
+			state, err := control.VerifyBinding(life, endpoint, identity, id, false)
+			return err == nil && state.InputEvidence != nil && state.InputEvidence.HistoryLinked == 1 && state.InputEvidence.QueuedSnapshot == 0
+		})
+		if connections.Load() != 1 || g.listens.Load() != 1 || n.starts.Load() != 1 || g.creates.Load() != 1 || n.adds.Load() != 1 {
+			t.Fatal("input observation recreated service/components or resent input")
 		}
 	})
 }
