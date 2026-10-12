@@ -138,6 +138,18 @@ func (s *Service) verificationMarker(ctx context.Context, thread string) (store.
 func (s *Service) beginVerificationOperation(ctx context.Context, thread string) (context.Context, func(), bool, error) {
 	_, handled, err := s.verificationMarker(ctx, thread)
 	if !handled {
+		// A removed verification route must not be repurposed as an ordinary
+		// thread and inherit permission to its still-marked chat.
+		b, bindingErr := s.Store.Binding(ctx, s.Config.Host.ID, thread)
+		if bindingErr == nil {
+			_, chatErr := s.Store.VerificationBindingForChat(ctx, s.Config.Host.ID, b.ChatID)
+			if chatErr == nil || !errors.Is(chatErr, sql.ErrNoRows) {
+				s.clearActionsReady(thread)
+				return nil, nil, true, verification.ErrNotReady
+			}
+		} else if !errors.Is(bindingErr, sql.ErrNoRows) {
+			return nil, nil, true, verification.ErrNotReady
+		}
 		return ctx, func() {}, false, err
 	}
 	if err == nil && s.verificationManagerMatches() {
@@ -172,6 +184,51 @@ func (s *Service) beginBound(ctx context.Context, b store.Binding, user string) 
 	}
 	opctx, release, _, err := s.beginVerificationOperation(ctx, b.ThreadID)
 	return opctx, release, err
+}
+
+func (s *Service) beginThreadDelivery(ctx context.Context, thread string) (context.Context, func(), error) {
+	opctx, release, _, err := s.beginVerificationOperation(ctx, thread)
+	return opctx, release, err
+}
+
+func (s *Service) beginCardDelivery(ctx context.Context, b store.Binding) (context.Context, func(), error) {
+	if b.HostID != s.Config.Host.ID {
+		return nil, nil, verification.ErrNotReady
+	}
+	chatMarker, chatErr := s.Store.VerificationBindingForChat(ctx, s.Config.Host.ID, b.ChatID)
+	if chatErr == nil && chatMarker.ThreadID != b.ThreadID || chatErr != nil && !errors.Is(chatErr, sql.ErrNoRows) {
+		return nil, nil, verification.ErrNotReady
+	}
+	marker, handled, err := s.verificationMarker(ctx, b.ThreadID)
+	if err != nil || handled && (b.HostID != marker.HostID || b.ChatID != marker.ChatID || b.IntentID != marker.IntentID) {
+		return nil, nil, verification.ErrNotReady
+	}
+	return s.beginThreadDelivery(ctx, b.ThreadID)
+}
+
+func (s *Service) beginCommandDelivery(ctx context.Context, r store.CommandReply) (context.Context, func(), error) {
+	if r.HostID != s.Config.Host.ID || r.AppID != s.Config.Feishu.AppID {
+		return nil, nil, verification.ErrNotReady
+	}
+	// Commands recorded before a group was bound can have no ThreadID.
+	// Look up the private chat marker even if the ordinary route was deleted.
+	marker, err := s.Store.VerificationBindingForChat(ctx, r.HostID, r.ChatID)
+	if err == nil {
+		if r.ChatType != "group" || r.UserID != marker.OwnerID || r.ThreadID != "" && r.ThreadID != marker.ThreadID {
+			return nil, nil, verification.ErrNotReady
+		}
+		return s.beginThreadDelivery(ctx, marker.ThreadID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, verification.ErrNotReady
+	}
+	if r.ThreadID != "" {
+		_, handled, err := s.verificationMarker(ctx, r.ThreadID)
+		if handled || err != nil {
+			return nil, nil, verification.ErrNotReady
+		}
+	}
+	return ctx, func() {}, ctx.Err()
 }
 
 func (s *Service) Run(parent context.Context) error {
@@ -218,7 +275,7 @@ func (s *Service) Run(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	var workers sync.WaitGroup
 	defer func() { cancel(); workers.Wait(); s.nativeConnected.Store(false) }()
-	commands := &Commands{Store: s.Store, Config: s.Config, Wake: s.Wake, Now: s.Now}
+	commands := &Commands{Store: s.Store, Config: s.Config, Wake: s.Wake, Now: s.Now, BeginDelivery: s.beginCommandDelivery}
 	receiver := &Receiver{Store: s.Store, Config: s.Config, BotID: s.BotID, Wake: s.Wake, Command: commands.Handle, Notice: s.Notice, Verification: s.Verification, VerificationGroups: s.VerificationGroups}
 	receiver.TaskAction = s.claimTask
 	receiver.ActionAllowed = s.actionAvailable
@@ -374,7 +431,7 @@ func (s *Service) disconnected(ctx context.Context) {
 			continue
 		}
 		if s.Gateway.Ready() && s.canDeliver(callCtx, b) == nil {
-			outbound := messages.Outbound{Store: s.Store, Gateway: s.Gateway, Membership: s.Gateway, MinProgressIntervalMS: int64(s.Config.Sync.CardUpdateMinIntervalMS), Mentions: &store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn}}
+			outbound := messages.Outbound{Store: s.Store, Gateway: s.Gateway, Membership: s.Gateway, BeginWrite: s.beginCardDelivery, Now: s.now, MinProgressIntervalMS: int64(s.Config.Sync.CardUpdateMinIntervalMS), Mentions: &store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn}}
 			for i := 0; i < 16 && callCtx.Err() == nil; i++ {
 				result, err := outbound.DispatchOne(callCtx, s.Config.Host.ID, b.ThreadID, s.now().UnixMilli())
 				if err != nil {
@@ -392,9 +449,10 @@ func (s *Service) disconnected(ctx context.Context) {
 
 func (s *Service) generation(native ServiceNative) *Runtime {
 	tracker := &RequestTracker{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID,
-		Options: store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn},
-		Gateway: s.Gateway, Membership: s.Gateway, Now: s.Now, GenerationStartedAtMS: s.now().UnixMilli()}
-	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, Now: s.now}
+		BeginWrite: s.beginThreadDelivery,
+		Options:    store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn},
+		Gateway:    s.Gateway, Membership: s.Gateway, Now: s.Now, GenerationStartedAtMS: s.now().UnixMilli()}
+	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, Now: s.now, BeginWrite: s.beginThreadDelivery}
 	controllers := map[string]*submissions.Controller{}
 	var controllerMu sync.Mutex
 	s.mu.Lock()
@@ -426,6 +484,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		},
 	}
 	r.CanDeliver = s.canDeliver
+	r.BeginDelivery = s.beginCardDelivery
 	r.VerificationAuthorize = func(ctx context.Context, t codexclient.Thread, automatic bool) (bool, error) {
 		_, handled, err := s.verificationMarker(ctx, t.ID)
 		if !handled {
@@ -547,7 +606,7 @@ func (s *Service) commandLoop(ctx context.Context, commands *Commands) {
 }
 
 func (s *Service) receivedLoop(ctx context.Context) {
-	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Now: s.now}
+	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Now: s.now, BeginWrite: s.beginThreadDelivery}
 	timer := time.NewTicker(time.Second)
 	defer timer.Stop()
 	for {

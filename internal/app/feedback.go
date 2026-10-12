@@ -22,6 +22,7 @@ type Feedback struct {
 	HostID, AppID string
 	Waiting       func(string, string) bool
 	Now           func() time.Time
+	BeginWrite    func(context.Context, string) (context.Context, func(), error)
 }
 
 func (f *Feedback) scope(thread string) store.SubmissionScope {
@@ -115,6 +116,12 @@ func (f *Feedback) Received(ctx context.Context, thread string) error {
 }
 
 func (f *Feedback) set(ctx context.Context, thread string, r store.Receipt, desired string) error {
+	opctx, release, err := beginFeedbackWrite(ctx, thread, f.BeginWrite)
+	if err != nil {
+		return err
+	}
+	defer release()
+	ctx = opctx
 	clock := f.Now
 	if clock == nil {
 		clock = time.Now
@@ -123,6 +130,14 @@ func (f *Feedback) set(ctx context.Context, thread string, r store.Receipt, desi
 	t, claimed, err := f.Store.ClaimReactionTransitionAt(ctx, f.scope(thread), r.ID, r.State, desired, claimAt)
 	if err != nil || !claimed {
 		return err
+	}
+	releaseUnsent := func(cause error) error {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		if err := f.Store.ReleaseUnsentReactionTransition(cleanup, t); err != nil {
+			return err
+		}
+		return cause
 	}
 	remoteID := ""
 	finishError := func(operation string, remoteErr error) error {
@@ -146,12 +161,18 @@ func (f *Feedback) set(ctx context.Context, thread string, r store.Receipt, desi
 		return f.Store.FinishReactionTransition(ctx, t, state, "")
 	}
 	if t.PreviousID != "" {
+		if err := ctx.Err(); err != nil {
+			return releaseUnsent(err)
+		}
 		fresh, err := f.Store.Begin(ctx, store.ReactionOperationKey(t, "delete"), "feishu.reaction.delete")
 		if err != nil {
-			return err
+			return releaseUnsent(err)
 		}
 		if !fresh {
 			return store.ErrConflict
+		}
+		if err := ctx.Err(); err != nil {
+			return err // Journaled but not dispatched: conservative recovery.
 		}
 		if err := f.Gateway.DeleteReaction(ctx, t.MessageID, t.PreviousID); err != nil {
 			return finishError("delete", err)
@@ -161,12 +182,28 @@ func (f *Feedback) set(ctx context.Context, thread string, r store.Receipt, desi
 		}
 	}
 	if desired != "" {
+		if t.PreviousID != "" {
+			// A completed delete does not grant the following add. Recheck
+			// scope before its journal; keep the known empty reaction on refusal.
+			addctx, releaseAdd, err := beginFeedbackWrite(ctx, thread, f.BeginWrite)
+			if err != nil {
+				return releaseUnsent(err)
+			}
+			defer releaseAdd()
+			ctx = addctx
+		}
+		if err := ctx.Err(); err != nil {
+			return releaseUnsent(err)
+		}
 		fresh, err := f.Store.Begin(ctx, store.ReactionOperationKey(t, "add"), "feishu.reaction.add")
 		if err != nil {
-			return err
+			return releaseUnsent(err)
 		}
 		if !fresh {
 			return store.ErrConflict
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		remoteID, err = f.Gateway.AddReaction(ctx, t.MessageID, desired)
 		if err != nil {
@@ -183,4 +220,18 @@ func (f *Feedback) set(ctx context.Context, thread string, r store.Receipt, desi
 		}
 	}
 	return f.Store.FinishReactionTransition(ctx, t, "confirmed", remoteID)
+}
+
+func beginFeedbackWrite(ctx context.Context, thread string, begin func(context.Context, string) (context.Context, func(), error)) (context.Context, func(), error) {
+	if begin == nil {
+		return ctx, func() {}, ctx.Err()
+	}
+	opctx, release, err := begin(ctx, thread)
+	if err == nil && opctx != nil && release != nil && opctx.Err() == nil {
+		return opctx, release, nil
+	}
+	if release != nil {
+		release()
+	}
+	return nil, nil, errors.New("feedback delivery authority unavailable")
 }

@@ -279,6 +279,55 @@ func commandNotificationStatus(p rules.Policy, now time.Time) string {
 	return text
 }
 
+const commandReplyReady = `host_id=? AND state='ready' AND NOT EXISTS(SELECT 1 FROM command_reply_throttles t WHERE t.app_id=command_replies.app_id AND t.message_id=command_replies.message_id AND t.next_retry_at_ms>?) AND NOT EXISTS(SELECT 1 FROM command_reply_attempts a WHERE a.app_id=command_replies.app_id AND a.message_id=command_replies.message_id AND a.state IN ('dispatching','unknown'))`
+
+// CommandReplyCandidates reads a bounded snapshot without claiming, changing
+// attempt identities, or freezing a wire card. It shares dispatch filtering with
+// ClaimCommandReply, including due throttles and unresolved prior attempts.
+func (s *Store) CommandReplyCandidates(ctx context.Context, host string, nowMS int64, limit int) ([]CommandReply, error) {
+	if host == "" || nowMS <= 0 || limit < 1 || limit > 64 {
+		return nil, errors.New("invalid command candidate scope, time or limit")
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+commandColumns+` FROM command_replies WHERE `+commandReplyReady+` ORDER BY rowid LIMIT ?`, host, nowMS, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []CommandReply
+	for rows.Next() {
+		r, err := scanCommandReply(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// ClaimCommandReplyCandidate can claim only the exact snapshot authorized by
+// its caller. A changed, deferred, or competing claim never selects a new route.
+func (s *Store) ClaimCommandReplyCandidate(ctx context.Context, candidate CommandReply, nowMS int64) (CommandReply, bool, error) {
+	if candidate.HostID == "" || candidate.ID == "" || nowMS <= 0 {
+		return CommandReply{}, false, errors.New("invalid command candidate or time")
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return CommandReply{}, false, err
+	}
+	defer tx.Rollback()
+	r, err := scanCommandReply(tx.QueryRowContext(ctx, `SELECT `+commandColumns+` FROM command_replies WHERE `+commandReplyReady+` AND attempt_id=?`, candidate.HostID, nowMS, candidate.ID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return CommandReply{}, false, nil
+	}
+	if err != nil {
+		return CommandReply{}, false, err
+	}
+	if r != candidate {
+		return CommandReply{}, false, nil
+	}
+	return claimCommandReplyTx(ctx, tx, r, nowMS)
+}
+
 func (s *Store) ClaimCommandReply(ctx context.Context, host string, nowMS int64) (CommandReply, bool, error) {
 	if host == "" || nowMS <= 0 {
 		return CommandReply{}, false, errors.New("invalid command dispatch scope or time")
@@ -288,17 +337,21 @@ func (s *Store) ClaimCommandReply(ctx context.Context, host string, nowMS int64)
 		return CommandReply{}, false, err
 	}
 	defer tx.Rollback()
-	r, err := scanCommandReply(tx.QueryRowContext(ctx, `SELECT `+commandColumns+` FROM command_replies WHERE host_id=? AND state='ready' AND NOT EXISTS(SELECT 1 FROM command_reply_throttles t WHERE t.app_id=command_replies.app_id AND t.message_id=command_replies.message_id AND t.next_retry_at_ms>?) AND NOT EXISTS(SELECT 1 FROM command_reply_attempts a WHERE a.app_id=command_replies.app_id AND a.message_id=command_replies.message_id AND a.state IN ('dispatching','unknown')) ORDER BY rowid LIMIT 1`, host, nowMS))
+	r, err := scanCommandReply(tx.QueryRowContext(ctx, `SELECT `+commandColumns+` FROM command_replies WHERE `+commandReplyReady+` ORDER BY rowid LIMIT 1`, host, nowMS))
 	if errors.Is(err, sql.ErrNoRows) {
 		return CommandReply{}, false, nil
 	}
 	if err != nil {
 		return CommandReply{}, false, err
 	}
-	if err := directoryDeployment(ctx, tx, host, r.AppID); err != nil {
+	return claimCommandReplyTx(ctx, tx, r, nowMS)
+}
+
+func claimCommandReplyTx(ctx context.Context, tx *sql.Tx, r CommandReply, nowMS int64) (CommandReply, bool, error) {
+	if err := directoryDeployment(ctx, tx, r.HostID, r.AppID); err != nil {
 		return CommandReply{}, false, err
 	}
-	err = commandWriteOne(ctx, tx, `UPDATE command_replies SET state='dispatching',dispatched_at_ms=? WHERE attempt_id=? AND state='ready'`, nowMS, r.ID)
+	err := commandWriteOne(ctx, tx, `UPDATE command_replies SET state='dispatching',dispatched_at_ms=? WHERE attempt_id=? AND state='ready'`, nowMS, r.ID)
 	if err != nil {
 		return CommandReply{}, false, err
 	}

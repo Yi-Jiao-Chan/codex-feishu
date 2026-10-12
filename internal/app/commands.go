@@ -17,10 +17,11 @@ import (
 // Commands performs local work only in Handle. DispatchOne consumes its durable
 // reply outbox; native task RPCs remain exclusively in the submission actor.
 type Commands struct {
-	Store  *store.Store
-	Config config.Config
-	Wake   func(string)
-	Now    func() time.Time
+	Store         *store.Store
+	Config        config.Config
+	Wake          func(string)
+	Now           func() time.Time
+	BeginDelivery func(context.Context, store.CommandReply) (context.Context, func(), error)
 }
 
 func (c Commands) now() time.Time {
@@ -166,12 +167,56 @@ func (c Commands) DispatchOne(ctx context.Context, gateway messages.MessageGatew
 	if confirmed {
 		return true, readbackErr
 	}
+	if c.BeginDelivery != nil {
+		candidates, err := c.Store.CommandReplyCandidates(ctx, c.Config.Host.ID, c.now().UnixMilli(), 64)
+		if err != nil {
+			return false, err
+		}
+		var refused error
+		for _, candidate := range candidates {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			opctx, release, err := c.BeginDelivery(ctx, candidate)
+			if err != nil || opctx == nil || release == nil || opctx.Err() != nil {
+				if release != nil {
+					release()
+				}
+				refused = errors.New("command delivery authorization unavailable")
+				continue
+			}
+			wrote, err := func() (bool, error) {
+				defer release()
+				r, claimed, err := c.Store.ClaimCommandReplyCandidate(opctx, candidate, c.now().UnixMilli())
+				if err != nil || !claimed {
+					return false, err
+				}
+				return c.dispatchClaimedReply(opctx, gateway, r)
+			}()
+			if wrote || err != nil {
+				return wrote, err
+			}
+		}
+		if readbackErr != nil {
+			return false, readbackErr
+		}
+		return false, refused
+	}
 	r, claimed, err := c.Store.ClaimCommandReply(ctx, c.Config.Host.ID, c.now().UnixMilli())
 	if err != nil {
 		return false, err
 	}
 	if !claimed {
 		return false, readbackErr
+	}
+	return c.dispatchClaimedReply(ctx, gateway, r)
+}
+
+func (c Commands) dispatchClaimedReply(ctx context.Context, gateway messages.MessageGateway, r store.CommandReply) (bool, error) {
+	// Revocation after claim leaves dispatching for conservative recovery; no
+	// request may be issued under an already canceled delivery scope.
+	if err := ctx.Err(); err != nil {
+		return true, err
 	}
 	remoteID, sendErr := gateway.ReplyCard(ctx, r.MessageID, r.Card, r.ID)
 	var limited *feishu.RateLimited

@@ -32,6 +32,7 @@ type RequestTracker struct {
 	Gateway       messages.MessageGateway
 	Membership    messages.MembershipGateway
 	Now           func() time.Time
+	BeginWrite    func(context.Context, string) (context.Context, func(), error)
 	// A thread/started projection for an older thread is not a birth proof.
 	GenerationStartedAtMS int64
 	mu                    sync.RWMutex
@@ -290,9 +291,18 @@ func (t *RequestTracker) DispatchOne(ctx context.Context, thread string) (bool, 
 			options.ChatID, options.MemberIDs = b.ChatID, members
 		}
 	}
+	opctx, release, err := beginFeedbackWrite(ctx, thread, t.BeginWrite)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	ctx = opctx
 	a, claimed, err := t.Store.ClaimRequestReminder(ctx, t.HostID, t.AppID, thread, max(preparedAt, t.now().UnixMilli()), options)
 	if err != nil || !claimed {
 		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return true, err
 	}
 	remote, sendErr := t.Gateway.ReplyCard(ctx, a.ParentMessageID, a.Card, a.ID)
 	var limited *feishu.RateLimited

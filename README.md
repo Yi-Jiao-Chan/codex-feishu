@@ -42,4 +42,6 @@ M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fo
 
 验收群与线程的内部绑定基础已补齐：同一请求的不可变证据、最新群成员核验、原连接上的无覆盖附着和本地原子登记。当前尚未接入运行时授权、激活或 CLI 绑定入口，不提交输入或投递消息；完整验收仍 pending。见[绑定基础进展](docs/research/m3-verification-binding-foundation-2026-10-12.md)。
 
-专属操作授权、Runtime 激活和控制器逐次原生写入检查已有隔离实现；标记失效不退回普通授权，资源 / 原连接关闭或原窗口到期取消操作。完整飞书投递上下文与 CLI 绑定入口仍待接入，一期未发布。见[操作授权进展](docs/research/m3-verification-operation-guards-2026-10-12.md)。
+专属操作授权、Runtime 激活和控制器逐次原生写入检查已有隔离实现；标记失效不退回普通授权，资源 / 原连接关闭或原窗口到期取消操作。CLI 绑定入口仍待接入，一期未发布。见[操作授权进展](docs/research/m3-verification-operation-guards-2026-10-12.md)。
+
+飞书卡片、reaction、命令确认与提醒已补齐发送阶段的操作上下文，含精确候选领取、取消和已知未发送恢复；授权跨免打扰边界时重新判断 @。管理绑定入口、受控输入编排与真实 UI / 部署仍待完成，见[投递上下文进展](docs/research/m3-verification-delivery-guards-2026-10-12.md)。

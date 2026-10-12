@@ -47,6 +47,7 @@ type Runtime struct {
 	MinProgressIntervalMS      int64
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
+	BeginDelivery              func(context.Context, store.Binding) (context.Context, func(), error)
 	VerificationAuthorize      func(context.Context, codexclient.Thread, bool) (handled bool, err error)
 	ActorTick                  func(context.Context, string) error
 	HistoryPreparing           func(context.Context, string, []codexclient.Turn) error
@@ -370,7 +371,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	if r.Mentions.Enabled {
 		engine.MentionTargets = r.Mentions.Targets
 	}
-	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership, MinProgressIntervalMS: r.MinProgressIntervalMS, Now: r.now}
+	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership, MinProgressIntervalMS: r.MinProgressIntervalMS, Now: r.now, BeginWrite: r.BeginDelivery}
 	if reader, ok := r.Messages.(messages.MessageReadbackGateway); ok {
 		outbound.Readback = reader
 	}

@@ -47,6 +47,14 @@ func (s *Store) VerificationBindingForThread(ctx context.Context, host, thread s
 	return b, err
 }
 
+func (s *Store) VerificationBindingForChat(ctx context.Context, host, chat string) (VerificationBinding, error) {
+	var b VerificationBinding
+	err := s.DB.QueryRowContext(ctx, `SELECT request_id,host_id,app_id,owner_id,bridge_commit,binary_sha256,bot_id,thread_id,chat_id,cwd,intent_id,bound_at_ms,expires_at_ms,membership_verified_at_ms
+ FROM verification_bindings WHERE host_id=? AND chat_id=?`, host, chat).Scan(
+		&b.RequestID, &b.HostID, &b.AppID, &b.OwnerID, &b.BridgeCommit, &b.BinarySHA256, &b.BotID, &b.ThreadID, &b.ChatID, &b.CWD, &b.IntentID, &b.BoundAtMS, &b.ExpiresAtMS, &b.MembershipVerifiedAtMS)
+	return b, err
+}
+
 func (s *Store) RegisterVerificationBinding(ctx context.Context, n VerificationNative, g VerificationGroup, bot string, now int64) (VerificationBinding, error) {
 	if err := validateVerificationBindingInputs(n, g, bot, now); err != nil {
 		return VerificationBinding{}, err
