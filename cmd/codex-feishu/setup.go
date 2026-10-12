@@ -22,8 +22,10 @@ func runSetup(ctx context.Context, args []string) int {
 	apply := flags.Bool("apply", false, "apply a reviewed plan without starting the service")
 	id := flags.String("plan-id", "", "reviewed plan ID")
 	configPath := flags.String("config", "", "optional absolute target config path")
+	candidate := flags.Bool("candidate-test", false, "explicitly authorize an unreleased candidate test deployment")
+	databasePath := flags.String("database", "", "explicit candidate database path (candidate-test only)")
 	_ = flags.Bool("json", false, "JSON output (default)")
-	if err := flags.Parse(args); err != nil || len(flags.Args()) > 0 || *input == "" || *preview == *apply || *preview && *id != "" || *apply && *id == "" {
+	if err := flags.Parse(args); err != nil || len(flags.Args()) > 0 || *input == "" || *preview == *apply || *preview && *id != "" || *apply && *id == "" || *candidate && (*configPath == "" || *databasePath == "") || !*candidate && *databasePath != "" {
 		emit(output{Command: "setup", State: "invalid-arguments"})
 		return 2
 	}
@@ -40,21 +42,27 @@ func runSetup(ctx context.Context, args []string) int {
 	if *configPath != "" {
 		paths.ConfigFile = *configPath
 	}
+	if *candidate {
+		paths.DatabaseFile = *databasePath
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	planner := setup.Planner{}
+	planner := setup.Planner{CandidateTest: *candidate}
 	if *preview {
 		plan, err := planner.Build(ctx, in, paths)
 		if err != nil {
 			return setupFailure(err)
 		}
 		state, code := "plan-ready", 0
+		if plan.CandidateTest {
+			state = "candidate-plan-ready"
+		}
 		if !plan.CanApply {
 			state, code = "plan-needs-prerequisites", 3
 		}
 		checks := []check{{"setup.configuration", "pass", true, "validated paths, identity, artifact and existing native daemon"}}
 		if !plan.Environment.Artifact.Released {
-			checks = append(checks, check{"release.acceptance", "pending", true, "phase1 acceptance remains incomplete"})
+			checks = append(checks, check{"release.acceptance", "pending", !plan.CandidateTest, "phase1 acceptance remains incomplete"})
 		}
 		if len(plan.PolicyChanges) > 0 {
 			checks = append(checks, check{"setup.notification_apply", "pass", true, "explicit existing policy changes isolated in the plan; apply uses locked revision CAS and a recoverable journal"})
@@ -66,7 +74,11 @@ func runSetup(ctx context.Context, args []string) int {
 	if err != nil {
 		return setupFailure(err)
 	}
-	emit(output{Command: "setup", OK: true, State: result.State, Data: result, PlanID: result.PlanID, Paths: map[string]string{"config_file": result.ConfigFile}, NextSteps: []string{"configuration saved only; install/start the bridge and complete real acceptance separately"}})
+	o := output{Command: "setup", OK: true, State: result.State, Data: result, PlanID: result.PlanID, Paths: map[string]string{"config_file": result.ConfigFile}, NextSteps: []string{"configuration saved only; install/start the bridge and complete real acceptance separately"}}
+	if result.CandidateTest && !phase1Released {
+		o.Checks = append(o.Checks, check{"release.acceptance", "pending", false, "candidate configuration applied; phase1 acceptance remains incomplete"})
+	}
+	emit(o)
 	return 0
 }
 

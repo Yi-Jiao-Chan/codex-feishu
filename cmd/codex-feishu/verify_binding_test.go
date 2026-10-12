@@ -357,7 +357,7 @@ func TestVersionManagedBindingKeepsReleaseAndUIGates(t *testing.T) {
 	}
 	data := result.Data.(map[string]any)
 	capabilities := data["capabilities"].(map[string]any)
-	if capabilities["verify_managed_binding"] != true || capabilities["verify_managed_tests"] != false || capabilities["verify_managed_thread_ui_verified"] != false || data["phase1_service_ui_verified"] != false || data["phase1_released"] != false {
+	if capabilities["candidate_deployment"] != true || capabilities["verify_managed_binding"] != true || capabilities["verify_managed_tests"] != false || capabilities["verify_managed_thread_ui_verified"] != false || data["phase1_service_ui_verified"] != false || data["phase1_released"] != false {
 		t.Fatal("capability promoted release/UI", data)
 	}
 }

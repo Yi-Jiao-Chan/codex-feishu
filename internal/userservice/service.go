@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"codex-feishu/internal/config"
+	"codex-feishu/internal/setup"
 )
 
 const UnitName = "codex-feishu.service"
@@ -88,24 +89,29 @@ type ServiceState struct {
 }
 
 type Result struct {
-	OK         bool         `json:"ok"`
-	State      string       `json:"state"`
-	Code       int          `json:"-"`
-	Changed    bool         `json:"changed"`
-	BackupPath string       `json:"backup_path,omitempty"`
-	Service    ServiceState `json:"service"`
-	Checks     []Check      `json:"checks"`
+	CandidateTest bool         `json:"candidate_test_deployment,omitempty"`
+	OK            bool         `json:"ok"`
+	State         string       `json:"state"`
+	Code          int          `json:"-"`
+	Changed       bool         `json:"changed"`
+	BackupPath    string       `json:"backup_path,omitempty"`
+	Service       ServiceState `json:"service"`
+	Checks        []Check      `json:"checks"`
 }
 
 type Options struct {
-	Runner  CommandRunner
-	UnitDir string // default: $XDG_CONFIG_HOME/systemd/user, or ~/.config/systemd/user
+	Runner              CommandRunner
+	UnitDir             string // default: $XDG_CONFIG_HOME/systemd/user, or ~/.config/systemd/user
+	CandidateTest       bool
+	CandidateBinaryPath string
 }
 
 type Manager struct {
-	runner CommandRunner
-	dir    string
-	uid    int
+	runner              CommandRunner
+	dir                 string
+	uid                 int
+	candidateTest       bool
+	candidateBinaryPath string
 }
 
 type Request struct {
@@ -129,10 +135,13 @@ func New(opts Options) (*Manager, error) {
 	if !safeAbsolute(dir) {
 		return nil, errors.New("systemd user directory must be an absolute path without control characters")
 	}
+	if opts.CandidateBinaryPath != "" && !safeAbsolute(opts.CandidateBinaryPath) {
+		return nil, errors.New("candidate binary path must be an absolute path without control characters")
+	}
 	if opts.Runner == nil {
 		opts.Runner = ExecRunner{}
 	}
-	return &Manager{runner: opts.Runner, dir: filepath.Clean(dir), uid: os.Getuid()}, nil
+	return &Manager{runner: opts.Runner, dir: filepath.Clean(dir), uid: os.Getuid(), candidateTest: opts.CandidateTest, candidateBinaryPath: opts.CandidateBinaryPath}, nil
 }
 
 func safeAbsolute(s string) bool {
@@ -148,7 +157,7 @@ func safeAbsolute(s string) bool {
 }
 
 func (m *Manager) initial() Result {
-	return Result{Service: ServiceState{Unit: UnitName, UnitPath: filepath.Join(m.dir, UnitName), Linger: "unknown", LogoutPersistence: "pending"}, Checks: []Check{}}
+	return Result{CandidateTest: m.candidateTest, Service: ServiceState{Unit: UnitName, UnitPath: filepath.Join(m.dir, UnitName), Linger: "unknown", LogoutPersistence: "pending"}, Checks: []Check{}}
 }
 
 func fail(r Result, code int, state, id, detail, remedy string) Result {
@@ -235,6 +244,7 @@ func (m *Manager) observe(ctx context.Context, configPath string) observation {
 		return o
 	}
 	o.Service.Managed = exists && managedIdentity(b) != ""
+	o.CandidateTest = m.candidateTest || o.Service.Managed && bytes.Contains(b, []byte("\n# Candidate binary SHA256: "))
 	o.Service.IdentityMatches = o.Service.Managed && managedIdentity(b) == id
 	if exists && !o.Service.IdentityMatches {
 		o.Result = fail(o.Result, 6, "conflict", "unit_identity", "The fixed unit belongs to a manual service or a different deployment.", "Use the original deployment configuration or explicitly remove the conflicting unit.")
@@ -370,6 +380,61 @@ func render(binary, path, id string) []byte {
 	return []byte(marker + "# Deployment identity: " + id + "\n[Unit]\nDescription=Codex Feishu bridge\n\n[Service]\nType=simple\nExecStart=:" + quoteArg(binary) + " serve --config " + quoteArg(path) + "\nRestart=on-failure\nRestartSec=5s\nUMask=0077\n\n[Install]\nWantedBy=default.target\n")
 }
 
+// candidateUnit freezes the actual executable bytes as well as the deployment
+// identity. Database inspection is read-only and precedes installer mutations.
+func candidateUnit(ctx context.Context, binary, path string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !safeAbsolute(binary) || !safeAbsolute(path) {
+		return nil, errors.New("invalid candidate paths")
+	}
+	binary, err := filepath.EvalSymlinks(filepath.Clean(binary))
+	if err != nil || !safeAbsolute(binary) {
+		return nil, errors.New("candidate binary unavailable")
+	}
+	path, err = filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil || !safeAbsolute(path) {
+		return nil, errors.New("candidate configuration unavailable")
+	}
+	c, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := setup.CheckCandidateDatabase(ctx, c.Storage.DatabaseFile); err != nil {
+		return nil, err
+	}
+	id, err := identity(path)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(binary)
+	if err != nil {
+		return nil, errors.New("candidate binary unavailable")
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	const maxBinarySize = 256 << 20
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 || info.Size() > maxBinarySize {
+		return nil, errors.New("candidate binary is not an executable regular file")
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(f, maxBinarySize+1))
+	if err != nil || n > maxBinarySize {
+		return nil, errors.New("candidate binary cannot be inspected")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	body := render(binary, path, id)
+	body = bytes.Replace(body, []byte("# Deployment identity: "+id+"\n"), []byte("# Deployment identity: "+id+"\n# Candidate binary SHA256: "+hex.EncodeToString(h.Sum(nil))+"\n"), 1)
+	return bytes.Replace(body, []byte("ExecStart=:"+quoteArg(binary)+" serve --config "), []byte("ExecStart=:"+quoteArg(binary)+" serve --candidate-test --config "), 1), nil
+}
+
+func candidateFailure(r Result) Result {
+	return fail(r, 3, "blocked", "candidate_preflight", "Candidate executable, configuration or current-schema database could not be verified.", "Preserve existing data; use the selected candidate binary and an absent or current-schema private database.")
+}
+
 // lock serializes mutations by this installer. It never follows a lock symlink.
 func (m *Manager) lock(create bool) (*os.File, error) {
 	if create {
@@ -439,6 +504,19 @@ func (m *Manager) Install(ctx context.Context, req Request) Result {
 	if !safeAbsolute(binary) || !safeAbsolute(path) {
 		return fail(r, 2, "invalid_input", "paths", "Canonical paths contain control characters.", "Use safe absolute paths.")
 	}
+	desired := render(binary, path, id)
+	if m.candidateTest {
+		if m.candidateBinaryPath != "" {
+			selected, selectErr := filepath.EvalSymlinks(filepath.Clean(m.candidateBinaryPath))
+			if selectErr != nil || selected != binary {
+				return fail(r, 6, "conflict", "candidate_binary", "Installation does not use the selected candidate executable.", "Select the same candidate binary for installation and startup.")
+			}
+		}
+		desired, err = candidateUnit(ctx, binary, path)
+		if err != nil {
+			return candidateFailure(r)
+		}
+	}
 	f, err := m.lock(true)
 	if err != nil {
 		return fail(r, 6, "conflict", "service_lock", "The private unit directory is unsafe or another service operation holds its lock.", "Check directory ownership and wait for the other operation.")
@@ -448,13 +526,30 @@ func (m *Manager) Install(ctx context.Context, req Request) Result {
 	if !o.OK {
 		return o.Result
 	}
-	desired := render(binary, path, id)
+	if m.candidateTest {
+		if m.candidateBinaryPath != "" {
+			selected, selectErr := filepath.EvalSymlinks(filepath.Clean(m.candidateBinaryPath))
+			if selectErr != nil || selected != binary {
+				return fail(o.Result, 6, "conflict", "candidate_binary", "The selected candidate executable changed during installation.", "Review the selected executable before retrying.")
+			}
+		}
+		current, checkErr := candidateUnit(ctx, binary, path)
+		if checkErr != nil {
+			return candidateFailure(o.Result)
+		}
+		if !bytes.Equal(current, desired) {
+			return fail(o.Result, 6, "conflict", "candidate_binary", "The candidate deployment changed during installation.", "Review the selected executable and configuration before retrying.")
+		}
+	}
 	unitMode := os.FileMode(0)
 	if info, err := os.Lstat(o.Service.UnitPath); err == nil {
 		unitMode = info.Mode().Perm()
 	}
 	written := !bytes.Equal(desired, o.unit) || unitMode != 0600
 	reload := written || o.needsReload || o.Service.LoadState != "loaded" || o.fragment == ""
+	if m.candidateTest && !inactive(o.Service.ActiveState) && (reload || o.Service.UnitFileState != "enabled") {
+		return fail(o.Result, 6, "conflict", "candidate_active_unit", "An active or transitioning unit cannot be changed by candidate installation.", "Explicitly stop the original deployment before reviewing a changed installation.")
+	}
 	if written {
 		if len(o.unit) > 0 {
 			o.BackupPath, err = backup(m.dir, o.unit)
@@ -495,7 +590,7 @@ func (m *Manager) Install(ctx context.Context, req Request) Result {
 	}
 	post := m.observe(ctx, path)
 	post.Changed, post.BackupPath = o.Changed, o.BackupPath
-	if !post.OK || post.Service.LoadState != "loaded" || post.Service.UnitFileState != "enabled" || post.needsReload {
+	if !post.OK || post.Service.LoadState != "loaded" || post.Service.UnitFileState != "enabled" || post.needsReload || m.candidateTest && !bytes.Equal(post.unit, desired) {
 		return fail(post.Result, 5, "unknown", "install_confirmation", "The requested installation could not be confirmed by the user manager.", "Inspect the fixed unit and its autostart state before retrying.")
 	}
 	post.State = "installed"
@@ -558,6 +653,14 @@ func (m *Manager) Stop(ctx context.Context, configPath string) Result {
 
 func (m *Manager) transition(ctx context.Context, path string, start bool) Result {
 	r := m.initial()
+	var desired []byte
+	if start && m.candidateTest {
+		var err error
+		desired, err = candidateUnit(ctx, m.candidateBinaryPath, path)
+		if err != nil {
+			return candidateFailure(r)
+		}
+	}
 	f, err := m.lock(false)
 	if err != nil {
 		return fail(r, 6, "conflict", "service_lock", "The managed unit directory is unavailable or locked.", "Install the unit or wait for the current operation.")
@@ -572,6 +675,19 @@ func (m *Manager) transition(ctx context.Context, path string, start bool) Resul
 	}
 	if start && o.needsReload {
 		return fail(o.Result, 3, "blocked", "daemon_reload", "The user manager has not loaded the current unit file.", "Install the managed unit to refresh the user manager before starting.")
+	}
+	if start && m.candidateTest {
+		info, modeErr := os.Lstat(o.Service.UnitPath)
+		if modeErr != nil || info.Mode().Perm() != 0600 {
+			return fail(o.Result, 6, "conflict", "candidate_unit_permissions", "The candidate unit file does not have private 0600 permissions.", "Explicitly stop the original deployment and install the reviewed candidate before starting.")
+		}
+		current, err := candidateUnit(ctx, m.candidateBinaryPath, path)
+		if err != nil {
+			return candidateFailure(o.Result)
+		}
+		if !bytes.Equal(desired, current) || !bytes.Equal(current, o.unit) {
+			return fail(o.Result, 6, "conflict", "candidate_unit", "The installed unit does not match the selected candidate executable and deployment.", "Explicitly stop the original deployment and install the reviewed candidate before starting.")
+		}
 	}
 	return m.setActive(ctx, path, o.Result, start)
 }

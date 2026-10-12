@@ -23,6 +23,7 @@ import (
 func runServe(ctx context.Context, args []string) int {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	path := flags.String("config", "", "absolute TOML config path")
+	candidate := flags.Bool("candidate-test", false, "candidate runtime: refuse database migration")
 	_ = flags.Bool("json", false, "JSON events (default)")
 	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" {
 		emit(output{Command: "serve", State: "config-required"})
@@ -65,6 +66,12 @@ func runServe(ctx context.Context, args []string) int {
 		return code
 	}
 	cfg = current
+	if *candidate {
+		if err := setup.CheckCandidateDatabase(ctx, cfg.Storage.DatabaseFile); err != nil {
+			emit(output{Command: "serve", State: "candidate-database-invalid", Checks: []check{{"candidate.database", "fail", true, err.Error()}}})
+			return 3
+		}
+	}
 	secret, err := cfg.Secret()
 	if err != nil {
 		emit(output{Command: "serve", State: "secret-unavailable"})
@@ -78,7 +85,18 @@ func runServe(ctx context.Context, args []string) int {
 		emit(output{Command: "serve", State: "feishu-unavailable", Checks: []check{{"feishu.bot", "fail", true, safeFeishu(err)}}})
 		return 4
 	}
-	db, err := store.Open(cfg.Storage.DatabaseFile)
+	var db *store.Store
+	if *candidate {
+		// Existing candidate state is opened without invoking migrations, even
+		// if its schema changed after the initial locked preflight.
+		if _, statErr := os.Lstat(cfg.Storage.DatabaseFile); errors.Is(statErr, os.ErrNotExist) {
+			db, err = store.Open(cfg.Storage.DatabaseFile)
+		} else {
+			db, err = store.OpenExisting(ctx, cfg.Storage.DatabaseFile, store.SchemaVersion)
+		}
+	} else {
+		db, err = store.Open(cfg.Storage.DatabaseFile)
+	}
 	if err != nil {
 		emit(output{Command: "serve", State: "storage-unavailable"})
 		return 7
@@ -172,7 +190,7 @@ func runServe(ctx context.Context, args []string) int {
 	workers.Add(2)
 	go func() { defer workers.Done(); results <- service.Run(runCtx) }()
 	go func() { defer workers.Done(); results <- server.Serve(runCtx) }()
-	emit(output{Command: "serve", State: "starting", Data: map[string]any{"host_id": cfg.Host.ID, "store_schema": store.SchemaVersion, "phase1_released": phase1Released, "control_endpoint": endpoint}})
+	emit(output{Command: "serve", State: "starting", Data: map[string]any{"host_id": cfg.Host.ID, "store_schema": store.SchemaVersion, "phase1_released": phase1Released, "candidate_test_deployment": *candidate, "control_endpoint": endpoint}})
 	err = <-results
 	stop()
 	server.Close()

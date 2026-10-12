@@ -6,7 +6,7 @@ M0 真实可行性联调已通过，包含 App 双向输入、排队/引导、fo
 
 2026-10-12：用户将 fork 跟进暂缓，发现器保留 TODO 并记录 `fork_deferred`；普通 App 会话和注册工作树继续实现。M1 已有持久基线、发现/目录校验和建群意图基础，完整同步组合仍待完成，见 [M1 进展](docs/research/m1-discovery-foundation-2026-10-12.md)。
 
-最新开发边界见[配置、服务管理与待处理提醒进展](docs/research/m3-setup-and-request-reminders-2026-10-12.md)和[管理通道、状态核验与离线取消](docs/research/m3-control-and-offline-cancel-2026-10-12.md)。开发版本可预览配置，正式 apply / 服务安装和启动保留发布门槛；status 对新版实例查询真实连接，旧 M0 退回只读快照和 pending。
+最新开发边界见[配置、服务管理与待处理提醒进展](docs/research/m3-setup-and-request-reminders-2026-10-12.md)和[管理通道、状态核验与离线取消](docs/research/m3-control-and-offline-cancel-2026-10-12.md)。开发版本可预览配置，正式 apply / 服务安装和启动保留发布门槛；显式 `--candidate-test` 支持发布前安装联调，仍标记未发布，禁止既有数据库迁移及活动 unit 替换；status 对新版实例查询真实连接，旧 M0 退回只读快照和 pending。
 
 只读 doctor 已检查配置、实际 daemon、机器人与 tenant 授权；启动后用 `--require-running` 核验原实例，不额外监听消息。version 内嵌权限能力清单，授权满足与实际行为分开，见[诊断与权限清单](docs/research/m3-doctor-and-permissions-2026-10-12.md)。
 

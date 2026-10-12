@@ -59,7 +59,28 @@ Agent 分别检查退出码和 JSON，不能把 shell 输出当一条成功链�
 
 二进制位于包内 `bin/codex-feishu`，指南和样例位于 `docs/codex-feishu/`，权限位于 `compat/feishu-permissions.json`。版本输出的 commit 必须等于 manifest 的 source_commit；任一文件缺失、摘要不同或架构不匹配则停止使用这个包，不顺手重建 / 覆盖现有安装。仓库研究链接是补充背景，未打入包也不影响本指南的自包含步骤。
 
-development 包的 `phase1_released=false` 和 pending 验收模板不能改成 pass；只继续只读检查和收集缺项，不执行正式 apply / install / start。`docs/codex-feishu/examples/codex-feishu.service.template` 仅用于说明生成结构，禁止直接复制占位 unit，真实单位由已验收 CLI 的 service install 生成。
+development 包的 `phase1_released=false` 和 pending 验收模板不能改成 pass；默认只继续只读检查和收集缺项，不执行正式 apply / install / start。若用户明确要求候选版本的安装联调，并且实际二进制声明 `capabilities.candidate_deployment=true`，可以按下一段进入候选路径。`docs/codex-feishu/examples/codex-feishu.service.template` 仅用于说明生成结构，禁止直接复制占位 unit，真实单位由 CLI 的 service install 生成。
+
+### 显式候选安装联调
+
+此路径用于发布前验证配置与用户服务命令，仍是未发布版本。缺候选能力的旧二进制不能使用它；不能改发布标志、伪造验收结果或绕过原配置事务。继续完成 B–E 的身份、应用、目录与通知收集；配对和测试消息分别按已有授权处理，候选安装不授权创建测试群或发送输入。
+
+先只读确认本应用是否有运行中的桥。候选模式不接管接收器、不自动停止旧桥；同一应用不能并行运行两个实例。用户尚未授权服务切换时保留现有桥，仅准备计划，真实安装联调稍后进行。指定受限的候选配置和数据库绝对路径（目录 0700）；数据库只能不存在或为私有的准确 schema 21。已有配置的数据库必须与显式路径一致，不能复用或迁移旧 M0/schema 1，也不能使用其他旧 schema。
+
+将 `cfb_database` 设为已经核验的数据库绝对路径，和后文的 `cfb_cli`、`cfb_intake`、`cfb_config` 一起使用。替换 E 的计划命令和 F 中对应三条写命令为：
+
+```sh
+"$cfb_cli" setup --input "$cfb_intake" --config "$cfb_config" --database "$cfb_database" --candidate-test --plan --json
+"$cfb_cli" setup --input "$cfb_intake" --config "$cfb_config" --database "$cfb_database" --candidate-test --apply --plan-id "$cfb_plan_id" --json
+"$cfb_cli" service install --config "$cfb_config" --candidate-test --user --json
+"$cfb_cli" service start --config "$cfb_config" --candidate-test --json
+```
+
+每条命令独立执行、检查退出码；`cfb_plan_id` 必须来自本次候选计划。普通计划与候选计划不能混用，恢复必须沿用原模式、二进制、输入和 plan_id。`candidate_test_deployment=true` 仅标记此次安装性质，`release.acceptance=pending` 仍保留；不因配置应用成功把 12 项 P1 验收改成 pass。
+
+仍使用固定 `codex-feishu.service`，不会新增第二份接收服务。手工 unit、其他部署身份或运行中需要替换的 unit 均拒绝；原 unit 只在同一候选二进制、配置、身份和已加载状态完全一致时允许重复安装为 no-op。unit 记录候选二进制摘要并使用 `serve --candidate-test`；启动须用原版本目录中的同一二进制，变更版本时先明确停止，再重新安装。候选运行时持实际应用和数据库锁，并禁止既有数据库迁移。
+
+随后执行 F 的 doctor/status 和 G 的授权验证，记录真实 App / 飞书证据；`systemctl` 报 active 只证明进程状态，仍须 doctor `--require-running` 核验实际连接和基线。退出测试时使用普通 `service stop` 与 `service uninstall --keep-data`，带原候选 config，保留凭据、数据库和备份。状态 unknown 先读回，不自动回滚配置或抢占原服务。`setup migrate --apply` 仍要求正式发布版本，候选标志不适用于迁移。
 
 **前置故障处理：**没有桥版本、共享 daemon 未运行、不是同一执行用户、版本未验收，均不进入启用同步。仍可整理目录建议、检查服务环境和收集缺失项。daemon 未启动时提示用户先用 App 连接这台机器；不私自创建一个新执行器代替它。
 
@@ -95,7 +116,7 @@ Agent 可以检测 token、API 错误、长连接和实际事件；仅持有应�
 
 ## D. 不知道 open_id：单聊配对
 
-此步骤要求已验收版本声明 `capabilities.setup_pair=true`，机器人已发布且能收私聊。工具会优先复用已有正式实例；新部署才使用临时配对监听。已有部署要指定实际配置，不能另起连接绕过旧实例的锁。身份冲突、旧实例不支持或连接未恢复时先报告具体前置条件。
+此步骤要求已验收版本，或上文已明确授权的候选联调版本声明 `capabilities.setup_pair=true`，机器人已发布且能收私聊。工具会优先复用已有正式实例；新部署才使用临时配对监听。已有部署要指定实际配置，不能另起连接绕过旧实例的锁。身份冲突、旧实例不支持或连接未恢复时先报告具体前置条件。
 
 Agent 准备受限的部分向导 JSON：`schema_version: 1`、`feishu.app_id`、`feishu.app_secret_file`；无须先有 owner、目录或发布包路径。调用：
 
@@ -133,7 +154,7 @@ Agent 用安全序列化生成受限 JSON 文件，替换全部占位值。以�
 }
 ```
 
-verification 的三个 true **仅来自用户明确授权的范围**；没有对应授权填写 false。其他用户不能因在 notification 列表中自动成为操作者。
+verification 的四个 true **仅来自用户明确授权的范围**；没有对应授权填写 false。其他用户不能因在 notification 列表中自动成为操作者。
 
 Agent 将以下变量设为验证过的绝对路径/计划 ID；它们是任务变量，不是系统环境变量：cfb_cli、cfb_intake、cfb_config、cfb_plan_id。不得对包含用户输入的路径做未转义 shell 拼接。
 

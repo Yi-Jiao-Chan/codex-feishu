@@ -12,11 +12,12 @@ import (
 )
 
 type ApplyResult struct {
-	PlanID     string `json:"plan_id"`
-	ConfigFile string `json:"config_file"`
-	BackupFile string `json:"backup_file,omitempty"`
-	Changed    bool   `json:"changed"`
-	State      string `json:"state"`
+	PlanID        string `json:"plan_id"`
+	ConfigFile    string `json:"config_file"`
+	BackupFile    string `json:"backup_file,omitempty"`
+	Changed       bool   `json:"changed"`
+	State         string `json:"state"`
+	CandidateTest bool   `json:"candidate_test_deployment,omitempty"`
 }
 
 // The journal precedes config replacement. A crash after rename can be
@@ -90,6 +91,12 @@ func (p Planner) Apply(ctx context.Context, in Input, paths Paths, planID string
 	if err != nil {
 		return ApplyResult{}, err
 	}
+	if p.CandidateTest {
+		// Reject unsupported binaries/legacy databases before creating setup files.
+		if _, err := p.Build(ctx, in, paths); err != nil {
+			return ApplyResult{}, err
+		}
+	}
 	if err := configDirectory(filepath.Dir(target)); err != nil {
 		return ApplyResult{}, err
 	}
@@ -109,10 +116,10 @@ func (p Planner) Apply(ctx context.Context, in Input, paths Paths, planID string
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	if !plan.Environment.Artifact.Released {
+	if !plan.CanApply {
 		return ApplyResult{}, ErrUnreleased
 	}
-	result := ApplyResult{PlanID: planID, ConfigFile: target, State: "configuration-applied"}
+	result := ApplyResult{PlanID: planID, ConfigFile: target, State: "configuration-applied", CandidateTest: p.CandidateTest}
 	old, found, err := readApplyJournal(target)
 	if err != nil {
 		return result, err
@@ -137,7 +144,7 @@ func (p Planner) Apply(ctx context.Context, in Input, paths Paths, planID string
 	if err != nil {
 		return result, err
 	}
-	if !plan.Environment.Artifact.Released {
+	if !plan.CanApply {
 		return result, ErrUnreleased
 	}
 	if err := checkDeploymentApply(plan.Config, target, planID); err != nil {

@@ -17,6 +17,9 @@ type Capabilities struct {
 	Commands      []string `json:"commands"`
 	Released      bool     `json:"phase1_released"`
 	CodexProtocol string   `json:"codex_protocol"`
+	Capabilities  struct {
+		CandidateDeployment bool `json:"candidate_deployment"`
+	} `json:"capabilities"`
 }
 
 type Environment struct {

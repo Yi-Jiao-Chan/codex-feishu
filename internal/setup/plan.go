@@ -28,8 +28,9 @@ var (
 )
 
 type Planner struct {
-	Probe      func(context.Context, string) (Environment, error)
-	checkpoint func(string) error // Local fault injection, never enabled by CLI.
+	Probe         func(context.Context, string) (Environment, error)
+	CandidateTest bool               // Explicit invocation authorization, never inferred from a development artifact.
+	checkpoint    func(string) error // Local fault injection, never enabled by CLI.
 }
 
 type PolicyView struct {
@@ -47,6 +48,7 @@ type Plan struct {
 	Config                       config.Config  `json:"config"`
 	Changed                      bool           `json:"changed"`
 	CanApply                     bool           `json:"can_apply"`
+	CandidateTest                bool           `json:"candidate_test_deployment,omitempty"`
 	DatabaseSchema               int            `json:"database_schema"`
 	ExistingPolicies             []PolicyView   `json:"existing_notification_policies"`
 	PolicyChanges                []PolicyChange `json:"notification_changes"`
@@ -152,6 +154,14 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 		return plan, errors.New("database path must be absolute")
 	}
 	plan.Paths, plan.ServiceMode = paths, in.Service.Mode
+	plan.CandidateTest = p.CandidateTest
+	if p.CandidateTest {
+		plan.Paths.DatabaseFile, err = canonicalTarget(paths.DatabaseFile)
+		if err != nil {
+			return plan, err
+		}
+		paths.DatabaseFile = plan.Paths.DatabaseFile
+	}
 	if plan.ServiceMode == "" {
 		plan.ServiceMode = "systemd-user"
 	}
@@ -163,6 +173,12 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 			return plan, errors.New("existing configuration invalid; preserve and repair it first")
 		}
 		plan.previous, plan.previousDigest = oldBytes, digest(oldBytes)
+		if p.CandidateTest {
+			existingDatabase, err := canonicalTarget(c.Storage.DatabaseFile)
+			if err != nil || existingDatabase != paths.DatabaseFile {
+				return plan, errors.New("candidate database must explicitly match the existing configuration")
+			}
+		}
 		plan.Paths.DatabaseFile = c.Storage.DatabaseFile
 	} else if _, statErr := os.Lstat(paths.ConfigFile); !errors.Is(statErr, os.ErrNotExist) {
 		return plan, err
@@ -237,6 +253,9 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	if err != nil {
 		return plan, err
 	}
+	if p.CandidateTest && !plan.Environment.Artifact.Capabilities.CandidateDeployment {
+		return plan, errors.New("artifact does not advertise candidate deployment support")
+	}
 	if plan.Environment.Daemon.Status != "running" || plan.Environment.Daemon.AppServerVersion != "0.162.0" || plan.Environment.Artifact.CodexProtocol != "0.162.0" || plan.Environment.Artifact.ConfigSchema != 1 || !filepath.IsAbs(plan.Environment.CLIPath) {
 		return plan, errors.New("existing daemon or artifact compatibility is unverified")
 	}
@@ -257,6 +276,11 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 		return plan, err
 	}
 	plan.Config = c
+	if p.CandidateTest {
+		if err := CheckCandidateDatabase(ctx, c.Storage.DatabaseFile); err != nil {
+			return plan, err
+		}
+	}
 	if err := plan.readPolicies(ctx, in); err != nil {
 		return plan, err
 	}
@@ -272,11 +296,24 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	stableEnvironment.Daemon.SocketPath = ""
 	plan.sourceDigest = digest(encoded([]any{in, digest(artifactBytes), digest([]byte(secret)), stableEnvironment, plan.Paths}))
 	plan.legacySourceDigest = digest(encoded([]any{in, digest(artifactBytes), digest([]byte(secret)), plan.Environment, plan.Paths, plan.ExistingPolicies}))
+	if p.CandidateTest {
+		// The existing journal stores this mode-bound source digest, so recovery
+		// cannot switch between normal and candidate authorization.
+		plan.sourceDigest = digest(encoded([]any{plan.sourceDigest, "candidate-test-v1"}))
+		plan.legacySourceDigest = digest(encoded([]any{plan.legacySourceDigest, "candidate-test-v1"}))
+	}
 	plan.ID = digest(encoded([]any{plan.sourceDigest, plan.previousDigest, digest(plan.content), plan.ExistingPolicies, plan.PolicyChanges, plan.DatabaseSchema}))
 	plan.Changed = !reflect.DeepEqual(plan.previous, plan.content) || len(plan.PolicyChanges) > 0
-	plan.CanApply = plan.Environment.Artifact.Released
+	plan.CanApply = plan.Environment.Artifact.Released || p.CandidateTest
 	if !plan.Environment.Artifact.Released {
-		plan.NextSteps = append(plan.NextSteps, "phase1 acceptance is pending; this is a development preview")
+		if p.CandidateTest {
+			plan.NextSteps = append(plan.NextSteps, "phase1 acceptance is pending; candidate installation does not constitute a release")
+		} else {
+			plan.NextSteps = append(plan.NextSteps, "phase1 acceptance is pending; this is a development preview")
+		}
+	}
+	if p.CandidateTest {
+		plan.NextSteps = append(plan.NextSteps, "candidate service installation/start require --candidate-test; migration remains release-only; do not replace an active deployment")
 	}
 	if len(plan.PolicyChanges) > 0 {
 		plan.NextSteps = append(plan.NextSteps, "explicit existing policy changes apply with revision CAS and a recoverable configuration journal; off and snooze remain unchanged")

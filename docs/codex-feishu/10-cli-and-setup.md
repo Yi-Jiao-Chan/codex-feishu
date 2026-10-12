@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时只允许配置预览，拒绝正式 apply、service install / start。配对、管理测试卡和管理测试群已通过自动测试，真实私聊验收仍待完成；通知规则事务及迁移命令已通过隔离测试；完整 verify、真实迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)、[私聊配对进展](../research/m3-pairing-2026-10-12.md)及[验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)。Agent 配置指南仅在通过完整联调的桥版本存在时进入应用阶段。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时默认只允许配置预览，拒绝正式 apply、service install / start；显式候选模式可用于发布前的安装联调，保留未发布状态，禁止既有数据库迁移。配对、管理测试卡和管理测试群已通过自动测试，真实私聊验收仍待完成；通知规则事务及迁移命令已通过隔离测试；完整 verify、真实迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)、[私聊配对进展](../research/m3-pairing-2026-10-12.md)及[验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)。Agent 配置指南默认只在已验收版本进入应用阶段；明确授权的候选安装按指南中的独立路径执行，不能自动当作正式部署。
 
 ## 命令表
 
@@ -13,11 +13,13 @@
 | doctor --config PATH --require-running --json | 启动后必需的连接、绑定恢复及发现基线检查；复用现有管理通道 |
 | setup --input PATH --plan --json | 检查部分输入、生成配置差异和稳定 plan_id；不写正式配置、不启动服务 |
 | setup --input PATH --apply --plan-id ID --json | 应用已知计划；备份旧配置、原子写入，不自行启动 |
+| setup --input PATH --config PATH --database PATH --candidate-test --plan / --apply --plan-id ID --json | 显式候选安装计划/应用，数据库只接受不存在或私有当前 schema；计划绑定候选模式；仍非正式发布 |
 | setup pair --input PATH [--config PATH] --timeout 300 --json | 限时私聊配对获取 owner open_id；复用已有接收器或只监听配对的临时接收器，不改变同步配置 |
 | setup migrate --config PATH --plan --json | 核验静止的 M0 与原生历史、群成员，保存私有摘要计划；不备份、不迁移、不发送 |
 | setup migrate --config PATH --apply --plan-id ID --json | 停止旧桥后持锁、一致备份、重新核验并原子接管；不启动服务，开发版本拒绝执行 |
 | service install --config PATH --user --json | 创建/更新本工具的 systemd 用户服务，不操作 Codex 服务 |
 | service start / stop --config PATH --json | 启停本工具用户服务 |
+| service install / start --config PATH --candidate-test [--user] --json | 候选安装/启动；install 必须 --user；不替换活动 unit，不迁移旧数据库，绑定候选二进制摘要 |
 | service uninstall --config PATH --keep-data --json | 删除本工具服务，默认保留配置、密钥与数据库 |
 | serve --config PATH | 前台常驻组合根；单部署锁、重连、优雅退出 |
 | status --config PATH --json | 两侧连接、服务、绑定数、队列、outbox 和 unknown 操作摘要 |
