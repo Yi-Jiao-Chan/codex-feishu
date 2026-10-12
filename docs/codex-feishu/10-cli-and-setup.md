@@ -39,6 +39,8 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 
 绑定的原 ID 查询现在还返回可选 `input_evidence_status` 与 `input_evidence`：在一个只读事务中核验原登记 / 路由，再统计已登记输入、默认 add 确认、保存的队列快照、真实 user item 关联、同动作 delete + steer 确认及目标轮历史关联、未决输入尝试。未决或队列消失不作为成功证据；查询失败为 pending / 无快照，旧 provider 缺字段也不能当零计数 pass。结果不含正文、令牌或相关 ID，不执行新的 queue / history GET。`queued_snapshot` 是已保存的观察，不证明当前仍排队或忙时顺序；这些组件检查不提升 P1 或 App UI。详见[受控输入证据](../research/m3-managed-input-evidence-2026-10-12.md)。
 
+原绑定查询还返回可选 `delivery_evidence_status` / `delivery_evidence`。它只读取本地 AI 镜像与不可变投递日志，区分过程 / 最终卡、当前 revision 确认、引用证明、整轮最终分片完成和未决卡片尝试。原 reply 的 parent、chat 与当前输入锚点不匹配，或只有普通 send 时，不算引用证据。已发 retired 尾片需清理确认；从未发送的 suppressed 尾片须无未决 / 已确认创建记录才能跳过。`ui:` 队列卡不冒充 AI 过程卡，但其未决尝试仍可报告。缺字段 / 读失败保持 pending，不做消息 GET、PATCH、发送或修复。组件 pass 不提升 P1 或 UI，见[受控投递证据](../research/m3-managed-delivery-evidence-2026-10-12.md)。
+
 受控忙时测试模型的第一条响应会暂缓，供 owner 验证默认排队和点击追加引导。绑定后、第一条模型请求已经开始时，可单独使用 `verify --config PATH --target self --release-test-turn --request-id ID --json` 开放原模型的回复门。该标志不能与四个创建 / 绑定标志组合；要求版本能力 `verify_managed_turn_release=true`、运行实例 `verification_turn_release_supported=true`，并重新核验原绑定、群成员、构建、连接、资源与五分钟窗口。重复释放只打开同一门，不再提交输入，不延长窗口；无标志查询从不释放。`model_released=true` 仅表示本机回复门已打开，`verification-managed-turn-released` 仍 `ok=false` / 退出 5，不证明原生轮次完成、结果送达或 App UI。详见[受控本轮释放](../research/m3-managed-turn-release-2026-10-12.md)。
 
 旧 M0 准备后只能使用保留的历史 M0 二进制处理其回调。当前开发版 m0-listen 的 Store.Open 会拒绝未接管的 schema 1，不能拿它替换运行中的旧实例；正式迁移须另行完成验收。

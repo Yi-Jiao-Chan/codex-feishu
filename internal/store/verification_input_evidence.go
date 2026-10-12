@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 )
 
 // VerificationInputEvidence describes persisted input facts only. A queued
@@ -22,32 +21,11 @@ type VerificationInputEvidence struct {
 // reported. No receipt body, action token, or frozen request is selected.
 func (s *Store) VerificationInputEvidence(ctx context.Context, b VerificationBinding) (VerificationInputEvidence, error) {
 	var result VerificationInputEvidence
-	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.beginVerificationEvidenceTx(ctx, b)
 	if err != nil {
 		return result, err
 	}
 	defer tx.Rollback()
-	current, err := scanVerificationBinding(ctx, tx, b.RequestID, b.HostID, b.AppID, b.OwnerID)
-	if err != nil {
-		return result, err
-	}
-	if current != b {
-		return result, ErrConflict
-	}
-	var valid int
-	// create_intents has no app column; deployment fixes its host's app scope.
-	err = tx.QueryRowContext(ctx, `SELECT COUNT(*)
- FROM deployment d JOIN bindings r ON r.host_id=d.host_id
- JOIN create_intents i ON i.intent_id=r.intent_id
- WHERE d.host_id=? AND d.app_id=? AND r.thread_id=? AND r.intent_id=? AND r.chat_id=?
- AND i.host_id=d.host_id AND i.thread_id=r.thread_id AND i.owner_id=? AND i.chat_id=r.chat_id AND i.state='confirmed'`,
-		b.HostID, b.AppID, b.ThreadID, b.IntentID, b.ChatID, b.OwnerID).Scan(&valid)
-	if err != nil {
-		return result, err
-	}
-	if valid != 1 {
-		return result, ErrConflict
-	}
 	err = tx.QueryRowContext(ctx, `WITH inputs AS (
  SELECT n.receipt_id,n.host_id,n.app_id,n.thread_id,n.state,n.queue_id,n.queue_ordinal,n.turn_id,n.item_id,r.client_id
  FROM submission_inputs n JOIN m0_receipts r ON r.id=n.receipt_id

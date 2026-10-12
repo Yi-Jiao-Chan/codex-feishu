@@ -151,7 +151,7 @@ func validateBindingResult(v verification.BindingResult, id string, begin bool) 
 	if err := validateInputEvidence(v); err != nil {
 		return err
 	}
-	return nil
+	return validateDeliveryEvidence(v)
 }
 
 // Missing fields from an older provider remain missing evidence, never zero
@@ -165,6 +165,20 @@ func validateInputEvidence(v verification.BindingResult) error {
 		return ErrUnavailable
 	}
 	if v.InputEvidenceStatus != "pass" || v.BindingStatus != "pass" || e.StagedInputs < 0 || e.AddConfirmed < 0 || e.QueuedSnapshot < 0 || e.HistoryLinked < 0 || e.SteerConfirmed < 0 || e.SteerHistoryLinked < 0 || e.UnresolvedAttempts < 0 || e.AddConfirmed > e.StagedInputs || e.QueuedSnapshot > e.StagedInputs || e.HistoryLinked > e.StagedInputs || e.SteerConfirmed > e.StagedInputs || e.SteerHistoryLinked > e.SteerConfirmed || e.SteerHistoryLinked > e.HistoryLinked {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+func validateDeliveryEvidence(v verification.BindingResult) error {
+	e := v.DeliveryEvidence
+	if e == nil {
+		if v.DeliveryEvidenceStatus == "" || v.DeliveryEvidenceStatus == "pending" {
+			return nil
+		}
+		return ErrUnavailable
+	}
+	if v.DeliveryEvidenceStatus != "pass" || v.BindingStatus != "pass" || e.ProgressCards < 0 || e.ProgressConfirmed < 0 || e.FinalCards < 0 || e.FinalConfirmed < 0 || e.FinalTurns < 0 || e.FinalTurnsDelivered < 0 || e.ReferencedCards < 0 || e.UnresolvedAttempts < 0 || e.ProgressConfirmed > e.ProgressCards || e.FinalConfirmed > e.FinalCards || e.FinalTurns > e.FinalCards || e.FinalTurnsDelivered > e.FinalTurns || e.FinalTurnsDelivered > e.FinalConfirmed || e.ReferencedCards > e.ProgressCards+e.FinalCards || e.ProgressConfirmed+e.FinalConfirmed > e.ReferencedCards {
 		return ErrUnavailable
 	}
 	return nil

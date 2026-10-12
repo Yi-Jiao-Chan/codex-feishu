@@ -228,6 +228,8 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 
 原绑定的只读查询可返回 `verification_binding.input_evidence_status` 和 `input_evidence`。前者 pass 只说明本地快照成功，所有计数为零时仍没有输入证据。`add_confirmed` 表示默认提交已确认；`history_linked` 表示收据与原生 user item 的真实关联；`steer_confirmed` 要求同一显式动作的 delete 成功及 steer 确认，`steer_history_linked` 还要求进入原目标轮。`queued_snapshot` 仅为已保存的队列观察，`unresolved_attempts` 是尚待核验的输入尝试。缺字段 / pending 时保留证据缺失，不推导无输入或失败，不重发输入。计数不证明 App 页面、忙时顺序、无重复执行或最终卡送达；仍按下表完成实际验收。
 
+同一次查询可返回 `delivery_evidence_status` / `delivery_evidence`。快照 pass 只说明本地读取成功；`progress_confirmed`、`final_confirmed` 表示当前正文版本已有确认及原 reply 证明，`final_turns_delivered` 要求该轮全部最终分片和已发尾片清理都确认。`referenced_cards` 是已确认原 reply 指向匹配输入锚点的当前 AI 文档数量，`unresolved_attempts` 保留卡片未决请求（含队列操作卡）；普通发送、只有旧正文确认或只有部分长回复分片不算整轮完成。旧实例缺字段或读取失败时不补造零计数成功，也不重发卡片。原生输入证据与投递证据分别来自各自只读快照，不将它们当同一个原子完成记录；真实客户端、reaction、@、自动建群和完整 P1 仍按下表验收。
+
 当前开发版也提供受控测试模型的本轮释放入口。只有用户要求结束这次受控忙时测试、原绑定仍有效、第一条模型请求已经开始，且 CLI / 实例分别报告 `verify_managed_turn_release=true` / `verification_turn_release_supported=true` 时，单独执行：
 
 ```sh

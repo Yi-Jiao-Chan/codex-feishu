@@ -28,23 +28,25 @@ type BindingManager struct {
 }
 
 type BindingResult struct {
-	RequestID           string                           `json:"request_id"`
-	BridgeCommit        string                           `json:"bridge_commit"`
-	BinarySHA256        string                           `json:"binary_sha256"`
-	BuildChanged        bool                             `json:"build_changed"`
-	BindingStatus       string                           `json:"binding_status"`
-	ThreadID            string                           `json:"thread_id"`
-	ChatID              string                           `json:"chat_id"`
-	BoundAtMS           int64                            `json:"bound_at_ms"`
-	ExpiresAtMS         int64                            `json:"expires_at_ms"`
-	Expired             bool                             `json:"expired"`
-	ResourcesReady      bool                             `json:"resources_ready"`
-	CreatorConnected    bool                             `json:"creator_connected"`
-	ActivationRequested bool                             `json:"activation_requested"`
-	ActorStarted        bool                             `json:"actor_started"`
-	ModelReleased       bool                             `json:"model_released"`
-	InputEvidenceStatus string                           `json:"input_evidence_status,omitempty"`
-	InputEvidence       *store.VerificationInputEvidence `json:"input_evidence,omitempty"`
+	RequestID              string                              `json:"request_id"`
+	BridgeCommit           string                              `json:"bridge_commit"`
+	BinarySHA256           string                              `json:"binary_sha256"`
+	BuildChanged           bool                                `json:"build_changed"`
+	BindingStatus          string                              `json:"binding_status"`
+	ThreadID               string                              `json:"thread_id"`
+	ChatID                 string                              `json:"chat_id"`
+	BoundAtMS              int64                               `json:"bound_at_ms"`
+	ExpiresAtMS            int64                               `json:"expires_at_ms"`
+	Expired                bool                                `json:"expired"`
+	ResourcesReady         bool                                `json:"resources_ready"`
+	CreatorConnected       bool                                `json:"creator_connected"`
+	ActivationRequested    bool                                `json:"activation_requested"`
+	ActorStarted           bool                                `json:"actor_started"`
+	ModelReleased          bool                                `json:"model_released"`
+	InputEvidenceStatus    string                              `json:"input_evidence_status,omitempty"`
+	InputEvidence          *store.VerificationInputEvidence    `json:"input_evidence,omitempty"`
+	DeliveryEvidenceStatus string                              `json:"delivery_evidence_status,omitempty"`
+	DeliveryEvidence       *store.VerificationDeliveryEvidence `json:"delivery_evidence,omitempty"`
 }
 
 func (m *BindingManager) configured() bool {
@@ -189,6 +191,12 @@ func (m *BindingManager) result(ctx context.Context, b store.VerificationBinding
 	if r.BindingStatus == "pass" {
 		if evidence, err := n.Store.VerificationInputEvidence(ctx, b); err == nil {
 			r.InputEvidenceStatus, r.InputEvidence = "pass", &evidence
+		}
+	}
+	r.DeliveryEvidenceStatus = "pending"
+	if r.BindingStatus == "pass" {
+		if evidence, err := n.Store.VerificationDeliveryEvidence(ctx, b); err == nil {
+			r.DeliveryEvidenceStatus, r.DeliveryEvidence = "pass", &evidence
 		}
 	}
 	// These are current local facts, not roster or policy revalidation.

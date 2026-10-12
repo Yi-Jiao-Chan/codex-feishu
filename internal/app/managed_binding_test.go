@@ -357,6 +357,10 @@ func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T
 		if premature {
 			t.Fatal("completion reaction preceded final delivery acknowledgement")
 		}
+		beforeDelivery, err := control.VerifyBinding(life, endpoint, identity, id, false)
+		if err != nil || beforeDelivery.DeliveryEvidenceStatus != "pass" || beforeDelivery.DeliveryEvidence == nil || beforeDelivery.DeliveryEvidence.FinalCards != 1 || beforeDelivery.DeliveryEvidence.FinalConfirmed != 0 || beforeDelivery.DeliveryEvidence.FinalTurnsDelivered != 0 || beforeDelivery.DeliveryEvidence.UnresolvedAttempts < 1 {
+			t.Fatal("unacknowledged final was reported as delivered", beforeDelivery.DeliveryEvidence, err)
+		}
 		close(g.finalRelease)
 		runtimeWait(t, func() bool {
 			g.muFeedback.Lock()
@@ -420,6 +424,10 @@ func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T
 			if target != parent {
 				t.Fatal("reaction did not target original user message", target)
 			}
+		}
+		afterDelivery, err := control.VerifyBinding(life, endpoint, identity, id, false)
+		if err != nil || afterDelivery.DeliveryEvidenceStatus != "pass" || afterDelivery.DeliveryEvidence == nil || afterDelivery.DeliveryEvidence.ProgressCards != 1 || afterDelivery.DeliveryEvidence.ProgressConfirmed != 1 || afterDelivery.DeliveryEvidence.FinalCards != 1 || afterDelivery.DeliveryEvidence.FinalConfirmed != 1 || afterDelivery.DeliveryEvidence.FinalTurns != 1 || afterDelivery.DeliveryEvidence.FinalTurnsDelivered != 1 || afterDelivery.DeliveryEvidence.ReferencedCards != 2 || afterDelivery.DeliveryEvidence.UnresolvedAttempts != 0 {
+			t.Fatal("confirmed scoped final/reply evidence missing", afterDelivery.DeliveryEvidence, err)
 		}
 	})
 }
