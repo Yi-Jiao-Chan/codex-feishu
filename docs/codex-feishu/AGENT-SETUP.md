@@ -280,6 +280,26 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 
 配置 Agent 能读取线程内容但看不到 App 界面时，必须请用户确认 UI；可用文本确认，无需用户提交截图。用户尚未操作则该项 pending，不能用后台历史代替 UI 验收。忙时测试使用隔离测试流程；临时目录不在允许范围时为其设置专用测试范围，结束后移除，不能扩大生产监听范围。
 
+### 汇总真实证据并结束验证
+
+若实际版本声明 `capabilities.verify_acceptance_report=true`，可以用案例报告表达已完成的真实验收，避免 CLI 永远只能返回占位 pending。先从默认 verify 的只读输出取得 configuration_identity、host_id、codex_daemon 和 instance；后者包含运行桥的 bridge_commit/binary_sha256。它们必须与实际 CLI 的 version、归档二进制摘要及当前配置一致。协议摘要取 version 的 protocol_schema_digest（固定 0.162.0 实验 schema 语料兼容摘要），SDK 版本取内嵌权限清单 sdk_version；缺字段、旧实例或不匹配时不能填写通过。
+
+使用包内 `docs/codex-feishu/examples/acceptance-report.template.json` 生成本人 0600 私有报告，保留 12 个必需案例，补全实际构建/版本/部署字段，将 template 改为 false。每条 evidence 写成：
+
+```json
+{"kind":"manual","path":"/absolute/private/owner-confirmation.json","sha256":"实际文件的64位小写SHA256","observed_by":"此应用配置的本人open_id"}
+```
+
+automated 条目不写 observed_by。证据文件必须为本人 0600 常规文件；可以保存脱敏自动测试/运行记录、截图或用户已给出的文本确认，记录实际案例、时间、对象与观察来源。**仅在已经取得当前案例所需真实证据并审核覆盖范围后填写 pass。** 不自行生成用户确认、不把协议/mock 当 UI、不仅修改旧 M0 报告的元数据套用到新版。用户未回答、案例未执行、证据仅覆盖局部时保留 pending。CLI 检查摘要和记录身份，不会替代验收者理解截图或判断案例覆盖。
+
+将 cfb_acceptance_report 设为上述私有报告绝对路径后，独立执行：
+
+```sh
+"$cfb_cli" verify --config "$cfb_config" --target self --acceptance-report "$cfb_acceptance_report" --json
+```
+
+此命令不运行测试，不能带 allow、release-test-turn 或 request-id。当前服务/权限失败不能由报告覆盖；数据或构建不符退出 6，仍缺证据退出 5，非法输入退出 2。只有 `acceptance-report-validated`、ok=true、退出 0 才表示报告与当前部署核验通过；输出明确 UI 来源是人工记录，phase1_released 不因报告变化。候选验收即使通过，也应写“候选部署与记录已验证”，保留正式发布状态和剩余发布步骤。报告和证据保留在私有目录，不进入 Git 或普通日志。
+
 测试结束恢复用户原通知规则，归档测试 Codex 会话，停止临时配对/模拟组件；测试群保留明确测试标签，不自动解散。不要删除生产配置、日志证据或绑定。
 
 ## H. 故障处理与完成报告

@@ -47,7 +47,7 @@ App 可见性验收分两步：忙时出现在 App 原生队列；执行或引�
 
 原消息 reaction 状态采用飞书官方 emoji_type：Get=接收，THINKING=排队，OnIt=执行，CheckMark=完成且最终结果已投递，CrossMark=失败；移除 / 停止清理本机器人临时状态。不删除其他人的 reaction。reaction 缺权限或请求结果未知只影响反馈，不能造成 Codex 输入重试；未知响应不盲重试。
 
-受控验收绑定的卡片、reaction、命令确认和提醒已接入逐次发送授权与资源上下文，领取前拒绝不会生成 attempt，领取后取消保持保守恢复。reaction 的已确认删除与尚未 journal 的添加可凭本地证据继续，不能重复删除或据远程缺失猜测重试。管理入口与真实重验仍 pending，见[投递上下文进展](../research/m3-verification-delivery-guards-2026-10-12.md)。
+受控验收绑定的卡片、reaction、命令确认和提醒已接入逐次发送授权与资源上下文，领取前拒绝不会生成 attempt，领取后取消保持保守恢复。reaction 的已确认删除与尚未 journal 的添加可凭本地证据继续，不能重复删除或据远程缺失猜测重试。管理绑定入口已接入；真实服务部署与 UI 重验仍 pending，见[投递上下文进展](../research/m3-verification-delivery-guards-2026-10-12.md)和[管理绑定组件](../research/m3-managed-binding-2026-10-12.md)。
 
 ## 初次绑定与断线补齐
 

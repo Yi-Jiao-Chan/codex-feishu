@@ -18,6 +18,7 @@ import (
 type verifyOptions struct {
 	Card, Group, Thread, Binding, Release bool
 	RequestID                             string
+	Report                                *acceptanceReport
 }
 type verifyGateway interface {
 	SendCard(context.Context, string, string, string, string) (string, error)
@@ -35,10 +36,15 @@ type verifyDependencies struct {
 	managedThread  func(context.Context, config.Config, string, string, bool) (verification.NativeSessionResult, error)
 	managedBinding func(context.Context, config.Config, string, string, bool) (verification.BindingResult, error)
 	managedRelease func(context.Context, config.Config, string, string) (verification.BindingResult, error)
+	artifact       func() (verificationArtifact, error)
 }
 
 func defaultVerifyDependencies() verifyDependencies {
 	return verifyDependencies{
+		artifact: func() (verificationArtifact, error) {
+			sha, err := verification.RunningBinarySHA256()
+			return verificationArtifact{Commit: commit, SHA256: sha}, err
+		},
 		doctor:  defaultDoctorDependencies(),
 		appLock: func(app string) (io.Closer, error) { return store.AcquireApplication(app) },
 		dbLock:  func(path string) (io.Closer, error) { return store.AcquireListener(path) },
@@ -96,14 +102,24 @@ func runVerifyWithDependencies(ctx context.Context, args []string, deps verifyDe
 	binding := flags.Bool("allow-test-binding", false, "authorize following the already-confirmed test group and thread for this request ID; no automatic fixture input")
 	release := flags.Bool("release-test-turn", false, "open the already-started original test model response gate; separate from creation/binding and not proof of completion")
 	requestID := flags.String("request-id", "", "32 lowercase hexadecimal characters; query existing managed card/group/thread/binding records without writes when no authorization flags are supplied")
+	reportPath := flags.String("acceptance-report", "", "read-only evaluation of a private current-build case report; manual UI evidence remains explicitly reported")
 	_ = flags.Bool("json", false, "JSON output (default)")
-	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" || *target != "self" || *requestID != "" && !verification.ValidRequestID(*requestID) || (*binding || *release) && !verification.ValidRequestID(*requestID) || *release && (*card || *group || *thread || *binding) {
+	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" || *target != "self" || *requestID != "" && !verification.ValidRequestID(*requestID) || (*binding || *release) && !verification.ValidRequestID(*requestID) || *release && (*card || *group || *thread || *binding) || *reportPath != "" && (*card || *group || *thread || *binding || *release || *requestID != "") {
 		deps.emit(output{Command: "verify", State: "invalid-arguments"})
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	o, code := inspectVerify(ctx, *path, verifyOptions{Card: *card, Group: *group, Thread: *thread, Binding: *binding, Release: *release, RequestID: *requestID}, deps)
+	var report *acceptanceReport
+	if *reportPath != "" {
+		var err error
+		report, err = readAcceptanceReport(ctx, *reportPath)
+		if err != nil {
+			deps.emit(output{Command: "verify", State: "acceptance-report-invalid", Checks: []check{{"verification.report_input", "fail", true, "private, non-template, strictly valid phase1 case report required; no report content or test mutations emitted"}}})
+			return 2
+		}
+	}
+	o, code := inspectVerify(ctx, *path, verifyOptions{Card: *card, Group: *group, Thread: *thread, Binding: *binding, Release: *release, RequestID: *requestID, Report: report}, deps)
 	deps.emit(o)
 	return code
 }
@@ -130,6 +146,9 @@ func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps ve
 	}
 	data["read_only"] = true
 	data["verification_scope"] = "phase1-prerequisites-and-pending-acceptance"
+	if identityErr == nil && identity != "" {
+		data["configuration_identity"] = identity
+	}
 	// Readiness, granted permissions and historical M0 observations cannot
 	// prove current deployment, true App UI or the complete acceptance matrix.
 	for i := range o.Checks {
@@ -137,7 +156,7 @@ func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps ve
 			o.Checks[i].Required = true
 		}
 	}
-	for _, id := range []string{"P1-01", "P1-02", "P1-03", "P1-04", "P1-05", "P1-06", "P1-07", "P1-08", "P1-09", "P1-10", "P1-11", "P1-12"} {
+	for _, id := range phase1CaseIDs {
 		o.Checks = append(o.Checks, check{"acceptance." + id, "pending", true, "current-deployment scenario and real UI evidence not yet integrated into verify"})
 	}
 	o.NextSteps = append(o.NextSteps, "full phase1 verify is pending; do not infer acceptance or configuration completion from diagnostic readiness")
@@ -145,6 +164,9 @@ func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps ve
 		o.Checks = append(o.Checks, check{"verification.test_writes", "skipped", false, "no test mutations authorized; no database creation/migration or extra receiver/native connection"})
 	}
 	live, managedInstance := data["instance"].(control.Snapshot)
+	if opts.Report != nil {
+		return evaluateAcceptanceReport(ctx, cfg, identity, live, managedInstance, data, o, code, opts.Report, deps.artifact)
+	}
 	// A local journal read stays available when another diagnostic is
 	// degraded; preserve its exit code and never authorize a mutation there.
 	readProbe := managedInstance && !writes && verification.ValidRequestID(opts.RequestID) && identityErr == nil && identity != ""

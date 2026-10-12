@@ -3,12 +3,17 @@
   "template": true,
   "phase": "phase1",
   "artifact_commit": null,
+  "binary_sha256": null,
   "bridge_version": null,
   "codex_cli_version": null,
   "codex_app_server_version": null,
   "protocol_schema_digest": null,
   "feishu_sdk_version": null,
   "host_id": null,
+  "app_id": null,
+  "owner_open_id": null,
+  "configuration_identity": null,
+  "database_schema": null,
   "cases": [
     {
       "id": "P1-01",

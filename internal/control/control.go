@@ -37,6 +37,8 @@ var (
 // Snapshot deliberately contains no thread IDs, messages, request bodies,
 // credentials, native policies or error payloads.
 type Snapshot struct {
+	BridgeCommit                        string                 `json:"bridge_commit,omitempty"`
+	BinarySHA256                        string                 `json:"binary_sha256,omitempty"`
 	Running                             bool                   `json:"running"`
 	NativeConnected                     bool                   `json:"native_connected"`
 	FeishuConnected                     bool                   `json:"feishu_connected"`

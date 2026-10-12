@@ -9,11 +9,32 @@ import (
 	"time"
 
 	"codex-feishu/internal/store"
+	"codex-feishu/internal/verification"
 )
 
 type healthNative struct {
 	*serviceNative
 	done chan struct{}
+}
+
+func TestHealthBuildIdentityComesFromThisScopedRunningArtifact(t *testing.T) {
+	db, cfg, _ := serviceFixture(t)
+	m := &verification.Manager{HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, Commit: strings.Repeat("a", 40), BinarySHA256: strings.Repeat("b", 64)}
+	s := &Service{Store: db, Config: cfg, Verification: m}
+	live, err := s.Health(context.Background())
+	if err != nil || live.BridgeCommit != m.Commit || live.BinarySHA256 != m.BinarySHA256 {
+		t.Fatal("scoped build metadata missing", err)
+	}
+	m.OwnerID = "ou_other_owner"
+	live, err = s.Health(context.Background())
+	if err != nil || live.BridgeCommit != "" || live.BinarySHA256 != "" {
+		t.Fatal("unrelated manager supplied artifact identity", err)
+	}
+	s.Verification = nil
+	live, err = s.Health(context.Background())
+	if err != nil || live.BridgeCommit != "" || live.BinarySHA256 != "" {
+		t.Fatal("missing build metadata inferred from readiness", err)
+	}
 }
 
 func (n *healthNative) Done() <-chan struct{} { return n.done }

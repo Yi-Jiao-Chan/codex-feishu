@@ -61,6 +61,10 @@
 
 每份报告记录：工具 commit、CLI/daemon 版本、schema 摘要、SDK 版本、主机/用户、案例编号、结果、远程标识与脱敏证据路径、未通过项。示例：[验收报告模板](examples/acceptance-report.template.json)。截图只用于必要的布局/UI 证据，凭据不可出现在其中。
 
+当前 CLI 的显式 acceptance-report 入口已提供只读身份/证据核验与结束判定，具体输入见 10 和 Agent 指南。人工报告真实性与案例覆盖由验收者审核，CLI 只核验记录、当前诊断及文件摘要；自动测试通过不生成真实 UI pass，报告核验成功也不自动发布。
+
+protocol_schema_digest 指向固定兼容语料：本机 0.162.0 的 `app-server generate-json-schema --experimental` 输出 447 个 JSON；按相对 POSIX 文件名排序，将每个文件 SHA-256 写成紧凑 JSON 对象，再对对象字节作 SHA-256，结果为 `4248c44d68df2d0d55be53b15fffbb24d8c8cf41cb9993a1f79d5d03d3d2b5da`。2026-10-12 重新导出与先前实际语料一致，ThreadStartParams 摘要也与已有协议研究一致；导出不启动 daemon 或任务。该摘要是构建兼容依据，运行时仍核验实际 daemon 版本，不冒充实时 schema 探测。
+
 ## 发布内容与门槛
 
 一期发布包包括：二进制与校验和、版本元数据、Codex 兼容清单、飞书精确权限清单、配置样例、Agent 配置指南、用户服务模板、诊断和验收记录。发布前将本手册/配置指南的“尚未实现”状态更新为真实版本，并用实际 --help / --json 核对命令契约；没有二期时 creation 开关不可启用，不能显示话题/创建按钮。

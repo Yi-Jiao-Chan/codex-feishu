@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时默认只允许配置预览，拒绝正式 apply、service install / start；显式候选模式可用于发布前的安装联调，保留未发布状态，禁止既有数据库迁移。配对、管理测试卡和管理测试群已通过自动测试，真实私聊验收仍待完成；通知规则事务及迁移命令已通过隔离测试；完整 verify、真实迁移与发布验收仍待完成。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)、[私聊配对进展](../research/m3-pairing-2026-10-12.md)及[验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)。Agent 配置指南默认只在已验收版本进入应用阶段；明确授权的候选安装按指南中的独立路径执行，不能自动当作正式部署。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时默认只允许配置预览，拒绝正式 apply、service install / start；显式候选模式可用于发布前的安装联调，保留未发布状态，禁止既有数据库迁移。配对、管理测试卡和管理测试群已通过自动测试，真实私聊验收仍待完成；通知规则事务及迁移命令已通过隔离测试；完整自动测试编排、真实迁移与发布验收仍待完成；显式 acceptance-report 已提供只读报告核验与结束判定，不自行运行测试或替代人工 UI 观察。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)、[私聊配对进展](../research/m3-pairing-2026-10-12.md)及[验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)。Agent 配置指南默认只在已验收版本进入应用阶段；明确授权的候选安装按指南中的独立路径执行，不能自动当作正式部署。
 
 ## 命令表
 
@@ -24,6 +24,7 @@
 | serve --config PATH | 前台常驻组合根；单部署锁、重连、优雅退出 |
 | status --config PATH --json | 两侧连接、服务、绑定数、队列、outbox 和 unknown 操作摘要 |
 | verify --config PATH --target self --json | 依授权范围运行本人测试卡/私有测试群/独立 Codex 测试线程，产出验收记录 |
+| verify --config PATH --acceptance-report PATH --json | 只读核验明确提供的当前构建案例报告及私有证据摘要；人工 UI 来源单列，不执行测试或自动发布 |
 
 所有路径用绝对路径。setup/verify 的文件输入可走受控 stdin，但密钥正文不通过命令行参数。帮助与 --json 不打印长期密钥或全量对话。version 输出必须提供权限与兼容清单的内容或实际可读位置，不能要求配置 Agent 猜发布包内路径。
 
@@ -62,6 +63,12 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 | 7 | 内部错误；输出脱敏诊断位置 |
 
 服务运行与完整验收分开：status 显示 running 不等于 verify pass。verify 必需项 pending 时不返回“配置完成”。示例输出见 [doctor 示例](examples/doctor-output.example.json)，它是格式样例，不是实际健康报告。
+
+默认 verify 和管理组件 observed 保留 pending。显式 `--acceptance-report` 才评估已有案例报告，不能与 allow、release-test-turn 或 request-id 混用；输入校验先于任何运行时诊断。要求 owner 0600 常规文件、严格 schema、完整且不重复的 12 个案例、配置 identity、host/app/owner、当前 CLI 与运行桥的 commit/实际二进制 SHA-256、数据库 schema、CLI/daemon/SDK 版本及固定协议语料摘要。报告或实际版本缺失不算相等。协议摘要核验的是构建兼容清单，不在 verify 中重新生成或查询 daemon schema。
+
+证据条目为 `{kind, path, sha256, observed_by?}`，kind 为 automated/manual；引用须是本人 0600 常规文件并逐个核验摘要。人工条目 observed_by 须为 owner；App/飞书 UI、配置 Agent、服务生命周期等案例必须有明确人工确认记录，自动计数或 mock 不能替代。CLI 只检查报告身份、完整性和文件一致性，案例覆盖与人工记录真实性仍由验收者审核；不解析截图来猜测通过，不输出文件正文或 blocking_reason。案例缺证据、文件变更或人工未确认退出 5；身份/构建冲突退出 6；输入不合法退出 2；当前诊断失败保留原退出码，不能被报告覆盖。
+
+全部必需案例证据有效且当前诊断通过时返回 `acceptance-report-validated` / 退出 0，含 `ui_evidence_source=explicit-manual-report`、`recorded_cases_all_passed`，每个案例仍说明 `independently_observed_ui=false`。这仅表示明确记录的报告与当前部署核验通过，不自行切换 phase1_released、发布、迁移、创建目标或操作输入；ready_to_release 布尔值不是成功依据。
 
 安装前 doctor 默认允许桥尚未运行：仅在配置、私有密钥、实际共享 server 版本、tenant 机器人身份及必需权限全部确认后返回 `prerequisites-ready-bridge-not-observed`，未观察到的实例仍以非必需 pending 列出。启动后必须加 `--require-running`；连接、绑定恢复、初次历史基线或远端操作待核验时退出 5。若已存在运行实例，即使没有该标志，其未恢复状态也不能忽略。配置摘要或 socket 身份冲突退出 6。已有数据库不可读、版本不支持或部署身份不符退出 3；从未初始化的数据库只作安装前说明，不创建或迁移。
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"codex-feishu/compat"
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/control"
 	"codex-feishu/internal/store"
@@ -357,7 +358,7 @@ func TestVersionManagedBindingKeepsReleaseAndUIGates(t *testing.T) {
 	}
 	data := result.Data.(map[string]any)
 	capabilities := data["capabilities"].(map[string]any)
-	if capabilities["candidate_deployment"] != true || capabilities["verify_managed_binding"] != true || capabilities["verify_managed_tests"] != false || capabilities["verify_managed_thread_ui_verified"] != false || data["phase1_service_ui_verified"] != false || data["phase1_released"] != false {
+	if capabilities["verify_acceptance_report"] != true || data["protocol_schema_digest"] != compat.ProtocolSchemaDigest || capabilities["candidate_deployment"] != true || capabilities["verify_managed_binding"] != true || capabilities["verify_managed_tests"] != false || capabilities["verify_managed_thread_ui_verified"] != false || data["phase1_service_ui_verified"] != false || data["phase1_released"] != false {
 		t.Fatal("capability promoted release/UI", data)
 	}
 }

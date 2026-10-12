@@ -43,9 +43,9 @@ creating_group 响应未知 → reconciling_group
 
 绑定记录至少包含目标模式、chat/root ID、owner、最新原生轮次、状态、首次建群意图和镜像水位。机器人被移除或群不可访问时暂停投递并保留记录，不自动建替代群。
 
-开发验收绑定已有内部存储与登记基础：相同授权请求、构建和原连接，重新 GET 确认群仅含 owner / bot，并通过专用无覆盖附着检查后才保存原群与线程关系。它不创建新目标，也不改变普通分类规则；验证标签仍由运行时拒绝。独立授权入口、actor 激活与每次输入 / 投递前的有效性检查尚未接入，不能仅凭普通绑定表已有记录启动验收，见[绑定基础进展](../research/m3-verification-binding-foundation-2026-10-12.md)。
+开发验收绑定已接入现有 serve、管理通道和独立 `--allow-test-binding` CLI 授权：同一请求、构建与原连接，重新 GET 确认群仅含 owner / bot，经无覆盖附着检查后原子登记并请求 Runtime 激活。它只跟进已有的测试群与线程，不创建缺失目标或自动提交输入；登记、激活请求与 actor 存在分别报告。普通自动发现仍拒绝验证标签，不能借此绕过分类或目录规则，见[管理绑定组件](../research/m3-managed-binding-2026-10-12.md)。
 
-后续切片已提供专属操作授权、Runtime 的显式 Activate 与逐次原生写入上下文：自动发现仍拒绝验证标记，失效标记不回退普通授权，首条输入前的 typed 空历史只由明确授权放行。CLI 绑定入口与完整投递路径仍待接入，不能由内部激活 API 推导真实验收已完成，见[操作授权进展](../research/m3-verification-operation-guards-2026-10-12.md)。
+每次原生写入与飞书投递均重新核验专属绑定和原资源；过期、资源关闭、连接失效不回退普通授权。首条输入前的 typed 空历史只由有效授权放行。只读查询提供已有输入关联与投递证据，不激活或修复绑定；这些本地记录不证明实际 App / 飞书 UI 或完整 P1 已通过，见[操作授权进展](../research/m3-verification-operation-guards-2026-10-12.md)及[受控投递证据](../research/m3-managed-delivery-evidence-2026-10-12.md)。
 
 ## 目录与 worktree
 

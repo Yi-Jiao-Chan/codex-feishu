@@ -43,6 +43,9 @@ func (s *Service) VerificationCreator() verification.NativeCreator {
 // connection. Durable facts are aggregates; thread routing stays in process.
 func (s *Service) Health(ctx context.Context) (control.Snapshot, error) {
 	result := control.Snapshot{Running: s.running.Load(), StartedAtMS: s.startedAtMS.Load(), ObservedAtMS: s.now().UnixMilli()}
+	if s.Verification != nil && s.Verification.HostID == s.Config.Host.ID && s.Verification.AppID == s.Config.Feishu.AppID && s.Verification.OwnerID == s.Config.Access.OwnerOpenID {
+		result.BridgeCommit, result.BinarySHA256 = s.Verification.Commit, s.Verification.BinarySHA256
+	}
 	result.DiscoveryEnabled = s.Config.Discovery.Enabled
 	result.PairingSupported = s.Pairing != nil
 	result.VerificationCardSupported = s.Verification != nil
