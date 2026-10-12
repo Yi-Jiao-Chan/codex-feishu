@@ -16,23 +16,24 @@ import (
 )
 
 type verifyOptions struct {
-	Card, Group, Thread bool
-	RequestID           string
+	Card, Group, Thread, Binding bool
+	RequestID                    string
 }
 type verifyGateway interface {
 	SendCard(context.Context, string, string, string, string) (string, error)
 	CreateGroup(context.Context, string, string, []string, string) (string, error)
 }
 type verifyDependencies struct {
-	doctor        doctorDependencies
-	appLock       func(string) (io.Closer, error)
-	dbLock        func(string) (io.Closer, error)
-	open          func(context.Context, string, int) (*store.Store, error)
-	gateway       func(config.Config, string) verifyGateway
-	emit          func(output)
-	managed       func(context.Context, config.Config, string, string, bool) (verification.Result, error)
-	managedGroup  func(context.Context, config.Config, string, string, bool) (verification.GroupResult, error)
-	managedThread func(context.Context, config.Config, string, string, bool) (verification.NativeSessionResult, error)
+	doctor         doctorDependencies
+	appLock        func(string) (io.Closer, error)
+	dbLock         func(string) (io.Closer, error)
+	open           func(context.Context, string, int) (*store.Store, error)
+	gateway        func(config.Config, string) verifyGateway
+	emit           func(output)
+	managed        func(context.Context, config.Config, string, string, bool) (verification.Result, error)
+	managedGroup   func(context.Context, config.Config, string, string, bool) (verification.GroupResult, error)
+	managedThread  func(context.Context, config.Config, string, string, bool) (verification.NativeSessionResult, error)
+	managedBinding func(context.Context, config.Config, string, string, bool) (verification.BindingResult, error)
 }
 
 func defaultVerifyDependencies() verifyDependencies {
@@ -64,6 +65,13 @@ func defaultVerifyDependencies() verifyDependencies {
 			}
 			return control.VerifyThreadCreation(ctx, path, identity, id, begin)
 		},
+		managedBinding: func(ctx context.Context, cfg config.Config, identity, id string, begin bool) (verification.BindingResult, error) {
+			path, err := control.Path(cfg.Feishu.AppID)
+			if err != nil {
+				return verification.BindingResult{}, err
+			}
+			return control.VerifyBinding(ctx, path, identity, id, begin)
+		},
 	}
 }
 
@@ -76,16 +84,17 @@ func runVerifyWithDependencies(ctx context.Context, args []string, deps verifyDe
 	target := flags.String("target", "self", "verify supports only self")
 	card := flags.Bool("allow-test-card", false, "authorize owner-only test card; managed probes require --request-id")
 	group := flags.Bool("allow-test-group", false, "authorize owner-and-bot test group; managed probes require --request-id")
-	thread := flags.Bool("allow-test-thread", false, "authorize isolated local-model thread creation only; binding, inputs and full acceptance remain pending")
-	requestID := flags.String("request-id", "", "32 lowercase hexadecimal characters; query existing managed card/group/thread creation records without writes when no authorization flags are supplied")
+	thread := flags.Bool("allow-test-thread", false, "authorize isolated local-model thread creation only; does not bind, submit inputs or prove acceptance")
+	binding := flags.Bool("allow-test-binding", false, "authorize following the already-confirmed test group and thread for this request ID; no automatic fixture input")
+	requestID := flags.String("request-id", "", "32 lowercase hexadecimal characters; query existing managed card/group/thread/binding records without writes when no authorization flags are supplied")
 	_ = flags.Bool("json", false, "JSON output (default)")
-	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" || *target != "self" || *requestID != "" && !verification.ValidRequestID(*requestID) {
+	if err := flags.Parse(args); err != nil || len(flags.Args()) != 0 || *path == "" || *target != "self" || *requestID != "" && !verification.ValidRequestID(*requestID) || *binding && !verification.ValidRequestID(*requestID) {
 		deps.emit(output{Command: "verify", State: "invalid-arguments"})
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	o, code := inspectVerify(ctx, *path, verifyOptions{Card: *card, Group: *group, Thread: *thread, RequestID: *requestID}, deps)
+	o, code := inspectVerify(ctx, *path, verifyOptions{Card: *card, Group: *group, Thread: *thread, Binding: *binding, RequestID: *requestID}, deps)
 	deps.emit(o)
 	return code
 }
@@ -93,7 +102,7 @@ func runVerifyWithDependencies(ctx context.Context, args []string, deps verifyDe
 // No flags means GET-only diagnostics through the existing managed instance
 // and read-only snapshots. Native connections and receivers are never opened.
 func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps verifyDependencies) (output, int) {
-	writes := opts.Card || opts.Group || opts.Thread
+	writes := opts.Card || opts.Group || opts.Thread || opts.Binding
 	var cfg config.Config
 	var secret, identity string
 	var identityErr error
@@ -138,7 +147,7 @@ func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps ve
 		return o, code
 	}
 	o.State = "verification-pending"
-	if managedInstance && (opts.Card || opts.Group || opts.Thread || opts.RequestID != "") {
+	if managedInstance && (writes || opts.RequestID != "") {
 		if identityErr != nil || identity == "" {
 			o.State = "verification-config-conflict"
 			return o, 6
@@ -155,8 +164,11 @@ func inspectVerify(ctx context.Context, path string, opts verifyOptions, deps ve
 	}
 	// Do not partially run card/group mutations when an unsupported isolated
 	// thread was requested. A future managed verifier will own the whole flow.
-	if opts.Thread {
+	if opts.Thread || opts.Binding {
 		o.State = "verification-thread-not-integrated"
+		if opts.Binding {
+			o.State = "verification-binding-not-integrated"
+		}
 		o.Checks = append(o.Checks, check{"verification.managed_tests", "pending", true, "isolated managed test flow unavailable; none of the requested test mutations performed"})
 		return o, 5
 	}

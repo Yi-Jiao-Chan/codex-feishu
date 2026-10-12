@@ -18,27 +18,30 @@ type bindingNative interface {
 // BindingManager registers only two already-confirmed components of the same
 // explicitly authorized probe. It performs fresh membership GET and a typed
 // no-override join, never group/thread creation, input or message delivery.
-// The production runtime still excludes validation threads until dedicated
-// authorization, activation and per-write guards are wired; this internal
-// manager is intentionally not exposed by CLI/control yet.
+// Activation uses the existing runtime and its dedicated authorization/write
+// guards. Registration and actor presence never stand in for UI acceptance.
 type BindingManager struct {
-	Sessions *NativeSessions
-	Groups   *GroupManager
+	Sessions     *NativeSessions
+	Groups       *GroupManager
+	Activate     func(context.Context, store.VerificationBinding) error
+	ActorStarted func(store.VerificationBinding) bool
 }
 
 type BindingResult struct {
-	RequestID        string `json:"request_id"`
-	BridgeCommit     string `json:"bridge_commit"`
-	BinarySHA256     string `json:"binary_sha256"`
-	BuildChanged     bool   `json:"build_changed"`
-	BindingStatus    string `json:"binding_status"`
-	ThreadID         string `json:"thread_id"`
-	ChatID           string `json:"chat_id"`
-	BoundAtMS        int64  `json:"bound_at_ms"`
-	ExpiresAtMS      int64  `json:"expires_at_ms"`
-	Expired          bool   `json:"expired"`
-	ResourcesReady   bool   `json:"resources_ready"`
-	CreatorConnected bool   `json:"creator_connected"`
+	RequestID           string `json:"request_id"`
+	BridgeCommit        string `json:"bridge_commit"`
+	BinarySHA256        string `json:"binary_sha256"`
+	BuildChanged        bool   `json:"build_changed"`
+	BindingStatus       string `json:"binding_status"`
+	ThreadID            string `json:"thread_id"`
+	ChatID              string `json:"chat_id"`
+	BoundAtMS           int64  `json:"bound_at_ms"`
+	ExpiresAtMS         int64  `json:"expires_at_ms"`
+	Expired             bool   `json:"expired"`
+	ResourcesReady      bool   `json:"resources_ready"`
+	CreatorConnected    bool   `json:"creator_connected"`
+	ActivationRequested bool   `json:"activation_requested"`
+	ActorStarted        bool   `json:"actor_started"`
 }
 
 func (m *BindingManager) configured() bool {
@@ -115,7 +118,18 @@ func (m *BindingManager) Begin(ctx context.Context, id string) (BindingResult, e
 	if err != nil {
 		return BindingResult{}, err
 	}
-	return m.result(call, b), nil
+	result := m.result(call, b)
+	if m.Activate != nil {
+		if err := m.Activate(call, b); err != nil {
+			return result, ErrNotReady
+		}
+		result = m.result(call, b)
+		if result.BindingStatus != "pass" || result.BuildChanged || result.Expired || !result.ResourcesReady || !result.CreatorConnected {
+			return result, ErrNotReady
+		}
+		result.ActivationRequested = true
+	}
+	return result, nil
 }
 
 func (m *BindingManager) currentReader(n store.VerificationNative) (bindingNative, bool) {
@@ -171,6 +185,9 @@ func (m *BindingManager) result(ctx context.Context, b store.VerificationBinding
 	if err == nil {
 		r.ResourcesReady = p.ResourcesReady
 		r.CreatorConnected = p.CreatorConnected
+	}
+	if m.ActorStarted != nil && r.BindingStatus == "pass" && !r.BuildChanged && !r.Expired && r.ResourcesReady && r.CreatorConnected {
+		r.ActorStarted = m.ActorStarted(b)
 	}
 	return r
 }

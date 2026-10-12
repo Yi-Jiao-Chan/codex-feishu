@@ -114,19 +114,28 @@ func (r *Runtime) Wake(thread string) {
 
 // Activate queues an explicit existing route for this native generation. Only
 // Run may add actors, so activation cannot race the worker join on shutdown.
-func (r *Runtime) Activate(thread string) {
+func (r *Runtime) Activate(thread string) bool {
 	if thread == "" {
-		return
+		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.running {
-		return
+		return false
 	}
 	select {
 	case r.activations <- thread:
+		return true
 	default:
+		return false
 	}
+}
+
+// ActorStarted reports local actor presence, not current permission or delivery.
+func (r *Runtime) ActorStarted(thread string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.running && r.actors[thread] != nil
 }
 
 // Authorize checks actual current native metadata, including registered Git

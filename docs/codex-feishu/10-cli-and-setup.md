@@ -25,15 +25,17 @@
 
 所有路径用绝对路径。setup/verify 的文件输入可走受控 stdin，但密钥正文不通过命令行参数。帮助与 --json 不打印长期密钥或全量对话。version 输出必须提供权限与兼容清单的内容或实际可读位置，不能要求配置 Agent 猜发布包内路径。
 
-verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread` 三个显式标志；无标志只复用配置 doctor 的 GET 与管理健康 / 只读快照，不新开 native 客户端或接收器、不创建 / chmod / 迁移数据库。完整 P1 场景证据尚未整合，必需项 pending、退出 5；连接与权限通过不表示验收通过。CLI 不从“用户愿意配置”自动推断能给任意人发消息。
+verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`、`--allow-test-binding` 四个显式标志；无标志只复用配置 doctor 的 GET 与管理健康 / 只读快照，不新开 native 客户端或接收器、不创建 / chmod / 迁移数据库。完整 P1 场景证据尚未整合，必需项 pending、退出 5；连接与权限通过不表示验收通过。CLI 不从“用户愿意配置”自动推断能给任意人发消息。
 
 当前开发版已接入正式实例的本人测试卡组件：只传 `--allow-test-card --request-id ID`，由已有实例持久领取并发送；`ID` 为调用前生成并保留的 32 位小写十六进制随机值。卡片按钮和私聊 `/verify TOKEN` 经过唯一接收器记录，不进入任务或原生队列。使用相同 `--request-id`、不带任何 allow 标志时只读取原记录；重复授权相同 ID 也不重发 dispatching / unknown / rejected / confirmed。schema 18 保存原 build commit、运行二进制 SHA-256、UUID、卡正文与 5 分钟到期；回调须匹配 owner 和实际 confirmed message ID。未发布状态不变，完整 P1 仍 pending。
 
 管理测试群组件已接入：`--allow-test-group --request-id ID` 只创建 owner 与 bot 的验证群，冻结名称、成员与 UUID，不继承额外生产成员，不发卡 / 消息或绑定线程。创建后用 GET 核验 bot、owner 和完整名单，再记录本人在原群 @ 机器人发送 `/verify-group ID`。成员检查失败时，相同授权 ID 只重做 GET；unknown / rejected / confirmed / 遗留 dispatching 均不重复建群。schema 19 保存私有证据，状态查询不做成员 API 或其他外部写入。
 
-三个 allow 标志独立授权；所有请求能力在第一项 mutation 前检查。无 allow 且有 ID 时查询运行实例支持的卡 / 群 / 线程创建日志，缺日志返回 skipped / not-found，不生成测试。旧实例缺少受控创建能力时，组合 thread 标志不部分发送卡片或建群。已有管理实例保留唯一接收器。只有单独授权 card / group、没有管理实例、同时取得应用与数据库监听锁，并且已有私有 schema 1 日志时，才保留旧 M0 准备能力；线程不退回独立连接。锁后重新核验诊断所用配置与密钥；变更返回冲突。可写打开只接受所属用户的 0700 物理目录 / 私有文件与准确 schema，不创建或迁移。UUID 在 API 前落盘，unknown / rejected 不重发；这不是正式一期 verify。
+四个 allow 标志独立授权；所有请求能力在第一项 mutation 前检查。无 allow 且有 ID 时查询运行实例支持的卡 / 群 / 线程创建 / 绑定日志，缺日志返回 skipped / not-found，不生成或激活测试。旧实例缺少受控创建能力时，组合 thread 标志不部分发送卡片或建群。已有管理实例保留唯一接收器。只有单独授权 card / group、没有管理实例、同时取得应用与数据库监听锁，并且已有私有 schema 1 日志时，才保留旧 M0 准备能力；线程不退回独立连接。锁后重新核验诊断所用配置与密钥；变更返回冲突。可写打开只接受所属用户的 0700 物理目录 / 私有文件与准确 schema，不创建或迁移。UUID 在 API 前落盘，unknown / rejected 不重发；这不是正式一期 verify。
 
 受控线程创建已接入开发实例管理通道：`--allow-test-thread --request-id ID` 只使用既有 initialized 原生连接，创建固定本机模型 / 只读策略的隔离线程，不启动 turn、绑定群、提交输入或 archive。私有资源在 5 分钟窗口内，断开 / unknown / 重启不替换原端点或重发；查询只读原记录。`verification-managed-thread-creation-observed` 仍 `ok=false` / 退出 5、12 项 P1 pending，创建不证明群绑定、排队 / 引导或 App UI。不得由配置 Agent 绕过完整验收安装未发布服务，见[管理创建组件](../research/m3-managed-thread-creation-2026-10-12.md)。
+
+`--allow-test-binding --request-id ID` 只绑定同一 ID 已 confirmed 的测试群和线程：要求 owner 群验证消息、原构建 / 连接 / 资源 / 窗口及新成员 GET / 附着检查。它不会创建缺失目标或自动提交输入；登记后向现有 runtime 请求跟进，owner 的新群输入走正式默认队列 / 显式引导路径。私有创建、绑定与查询不续期；State 不激活。`binding_status=pass` 是本地登记，`activation_requested` 仅为本次入队，`actor_started` 仅为本地 actor 存在。CLI 和版本能力明确保留 UI、完整 verify 与一期发布 pending，见[管理绑定组件](../research/m3-managed-binding-2026-10-12.md)。
 
 旧 M0 准备后只能使用保留的历史 M0 二进制处理其回调。当前开发版 m0-listen 的 Store.Open 会拒绝未接管的 schema 1，不能拿它替换运行中的旧实例；正式迁移须另行完成验收。
 

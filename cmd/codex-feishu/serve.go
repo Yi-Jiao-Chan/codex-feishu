@@ -148,6 +148,8 @@ func runServe(ctx context.Context, args []string) int {
 	}
 	defer verificationThreads.Close()
 	service.VerificationThreads = verificationThreads
+	verificationBindings := &verification.BindingManager{Sessions: verificationThreads, Groups: verificationGroups, Activate: service.ActivateVerificationBinding, ActorStarted: service.VerificationActorStarted}
+	service.VerificationBindings = verificationBindings
 	endpoint, err := control.Path(cfg.Feishu.AppID)
 	if err != nil {
 		emit(output{Command: "serve", State: "control-endpoint-unavailable"})
@@ -162,6 +164,7 @@ func runServe(ctx context.Context, args []string) int {
 	server.Verification = verificationManager
 	server.VerificationGroups = verificationGroups
 	server.VerificationThreads = verificationThreads
+	server.VerificationBindings = verificationBindings
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	var workers sync.WaitGroup

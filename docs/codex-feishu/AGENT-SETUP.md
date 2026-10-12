@@ -14,6 +14,7 @@
 2026-10-12 用户已将 fork 跟进暂缓；不为 fork 自动建群。普通 App 主会话和注册工作树继续在本期范围内。
 允许写入本工具的用户配置、安装/启动本工具用户服务。
 允许向我本人发送测试卡、创建只有我和机器人的测试群，以及创建独立的 Codex 测试会话。
+允许将该测试群与该测试会话绑定，并启用我在群内的跟进。
 不要给其他用户发送测试消息。沿用原 Codex 权限，不改变现有工作会话。
 长期密钥通过本机文件或安全输入保存，不要让我贴到聊天里。
 请实际验证收发、回调和同会话回显；未能验证的项目明确列出，不要仅凭进程启动报成功。
@@ -128,7 +129,7 @@ Agent 用安全序列化生成受限 JSON 文件，替换全部占位值。以�
   "notifications": {"timezone": "Asia/Shanghai", "quiet_hours": ""},
   "features": {"phase": "phase1", "creation": false},
   "service": {"mode": "systemd-user"},
-  "verification": {"send_test_card_to_owner": true, "create_private_test_group": true, "create_codex_test_thread": true}
+  "verification": {"send_test_card_to_owner": true, "create_private_test_group": true, "create_codex_test_thread": true, "bind_test_group_and_thread": true}
 }
 ```
 
@@ -205,7 +206,7 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 
 查看返回的 `verification_group.chat_id` 对应验证群，5 分钟内在该群 @ 机器人发送 `/verify-group <原 request ID>`，再执行只读查询。成员证明来自完整 GET；missing has_more、未识别成员、受限分页或额外人员不会报告通过。GET 失败时相同授权 ID 可以只重做成员检查，不重建群；查询自身只读日志，不发 GET 或建群。群入站可能先于成员 GET 成功，两份观察都取得才显示组件 pass，不据此证明发消息瞬间的完整成员名单。验证群无 thread binding，不证明 App 自动建群或输入回显。
 
-无 allow 的原 ID 查询会检查该实例支持的卡 / 群 / 线程创建日志。不存在的组件为 skipped，全部无日志为 `verification-managed-probe-not-found`；不新开探针、不当作拒绝证据。组件 observed 状态仍 `ok=false` / 退出 5、12 项 P1 pending。unknown 群不按名字找、自动换 ID 或再建；过期保留原群和证据。请求任一未支持的组件时，组合 allow 不部分执行。
+无 allow 的原 ID 查询会检查该实例支持的卡 / 群 / 线程创建 / 绑定日志。不存在的组件为 skipped，全部无日志为 `verification-managed-probe-not-found`；不新开探针、不注册或激活、不当作拒绝证据。组件 observed 状态仍 `ok=false` / 退出 5、12 项 P1 pending。unknown 群不按名字找、自动换 ID 或再建；过期保留原群和证据。请求任一未支持的组件时，组合 allow 不部分执行。
 
 当前 `capabilities.verify_managed_thread_creation=true` 只表示隔离出生组件已开发；`verify_managed_thread_ui_verified=false`，完整 `verify_managed_tests` 仍 false。只在已准备的测试实例、本人独立线程测试授权和实例 `verification_thread_creation_supported=true` 时使用；不为此能力部署未发布服务。
 
@@ -215,6 +216,15 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 ```
 
 它在专用私有目录使用固定本机模型和只读策略，只复用当前已初始化原生连接。不启动 turn、不发飞书消息、绑定测试群、提交输入或 archive；group 标志也不会替它完成 binding。出生 pass、原 creator 连接仍当前和本机资源可用分别检查，`verification-managed-thread-creation-observed` 仍非完整验收。`resource_recovery_required=true`、连接变更、unknown 或到期时保留原 ID / 目录 / 创建日志，不绑定旧端口、更换 URL 或重建线程。不能用创建确认声称 App 页面、排队 / 引导或配置完成。
+
+当前 `capabilities.verify_managed_binding=true` 提供已有群与线程的绑定组件；实例须报告 `verification_binding_supported=true`。它须有独立的绑定授权（输入 `verification.bind_test_group_and_thread=true`），不能从创建群 / 线程授权推导。只在同一 ID 的群和线程均 confirmed、owner 已在原群发送验证命令、原构建 / 连接 / 资源 / 窗口有效时执行；再次 GET 完整成员并核验无覆盖附着策略。它不创建缺失组件、不自动提交测试输入，也不 archive。
+
+```sh
+"$cfb_cli" verify --config "$cfb_config" --target self --allow-test-binding --request-id "$cfb_verify_id" --json
+"$cfb_cli" verify --config "$cfb_config" --target self --request-id "$cfb_verify_id" --json
+```
+
+第一条保存原群 / 线程关系并请求现有 runtime 跟进；启用后仅 owner 的新群消息可进入该测试线程。结果 `verification_binding.binding_status=pass` 仅为本地登记，`activation_requested` 为本次入队，`actor_started` 为本地 actor 存在，均不证明 UI、输入或送达。第二条不请求激活；历史登记不会自动续期或重建模型。`verification-managed-binding-observed` 仍 `ok=false` / 退出 5、12 项 P1 pending。创建授权与绑定授权四项独立；用户未允许的字段保持 false。不要为组件能力安装未发布版本，也不要把 owner 群跟进当作自动化 queue / steer 场景已验收。
 
 已验收版本具备该能力且有提示词中的本人测试授权时，运行：
 

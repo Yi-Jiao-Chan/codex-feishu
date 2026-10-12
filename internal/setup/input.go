@@ -46,6 +46,7 @@ type Input struct {
 		SendTestCardToOwner    bool `json:"send_test_card_to_owner"`
 		CreatePrivateTestGroup bool `json:"create_private_test_group"`
 		CreateCodexTestThread  bool `json:"create_codex_test_thread"`
+		BindTestGroupAndThread bool `json:"bind_test_group_and_thread"`
 	} `json:"verification"`
 }
 

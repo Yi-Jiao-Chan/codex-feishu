@@ -1,0 +1,169 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/control"
+	"codex-feishu/internal/store"
+	"codex-feishu/internal/verification"
+)
+
+type managedBindingNative struct{ *verificationServiceNative }
+
+func (n *managedBindingNative) AttachLocalVerification(ctx context.Context, id string, spec codexclient.LocalVerificationSpec) (codexclient.Thread, error) {
+	thread, err := n.Metadata(ctx, id)
+	if err == nil && (thread.ID != id || thread.CWD != spec.CWD) {
+		return codexclient.Thread{}, errors.New("fixture identity mismatch")
+	}
+	return thread, err
+}
+
+type managedBindingGateway struct {
+	*serviceGateway
+	owner   string
+	creates atomic.Int32
+	reads   atomic.Int32
+}
+
+func (g *managedBindingGateway) CreateGroup(context.Context, string, string, []string, string) (string, error) {
+	g.creates.Add(1)
+	return "verification-chat", nil
+}
+func (g *managedBindingGateway) MemberIDs(context.Context, string) ([]string, error) {
+	g.reads.Add(1)
+	return []string{g.owner, "ou_bot"}, nil
+}
+
+func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T) {
+	db, cfg, _ := serviceFixture(t)
+	g := &managedBindingGateway{serviceGateway: &serviceGateway{runtimeGateway: &runtimeGateway{}, listening: make(chan struct{})}, owner: cfg.Access.OwnerOpenID}
+	n := &managedBindingNative{verificationServiceNative: &verificationServiceNative{serviceNative: &serviceNative{runtimeNative: &runtimeNative{threads: map[string]codexclient.Thread{}, turns: map[string][]codexclient.Turn{}, events: make(chan codexclient.Event, 64)}}, done: make(chan struct{})}}
+	var connections atomic.Int32
+	s := &Service{Config: cfg, Store: db, Gateway: g, BotID: "ou_bot", Connect: func(context.Context) (ServiceNative, error) { connections.Add(1); return n, nil }}
+	life, stop := context.WithCancel(context.Background())
+	defer stop()
+	root := filepath.Join(t.TempDir(), "binding-resources")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manager := &verification.NativeManager{Store: db, HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, Commit: "fixture-build", BinarySHA256: strings.Repeat("c", 64), Current: s.VerificationCreator}
+	sessions, err := verification.NewNativeSessions(life, manager, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sessions.Close()
+	groups := &verification.GroupManager{Store: db, Gateway: g, HostID: cfg.Host.ID, AppID: cfg.Feishu.AppID, OwnerID: cfg.Access.OwnerOpenID, BotID: "ou_bot", Commit: manager.Commit, BinarySHA256: manager.BinarySHA256, Ready: g.Ready}
+	bindings := &verification.BindingManager{Sessions: sessions, Groups: groups, Activate: s.ActivateVerificationBinding, ActorStarted: s.VerificationActorStarted}
+	s.VerificationGroups, s.VerificationThreads, s.VerificationBindings = groups, sessions, bindings
+	serviceDone := make(chan error, 1)
+	go func() { serviceDone <- s.Run(life) }()
+	defer func() { stop(); <-serviceDone }()
+	select {
+	case <-g.listening:
+	case err := <-serviceDone:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("service receiver did not start")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for s.VerificationCreator() == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if s.VerificationCreator() == nil {
+		t.Fatal("existing connection unavailable")
+	}
+	endpointRoot, err := os.MkdirTemp("", "cfbind-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(endpointRoot)
+	endpoint, identity := filepath.Join(endpointRoot, "control.sock"), strings.Repeat("a", 64)
+	server, err := control.Listen(life, endpoint, identity, s.Health)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.VerificationGroups, server.VerificationThreads, server.VerificationBindings = groups, sessions, bindings
+	controlDone := make(chan error, 1)
+	go func() { controlDone <- server.Serve(life) }()
+	defer func() { stop(); server.Close(); <-controlDone }()
+	id := store.ID()
+	if _, err := control.VerifyBinding(life, endpoint, identity, id, true); !errors.Is(err, verification.ErrNotFound) && !errors.Is(err, control.ErrUnavailable) {
+		t.Fatal("binding-only created missing components", err)
+	}
+	if g.creates.Load() != 0 || n.starts.Load() != 0 {
+		t.Fatal("binding created group/thread")
+	}
+	if _, err := control.VerifyGroup(life, endpoint, identity, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.VerifyThreadCreation(life, endpoint, identity, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.VerifyBinding(life, endpoint, identity, id, true); !errors.Is(err, control.ErrUnavailable) {
+		t.Fatal("missing owner observation was accepted", err)
+	}
+	message := receiverMessage(t, "verification-chat", cfg.Access.OwnerOpenID, "owner-proof", "group", true)
+	body, _ := json.Marshal(map[string]string{"text": "@_user_1 /verify-group " + id})
+	message.Event.Message.Content = strPointer(string(body))
+	if err := g.message(life, message); err != nil {
+		t.Fatal(err)
+	}
+	result, err := control.VerifyBinding(life, endpoint, identity, id, true)
+	if err != nil || result.BindingStatus != "pass" || !result.ActivationRequested || !result.CreatorConnected || !result.ResourcesReady {
+		t.Fatal(result, err)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for !result.ActorStarted && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		result, err = control.VerifyBinding(life, endpoint, identity, id, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err = control.VerifyBinding(life, endpoint, identity, id, false)
+	if err != nil || !result.ActorStarted || result.ActivationRequested {
+		t.Fatal("actor was not started or query claimed activation", result)
+	}
+	for _, begin := range []bool{true, false} {
+		result, err := control.VerifyBinding(life, endpoint, identity, id, begin)
+		if err != nil || result.ActivationRequested != begin || result.BindingStatus != "pass" || !result.ActorStarted {
+			t.Fatal(result, err)
+		}
+	}
+	if connections.Load() != 1 || g.listens.Load() != 1 || n.starts.Load() != 1 || g.creates.Load() != 1 || n.adds.Load() != 0 {
+		t.Fatal("binding duplicated service, targets, or input")
+	}
+	var receipts int
+	if err := db.DB.QueryRow(`SELECT count(*) FROM m0_receipts`).Scan(&receipts); err != nil || receipts != 0 {
+		t.Fatal("group observation became input", receipts, err)
+	}
+	// The result only proves an actor exists locally, not actual App UI.
+	if health, err := s.Health(life); err != nil || !health.VerificationBindingSupported {
+		t.Fatal("binding capability missing", err)
+	}
+}
+
+func TestRuntimeActivationReportsQueueAdmissionAndLocalPresence(t *testing.T) {
+	r := &Runtime{}
+	if r.Activate("thread") || r.ActorStarted("thread") {
+		t.Fatal("stopped runtime admitted activation")
+	}
+	r.running, r.activations = true, make(chan string, 1)
+	r.actors = map[string]*threadActor{}
+	if !r.Activate("thread") || r.Activate("other") || r.ActorStarted("thread") {
+		t.Fatal("queue admission masqueraded as actor start")
+	}
+	r.actors["thread"] = &threadActor{thread: "thread"}
+	if !r.ActorStarted("thread") {
+		t.Fatal("local actor presence not reported")
+	}
+}

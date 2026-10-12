@@ -48,6 +48,7 @@ func (s *Service) Health(ctx context.Context) (control.Snapshot, error) {
 	result.VerificationCardSupported = s.Verification != nil
 	result.VerificationGroupSupported = s.VerificationGroups != nil
 	result.VerificationThreadCreationSupported = s.VerificationThreads != nil
+	result.VerificationBindingSupported = s.verificationManagerMatches() && s.VerificationBindings.Activate != nil && s.VerificationBindings.ActorStarted != nil
 	if s.Store == nil {
 		return result, errors.New("service health unavailable")
 	}

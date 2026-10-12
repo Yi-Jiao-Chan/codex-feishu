@@ -7,5 +7,5 @@
   "notifications": {"timezone": "Asia/Shanghai", "quiet_hours": ""},
   "features": {"phase": "phase1", "creation": false},
   "service": {"mode": "systemd-user"},
-  "verification": {"send_test_card_to_owner": false, "create_private_test_group": false, "create_codex_test_thread": false}
+  "verification": {"send_test_card_to_owner": false, "create_private_test_group": false, "create_codex_test_thread": false, "bind_test_group_and_thread": false}
 }

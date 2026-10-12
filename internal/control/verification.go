@@ -3,6 +3,7 @@ package control
 import (
 	"codex-feishu/internal/verification"
 	"context"
+	"time"
 )
 
 func VerifyCard(ctx context.Context, path, identity, id string, begin bool) (verification.Result, error) {
@@ -17,7 +18,7 @@ func VerifyCard(ctx context.Context, path, identity, id string, begin bool) (ver
 	if err != nil {
 		return verification.Result{}, err
 	}
-	if r.Verification == nil || r.Snapshot != nil || r.Pair != nil || r.VerificationGroup != nil || r.VerificationThread != nil || r.Verification.RequestID != id || r.Verification.BridgeCommit == "" || !verification.ValidBinaryHash(r.Verification.BinarySHA256) || r.Verification.ExpiresAtMS <= 0 {
+	if r.Verification == nil || r.Snapshot != nil || r.Pair != nil || r.VerificationGroup != nil || r.VerificationThread != nil || r.VerificationBinding != nil || r.Verification.RequestID != id || r.Verification.BridgeCommit == "" || !verification.ValidBinaryHash(r.Verification.BinarySHA256) || r.Verification.ExpiresAtMS <= 0 {
 		return verification.Result{}, ErrUnavailable
 	}
 	v := *r.Verification
@@ -45,7 +46,7 @@ func VerifyGroup(ctx context.Context, path, identity, id string, begin bool) (ve
 	if err != nil {
 		return verification.GroupResult{}, err
 	}
-	if r.VerificationGroup == nil || r.Snapshot != nil || r.Pair != nil || r.Verification != nil || r.VerificationThread != nil || r.VerificationGroup.RequestID != id || r.VerificationGroup.BridgeCommit == "" || !verification.ValidBinaryHash(r.VerificationGroup.BinarySHA256) || r.VerificationGroup.ExpiresAtMS <= 0 {
+	if r.VerificationGroup == nil || r.Snapshot != nil || r.Pair != nil || r.Verification != nil || r.VerificationThread != nil || r.VerificationBinding != nil || r.VerificationGroup.RequestID != id || r.VerificationGroup.BridgeCommit == "" || !verification.ValidBinaryHash(r.VerificationGroup.BinarySHA256) || r.VerificationGroup.ExpiresAtMS <= 0 {
 		return verification.GroupResult{}, ErrUnavailable
 	}
 	v := *r.VerificationGroup
@@ -73,7 +74,7 @@ func VerifyThreadCreation(ctx context.Context, path, identity, id string, begin 
 	if err != nil {
 		return verification.NativeSessionResult{}, err
 	}
-	if r.VerificationThread == nil || r.Snapshot != nil || r.Pair != nil || r.Verification != nil || r.VerificationGroup != nil || r.VerificationThread.RequestID != id || r.VerificationThread.BridgeCommit == "" || !verification.ValidBinaryHash(r.VerificationThread.BinarySHA256) || r.VerificationThread.ExpiresAtMS <= 0 {
+	if r.VerificationThread == nil || r.Snapshot != nil || r.Pair != nil || r.Verification != nil || r.VerificationGroup != nil || r.VerificationBinding != nil || r.VerificationThread.RequestID != id || r.VerificationThread.BridgeCommit == "" || !verification.ValidBinaryHash(r.VerificationThread.BinarySHA256) || r.VerificationThread.ExpiresAtMS <= 0 {
 		return verification.NativeSessionResult{}, ErrUnavailable
 	}
 	v := *r.VerificationThread
@@ -99,6 +100,46 @@ func VerifyThreadCreation(ctx context.Context, path, identity, id string, begin 
 		}
 	default:
 		return verification.NativeSessionResult{}, ErrUnavailable
+	}
+	return v, nil
+}
+
+func VerifyBinding(ctx context.Context, path, identity, id string, begin bool) (verification.BindingResult, error) {
+	if !verification.ValidRequestID(id) {
+		return verification.BindingResult{}, verification.ErrInvalid
+	}
+	method := "verify.binding.state"
+	if begin {
+		method = "verify.binding.begin"
+	}
+	r, err := exchange(ctx, path, request{Schema: protocol, Method: method, Identity: identity, VerificationBinding: &verificationRequest{RequestID: id}})
+	if err != nil {
+		return verification.BindingResult{}, err
+	}
+	if r.VerificationBinding == nil || r.Snapshot != nil || r.Pair != nil || r.Verification != nil || r.VerificationGroup != nil || r.VerificationThread != nil || r.VerificationBinding.RequestID != id {
+		return verification.BindingResult{}, ErrUnavailable
+	}
+	v := *r.VerificationBinding
+	if v.BridgeCommit == "" || !verification.ValidBinaryHash(v.BinarySHA256) || v.ExpiresAtMS <= 0 || v.BoundAtMS <= 0 || v.ExpiresAtMS <= v.BoundAtMS {
+		return verification.BindingResult{}, ErrUnavailable
+	}
+	if v.BindingStatus != "pass" && v.BindingStatus != "pending" {
+		return verification.BindingResult{}, ErrUnavailable
+	}
+	if v.BindingStatus == "pass" && (v.ThreadID == "" || v.ChatID == "") {
+		return verification.BindingResult{}, ErrUnavailable
+	}
+	if v.BindingStatus == "pending" && (v.ActorStarted || v.ActivationRequested) {
+		return verification.BindingResult{}, ErrUnavailable
+	}
+	if !begin && v.ActivationRequested {
+		return verification.BindingResult{}, ErrUnavailable
+	}
+	if v.Expired != (time.Now().UnixMilli() >= v.ExpiresAtMS) {
+		return verification.BindingResult{}, ErrUnavailable
+	}
+	if (v.ActorStarted || v.ActivationRequested) && (v.BuildChanged || v.Expired || !v.ResourcesReady || !v.CreatorConnected) {
+		return verification.BindingResult{}, ErrUnavailable
 	}
 	return v, nil
 }
