@@ -2,7 +2,7 @@
 
 版本：2026-10-13 / 配置 schema v1。对象：用户和负责配置的 Agent。
 
-本指南自包含，目标是在用户提供少量信息后，由 Agent 检测环境、生成配置、安装用户服务并验证。**M0 真实联调已通过，当前整合 M1–M3；development 版已有 serve、setup plan / apply、service 和实时 / 只读 status，但一期发布仍待验收。本文安装流程是正式发布契约。** Agent 必须检查 version 的 `phase1_released` 与具体 capabilities：开发版可做 plan，正式 apply / install / start 会拒绝，setup pair 已有开发实现但真实私聊 UI 尚待验收（`setup_pair_ui_verified=false`）。status 实时健康只对提供管理通道的新版运行实例有效，旧 M0 返回只读快照和 pending。命令存在不代表可正式安装；缺少已验收版本时完成只读环境检查并报告前置条件，不能假装配置完成。开发任务另见开发手册，不在一次配置任务里默认编写整个产品。
+本指南自包含，目标是在用户提供少量信息后，由 Agent 检测环境、生成配置、安装用户服务并验证。**一期候选服务已实际部署，独立配置 Agent 已验证首次安装、重跑和卸载保留数据；私聊配对也已通过，完整一期发布仍待验收。本文安装流程是正式发布契约。** Agent 必须检查实际 version 的 `phase1_released` 与具体 capabilities：开发版可做 plan，正式 apply / install / start 会拒绝。2026-10-13 的配对观察属于指定候选构建，当前包仍保留 `setup_pair_ui_verified=false`，不能凭本页把另一个包提升为已验收发布。status 实时健康只对提供管理通道的新版运行实例有效，旧 M0 返回只读快照和 pending。命令存在不代表可正式安装；缺少已验收版本时完成只读环境检查并报告前置条件，不能假装配置完成。开发任务另见开发手册，不在一次配置任务里默认编写整个产品。
 
 ## 用户直接交给 Agent 的提示词
 
@@ -134,6 +134,8 @@ codex-feishu setup pair --input /absolute/path/to/pair-input.json --timeout 300 
 
 一次性口令有 128 bit 随机性，最长 5 分钟有效；群消息、其他应用、错误发送者、过期口令不能认领。终态不含口令。取消时终止并等待原 CLI 退出，它会按原请求尝试清理，临时监听也会关闭。
 
+用户可直接粘贴命令，也可在机器人单聊中先 @ 本机器人再发送。当前实现仅移除经消息 mentions 字段和实际 bot 身份核验的开头占位符，并容许命令首尾空白；内部命令与口令仍须按展示内容发送。不要让用户因使用 @ 或复制带入换行而重复配对；真实终态是成功依据。旧候选不具备此修复时，应先核验构建，不能在 Agent 中伪造一次配对成功。
+
 超时或结果未知保持 needs_input，提示检查发布、私聊订阅和可见范围；不能把发送者姓名、union_id 或另一个应用的 open_id 代替。用户未回答/未配对时继续保持缺项，等待时间不能代替其选择。
 
 ## E. 生成向导输入与计划
@@ -185,6 +187,8 @@ CLI 已通过能力检查且 plan 无必需缺项时：
 逐步检查退出码，不用 shell 链把后续步骤在失败后继续跑。setup 生成正式 TOML，备份现有配置并原子写入；目录 0700，配置/secret 0600。保留原 host_id、数据库和绑定。重复配置差异为空时 no-op，不换身份、不清空历史、不重建群。
 
 start 成功后，管理端点和历史基线可能仍在恢复；实际首次安装与重复配置都曾短暂返回 doctor/status 退出 5。先每隔几秒只读重查，直到 `doctor --require-running` 必需项通过且 status 为 running；不要重复 apply、另开接收器或反复重启。明确失败、构建/配置冲突或 unknown 操作按 H 处理，不能将它们当作普通启动等待。
+
+已有配置的 unit 若处于 inactive/disabled，先核验它的部署身份、二进制摘要和配置与本次目标一致，再沿用同一 CLI 的 install/start 恢复 enabled/running。此路径已实际验证，原配置、绑定和规则保持一致；它不需要重新 apply 或更换数据库。活动 unit 的身份不符仍按冲突处理。
 
 重配已有部署时，先读 plan 的现有通知规则与独立差异。省略 quiet / timezone 保留有效规则；只有用户明确要求清除免打扰时才传 `quiet_hours: ""`。更新仅影响 owner 的明确字段，保留关闭 @ 与 snooze，其他接收者保持原值。已有规则更新需当前 schema 21；旧 M0 数据库不能由配置任务顺手迁移。普通启动也会拒绝未接管的 schema 1。迁移命令、备份和中断恢复已有隔离测试，但开发版拒绝真实迁移；不要改 user_version、清空日志或启动新实例绕过该边界，见[接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
 
@@ -289,6 +293,8 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 ### 汇总真实证据并结束验证
 
 若实际版本声明 `capabilities.verify_acceptance_report=true`，可以用案例报告表达已完成的真实验收，避免 CLI 永远只能返回占位 pending。先从默认 verify 的只读输出取得 configuration_identity、host_id、codex_daemon 和 instance；后者包含运行桥的 bridge_commit/binary_sha256。它们必须与实际 CLI 的 version、归档二进制摘要及当前配置一致。协议摘要取 version 的 protocol_schema_digest（固定 0.162.0 实验 schema 语料兼容摘要），SDK 版本取内嵌权限清单 sdk_version；缺字段、旧实例或不匹配时不能填写通过。
+
+`configuration_identity` 必须取实际管理诊断的同名字段；unit 注释中的 Deployment identity 绑定服务安装，是不同的摘要，不能代填。实际报告已验证：身份不符退出 6，修正为当前实例身份后，仍含 pending 的报告正常退出 5；缺项不会被健康检查或成功配对覆盖。
 
 使用包内 `docs/codex-feishu/examples/acceptance-report.template.json` 生成本人 0600 私有报告，保留 12 个必需案例，补全实际构建/版本/部署字段，将 template 改为 false。每条 evidence 写成：
 

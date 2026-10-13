@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。新版尚未替换 M0 实例；`phase1_released=false` 时默认只允许配置预览，拒绝正式 apply、service install / start；显式候选模式可用于发布前的安装联调，保留未发布状态，禁止既有数据库迁移。配对、管理测试卡和管理测试群已通过自动测试，真实私聊验收仍待完成；通知规则事务及迁移命令已通过隔离测试；完整自动测试编排、真实迁移与发布验收仍待完成；显式 acceptance-report 已提供只读报告核验与结束判定，不自行运行测试或替代人工 UI 观察。详见[配置与服务管理进展](../research/m3-setup-and-request-reminders-2026-10-12.md)、[管理通道与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)、[只读诊断与权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)、[私聊配对进展](../research/m3-pairing-2026-10-12.md)及[验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)。Agent 配置指南默认只在已验收版本进入应用阶段；明确授权的候选安装按指南中的独立路径执行，不能自动当作正式部署。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。候选服务已实际部署到独立 schema 21 数据库，旧 M0 数据保留；`phase1_released=false` 时默认只允许配置预览，拒绝正式 apply、service install / start。显式候选模式已验证安装、重跑与保留数据卸载，保留未发布状态，禁止既有数据库迁移。配对已通过真实机器人私聊，并容许首尾空白和开头经核验的本机器人 mention；通知规则事务及迁移命令已通过隔离测试。完整自动测试编排、真实迁移与发布验收仍待完成；显式 acceptance-report 已提供只读报告核验与结束判定，不自行运行测试或替代人工 UI 观察。当前构建与真实证据范围见[集中验收记录](12-live-acceptance-handoff.md)。Agent 配置指南默认只在已验收版本进入应用阶段；明确授权的候选安装按指南中的独立路径执行，不能自动当作正式部署。
 
 ## 命令表
 

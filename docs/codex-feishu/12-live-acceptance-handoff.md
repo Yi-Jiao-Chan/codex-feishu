@@ -10,11 +10,13 @@
 
 目录规则已恢复。本工具用户服务已完成实际 stop/start，恢复原四个普通绑定、两侧连接和相同通知规则/截止时间；输入和投递记录总数未变，没有重放旧消息。用户已确认重启后仍跟进同一 App 会话和原群，跨两个群的 until、手机长代码/路径完整查看与底部小字、恢复 @ 后无积压提醒均正常。原通知设置已恢复。共享 Codex daemon 未重启，不能把此记录当作系统重启或 SSH 注销观察。
 
-独立配置 Agent 只拿到包内指南和必要输入，已完成真实候选首次安装、既有部署两次重跑/no-op、卸载保留数据、原服务恢复。首次安装用全新私有配置/schema 21 数据库与空 scratch；完成基线后零绑定、零建群、零消息。原配置/unit/binary 摘要、身份、四个绑定和全部规则恢复一致，最终 doctor/status 退出 0。无差异 apply 仍要求先停桥、启动后需等待只读健康就绪的实际体验已补入指南。已知本人 ID 的配置路线无需配对；配对私聊 UI 另行验证。
+独立配置 Agent 只拿到包内指南和必要输入，已完成真实候选首次安装、既有部署两次重跑/no-op、卸载保留数据、原服务恢复。首次安装用全新私有配置/schema 21 数据库与空 scratch；完成基线后零绑定、零建群、零消息。原配置/unit/binary 摘要、身份、四个绑定和全部规则恢复一致，最终 doctor/status 退出 0。无差异 apply 仍要求先停桥、启动后需等待只读健康就绪的实际体验已补入指南。已知本人 ID 路线无需配对；本轮另外完成实际机器人私聊配对，CLI 返回 paired、ok=true、退出 0，本人与既有配置匹配。首尾空白与开头经核验的本机器人 mention 已修复，不改变应用、私聊、owner、口令或有效期检查。
 
-当前源码的 rules/discovery/app/store/sync 五个包已集中完成 `go test -race`，903 个测试或子测试通过。它补齐领域、权限、恢复和限流等待边界，不替代以上真实 UI。P1-01、P1-03、P1-04、P1-06 已完成，其他案例正在合并覆盖证据；正式发布标志仍为 false。
+rules/discovery/app/store/sync 五个包已集中完成 `go test -race`，903 个测试或子测试通过；配对修复另有 pairing/control/CLI 定向 race 验证。配置生成、服务安装/卸载、数据库、发现与消息实现从原 UI 候选至当前部署未变，旧记录保留原构建身份并附影响审阅。P1-01 至 P1-08 已有对应覆盖，P1-10 与 P1-11 也已完成；P1-09、P1-12 仍 pending，正式发布标志保持 false。
 
-已核验的候选包位于仓库 `dist/`：
+后续实际 App 测试补齐普通注册工作树：空白草稿期间不建群，首条输入后只有一个主会话群。实际 cwd 是工作树、project_root 是原 fixture 仓库，Git common-dir 一致；四个同目录子代理候选均 excluded，没有绑定。原生 `item/tool/requestUserInput` 和 `item/commandExecution/requestApproval` 均实发一条回 App 提醒，卡片没有飞书回答/审批按钮；本人分别在 App 回答和批准后请求 resolved，各最终结果只同步一次。用户已确认这些 UI。当前新增第五个测试绑定，仍使用原配置。
+
+原真实 UI 与独立配置测试的候选包位于仓库 `dist/`，下表身份保留不变：
 
 | 项目 | 值 |
 | --- | --- |
@@ -25,6 +27,19 @@
 | 状态 | development；`phase1_released=false` |
 
 该包的成员、校验和、构建身份、实际 version/help、指南与 12 项 pending 模板已检查。候选安装与显式报告能力可用，但 `phase1_service_ui_verified=false`、`setup_pair_ui_verified=false`；本地检查不证明新版的真实 UI 或一期发布。后续仅修改这份交接文档不会改变该包的 commit；代码或包内内容变更则重新提供准确候选身份，不将上表套用到另一份二进制。
+
+配对修复后，当前运行实例使用下列构建。中间版本和原二进制均保留；没有重写原 UI 证据或迁移数据库。
+
+| 项目 | 值 |
+| --- | --- |
+| 文件 | `codex-feishu-linux-amd64-development-7c83060b5c60.tar.gz` |
+| 构建 commit | `7c83060b5c60ea6a4a5c77bcdb1304139ec5bed9` |
+| 归档 SHA-256 | `6373ec1f5db4036897065a63e5f39665c722d8445e47c12662182ae6112e3e60` |
+| 二进制 SHA-256 | `5694a2a4ebfca026223f8e95e94a1f166e5dfaf4c9033082d7c7b6c3c4d22855` |
+| 真实配对 | 已有实例唯一接收器；本人私聊；paired / ok=true / exit 0 |
+| 发布状态 | development；全部发布/UI 常量保持原值 |
+
+继续工作时实查发现同一 unit 为 inactive/disabled，原因未确定，不能称作已证实的服务崩溃或网络故障。沿用准确二进制/config 的候选 install/start 已恢复 enabled/running；doctor `--require-running`、status 均退出 0，配置字节、四个绑定、目录和提醒规则与启动前一致。这也验证了既有 unit 自动启动状态的修复，不代表已观察系统重启或最后一次 SSH 注销。
 
 ## 开始前由 Agent 完成
 
@@ -68,10 +83,20 @@
 | P1-10 | 过期按钮、非操作者、AI 文本不能自行 @、审批/问答只提示回 App。需要第二个真实测试身份时再说明这个具体缺项，不用伪造 owner 事件冒充 UI 验收。 |
 | P1-12 | 不兼容 daemon 暂停写入、用户服务的卸载保留数据；系统重启/linger 若无授权或无法验证，保留具体 pending，不用一次 SSH 注销替代。 |
 
-新版已取得 P1-01、P1-03、P1-04、P1-06 的当前候选证据，其余案例保留 pending。Q4–Q8 已补充实际共享 daemon、Go Controller、SQLite 和受控返回丢失/进程退出验证，见 [原生边界验证](../research/native-controller-q4-q8-2026-10-13.md)；Q2/Q3 的混合队列和中间引导、Q9 的并发登记与重放、Q10 的两客户端继续竞争见 [后续原生验证](../research/native-controller-q2-q3-q9-q10-2026-10-13.md)。Q9 假定 Controller 入口已获授权，不替代多身份飞书鉴权；Q10 原生 API 竞争与用户已确认的 App 正常停止/继续分别取证。这些测试不替代真实 UI，也不等同于网络中断。M0 的用户确认作为可行性证据保存，不只改它的构建身份就套用到新版。每个案例须有对应自动/人工证据和真实观察来源；可以将一次用户确认关联多个明确回答的观察，但不能把“可以”扩成未执行的全部场景。
+新版已取得上述十项的场景证据，其余 P1-09、P1-12 保留 pending；上表是覆盖核对表，P1-02/10 的实际缺口已由后续 App 工作树、子代理和问答/审批补足。Q4–Q8 已补充实际共享 daemon、Go Controller、SQLite 和受控返回丢失/进程退出验证，见 [原生边界验证](../research/native-controller-q4-q8-2026-10-13.md)；Q2/Q3 的混合队列和中间引导、Q9 的并发登记与重放、Q10 的两客户端继续竞争见 [后续原生验证](../research/native-controller-q2-q3-q9-q10-2026-10-13.md)。Q9 假定 Controller 入口已获授权，不替代多身份飞书鉴权；Q10 原生 API 竞争与用户已确认的 App 正常停止/继续分别取证。这些测试不替代真实 UI，也不等同于网络中断。M0 的用户确认作为可行性证据保存，不只改它的构建身份就套用到新版。每个案例须有对应自动/人工证据和真实观察来源；可以将一次用户确认关联多个明确回答的观察，但不能把“可以”扩成未执行的全部场景。
+
+新增本地 Unix WebSocket + 实际 Service/SQLite fixture 验证首次未验收版本在 dial 前拒绝，以及 0.162.0 连接断开后版本变为 0.163.0 时不新建连接、不再附着、不提交、不建群，离线输入保留。它只补兼容门禁证据；飞书接收器按原离线契约继续运行，Health 表示 native 未连接，具体版本由 doctor 诊断。没有升级或重启共享 daemon，也未制造真实网络中断。
+
+另一个本地真实 Unix WebSocket Client→Service→SQLite→outbox 场景已通过 race：关闭 socket 后添加离线回合，第二代连接分页补齐新增 human/final 各一次；旧内容、revision 和 remote ID 保持，receiver=1、generation=2、建群/native mutation=0，重复完整补齐也不重发。协议 peer 与飞书 gateway 是 fixture；它补足连接恢复的联合证据，不称作真实平台限流或远端网络故障。
+
+实际只读 GET 已补三种现有卡片的 hidden marker 验证：send、reply、PATCH 的标记都保留，应用身份和回复关系正确。但平台移除非默认字号等字段、改写末尾换行，严格完整 wire 比较不成立。当前 readback 因此保持 inconclusive/unknown，不盲重发；这不是完整原载荷恢复通过。正常投递和过程卡更新不受影响，详见[卡片读回限制](../research/feishu-card-readback-normalization-2026-10-13.md)。
 
 ## 收尾
 
 Agent 按指南在 0700 私有目录保存 0600 报告与脱敏证据，填写当前候选/部署/协议/SDK 身份和文件摘要。案例未执行、证据不足或有冲突时保留 pending/fail。调用显式 `verify --acceptance-report` 进行只读报告核验，不能用组件计数、`ready_to_release` 字段或修改 version 常量提前发布。
+
+本轮当前 7c 部署的完整 12 项私有报告已实查：CLI/运行桥/配置/协议/SDK 身份匹配、所有引用文件摘要有效，最终十项 pass、P1-09/12 pending，返回 `acceptance-report-pending` / 退出 5。八项、九项和十项的阶段报告分别保存，不覆盖前一阶段。它是已取证的进度，完整一期尚未通过。
+
+用户报告 App 没有单独断开远程连接入口，本轮实际断连/重连未执行，不记作 pass；也没有进行最后一次 SSH 注销、系统或共享 daemon 重启。用户本轮协助测试到此结束，剩余运维观察和平台 unknown 的全文证明限制如实保留，不反复要求已经通过的操作。
 
 全部 P1 通过后再按模块 11 审核发布与 M0 接管；候选服务运行不等于正式迁移。保留旧桥二进制、配置、数据库和回退方案。清理受控组件并恢复原通知偏好；测试群可保留测试标签，不自动解散，不删除真实会话数据。最终交付应包括可安装包、兼容/权限清单、配置指南、真实验收记录及常驻条件。
