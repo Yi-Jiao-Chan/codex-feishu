@@ -25,7 +25,7 @@ func TestProgressViewKeepsOnlyOrderedPublicRecordsAndSeparatesLegacyFinal(t *tes
 	}}
 	view := progressView(turn, 200000)
 	want := []string{"first public action", "second public action", "legacy public action"}
-	if !reflect.DeepEqual(view.Records, want) || view.Body != "" || view.ElapsedSeconds != -1 {
+	if !reflect.DeepEqual(recordTexts(view.Records), want) || view.Body != "" || view.ElapsedSeconds != -1 {
 		t.Fatalf("terminal public projection mismatch: %+v", view)
 	}
 	turn.Items = []codexclient.Item{
@@ -35,7 +35,7 @@ func TestProgressViewKeepsOnlyOrderedPublicRecordsAndSeparatesLegacyFinal(t *tes
 		agent("blank", " ", ""),
 	}
 	view = progressView(turn, 200000)
-	if !reflect.DeepEqual(view.Records, []string{"identical text", "public commentary"}) || finalBody(turn) != "identical text" {
+	if !reflect.DeepEqual(recordTexts(view.Records), []string{"identical text", "public commentary"}) || finalBody(turn) != "identical text" {
 		t.Fatal("legacy final exclusion removed an earlier item or duplicated final")
 	}
 	turn.Status = "inProgress"
@@ -87,7 +87,7 @@ func TestProgressCompleteSnapshotsReplaceItemDeltasWithoutDuplicatingRecords(t *
 	turn.Items[1].Text = "complete public action"
 	turn.Items = append(turn.Items, turn.Items[1], agent("next", "next action", "partial_answer"), agent("distinct-item", "next action", "commentary"))
 	apply(t, e, 201000, false, turn)
-	if !reflect.DeepEqual(latest.Records, []string{"complete public action", "next action", "next action"}) || latest.Body != "next action" {
+	if !reflect.DeepEqual(recordTexts(latest.Records), []string{"complete public action", "next action", "next action"}) || latest.Body != "next action" {
 		t.Fatalf("complete snapshot appended deltas or duplicate IDs: %+v", latest)
 	}
 	m, err := e.Store.Mirror(context.Background(), "host", "thread", mirrorKey("progress", "turn"))
@@ -110,7 +110,7 @@ func TestProgressCompleteSnapshotsReplaceItemDeltasWithoutDuplicatingRecords(t *
 }
 
 func TestProgressBudgetOmitsOldestRecordsBeforeLatestSummary(t *testing.T) {
-	v := cards.ProgressView{Body: "latest summary", Records: []string{strings.Repeat("old-one", 400), strings.Repeat("old-two", 400), "newest record"}, ElapsedSeconds: -1}
+	v := cards.ProgressView{Body: "latest summary", Records: progressRecords(strings.Repeat("old-one", 400), strings.Repeat("old-two", 400), "newest record"), ElapsedSeconds: -1}
 	var rendered cards.ProgressView
 	render := func(v cards.ProgressView) string {
 		rendered = v
@@ -118,7 +118,7 @@ func TestProgressBudgetOmitsOldestRecordsBeforeLatestSummary(t *testing.T) {
 	}
 	limit := len(render(cards.ProgressView{Body: v.Body, Records: v.Records[2:], OmittedRecords: 2, ElapsedSeconds: -1}))
 	card, err := boundedRenderedProgress(v, limit, render)
-	if err != nil || len(card) > limit || !json.Valid([]byte(card)) || rendered.Body != v.Body || rendered.OmittedRecords != 2 || !reflect.DeepEqual(rendered.Records, []string{"newest record"}) {
+	if err != nil || len(card) > limit || !json.Valid([]byte(card)) || rendered.Body != v.Body || rendered.OmittedRecords != 2 || !reflect.DeepEqual(recordTexts(rendered.Records), []string{"newest record"}) {
 		t.Fatalf("record eviction did not preserve the latest summary: %+v, %v", rendered, err)
 	}
 	if !strings.Contains(card, "省略") {
@@ -128,18 +128,18 @@ func TestProgressBudgetOmitsOldestRecordsBeforeLatestSummary(t *testing.T) {
 
 func TestProgressBudgetTruncatesSingleLongRecordAndDoesNotMutateProjection(t *testing.T) {
 	long := strings.Repeat("中文😀<at>\\\"", 500)
-	v := cards.ProgressView{Body: "public summary", Records: []string{long}, ElapsedSeconds: -1}
+	v := cards.ProgressView{Body: "public summary", Records: []cards.ProgressRecord{{ItemID: "stable-id", Text: long, ReceivedAtMS: 200000}}, ElapsedSeconds: -1}
 	var rendered cards.ProgressView
 	render := func(v cards.ProgressView) string {
 		rendered = v
 		return cards.Task(cards.TaskView{Status: "completed", Progress: v})
 	}
-	limit := len(render(cards.ProgressView{Body: v.Body, Records: []string{"…（内容已截短）"}, ElapsedSeconds: -1})) + 120
+	limit := len(render(cards.ProgressView{Body: v.Body, Records: progressRecords("…（内容已截短）"), ElapsedSeconds: -1})) + 120
 	card, err := boundedRenderedProgress(v, limit, render)
-	if err != nil || len(card) > limit || !json.Valid([]byte(card)) || len(rendered.Records) != 1 || rendered.OmittedRecords != 0 || !strings.HasSuffix(rendered.Records[0], "…（内容已截短）") || rendered.Body != v.Body {
+	if err != nil || len(card) > limit || !json.Valid([]byte(card)) || len(rendered.Records) != 1 || rendered.OmittedRecords != 0 || !strings.HasSuffix(rendered.Records[0].Text, "…（内容已截短）") || rendered.Body != v.Body {
 		t.Fatal("long record lacked accurate truncation or actual byte bound", err)
 	}
-	if v.Records[0] != long {
+	if v.Records[0].Text != long || rendered.Records[0].ItemID != "stable-id" || rendered.Records[0].ReceivedAtMS != 200000 {
 		t.Fatal("budget renderer mutated the complete snapshot projection")
 	}
 	if _, err := boundedRenderedProgress(v, 1, render); err == nil {
@@ -148,7 +148,7 @@ func TestProgressBudgetTruncatesSingleLongRecordAndDoesNotMutateProjection(t *te
 }
 
 func TestProgressBudgetStillDisclosesOmissionsWhenNoRecordFits(t *testing.T) {
-	v := cards.ProgressView{Body: strings.Repeat("latest public action", 100), Records: []string{strings.Repeat("long public record", 500)}, ElapsedSeconds: -1}
+	v := cards.ProgressView{Body: strings.Repeat("latest public action", 100), Records: progressRecords(strings.Repeat("long public record", 500)), ElapsedSeconds: -1}
 	var rendered cards.ProgressView
 	render := func(v cards.ProgressView) string {
 		rendered = v
@@ -187,22 +187,43 @@ func TestToolOnlyProgressUpdatesSameMessageAndRetainsTerminalCounts(t *testing.T
 	}
 	g := &cardGateway{}
 	drain(t, e, g, 1000)
-	if len(g.writes) != 2 || !strings.Contains(g.writes[1].Card, "工具") {
-		t.Fatal("tool-only turn lacked initial progress details")
+	if len(g.writes) != 2 || strings.Contains(g.writes[1].Card, "工具") || strings.Contains(g.writes[1].Card, `"tag":"collapsible_panel"`) {
+		t.Fatal("tool-only turn exposed tool summaries or an empty history panel")
 	}
 	progressID := g.writes[1].ID
-	turn.Status = "completed"
 	turn.Items[1].Status, turn.Items[2].Status = "completed", "failed"
 	turn.Items[len(turn.Items)-1] = turn.Items[1]
 	apply(t, e, 201000, false, turn)
+	drain(t, e, g, 1001)
+	if len(g.writes) != 2 {
+		t.Fatal("tool counter changes updated the public progress card")
+	}
+	turn.Status = "completed"
+	apply(t, e, 202000, false, turn)
 	if latest.RunningTools != 0 || latest.FinishedTools != 4 || latest.Body != "" || len(latest.Records) != 0 {
 		t.Fatal("terminal counts were erased or converted to public process records")
 	}
-	drain(t, e, g, 1001)
-	if len(g.writes) != 4 || g.writes[2].Operation != "update" || g.writes[2].ID != progressID || !strings.Contains(g.writes[2].Card, "已完成") || !strings.Contains(g.writes[2].Card, `"tag":"collapsible_panel"`) || !strings.Contains(g.writes[2].Card, "工具") {
-		t.Fatal("terminal tool-only snapshot failed to update the same expandable progress card")
+	drain(t, e, g, 1002)
+	if len(g.writes) != 4 || g.writes[2].Operation != "update" || g.writes[2].ID != progressID || !strings.Contains(g.writes[2].Card, "已完成") || strings.Contains(g.writes[2].Card, `"tag":"collapsible_panel"`) || strings.Contains(g.writes[2].Card, "工具") {
+		t.Fatal("terminal tool-only snapshot failed to update the same plain progress card")
 	}
 	if strings.Contains(g.writes[2].Card, "PRIVATE_TOOL_OUTPUT") || strings.Contains(g.writes[2].Card, "PRIVATE_REASONING") {
 		t.Fatal("tool counter projection leaked private payloads")
 	}
+}
+
+func recordTexts(records []cards.ProgressRecord) []string {
+	result := make([]string, len(records))
+	for n, record := range records {
+		result[n] = record.Text
+	}
+	return result
+}
+
+func progressRecords(texts ...string) []cards.ProgressRecord {
+	result := make([]cards.ProgressRecord, len(texts))
+	for n, text := range texts {
+		result[n] = cards.ProgressRecord{Text: text}
+	}
+	return result
 }

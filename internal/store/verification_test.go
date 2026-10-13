@@ -13,7 +13,7 @@ func TestVerificationMigrationFromSeventeenAndImmutableClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec(`INSERT INTO m0_operations(key,kind,state,remote_id,created_at) VALUES('retained','send','confirmed','om_old',1);DROP TABLE verification_cards;PRAGMA user_version=17;`); err != nil {
+	if _, err = s.DB.Exec(`INSERT INTO m0_operations(key,kind,state,remote_id,created_at) VALUES('retained','send','confirmed','om_old',1);DROP TABLE verification_cards;ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=17;`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

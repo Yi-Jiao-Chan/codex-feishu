@@ -26,6 +26,7 @@ type Engine struct {
 	Store          *store.Store
 	Native         NativeHistory
 	HostID         string
+	TimeZone       string
 	MaxCardBytes   int
 	MentionTargets []string // Reserve the complete structured reminder before splitting final text.
 	// ProgressRender is pure; the actor prepares its durable control state first.
@@ -161,7 +162,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			continue
 		}
 		key := mirrorKey("progress", turn.ID)
-		_, hadProgress := existing[key]
+		previousProgress, hadProgress := existing[key]
 		if turn.Status == "inProgress" || hadProgress || turn.Status == "interrupted" && e.ProgressRender != nil {
 			render := func(progress cards.ProgressView) string {
 				return cards.Task(cards.TaskView{Status: turn.Status, Progress: progress})
@@ -171,12 +172,31 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 					return e.ProgressRender(thread, turn.ID, turn.Status, progress)
 				}
 			}
-			card, err := boundedRenderedProgress(progressView(turn, observedAtMS), markerCardBudget(e.MaxCardBytes), render)
+			view := progressView(turn, observedAtMS)
+			view.TimeZone = e.TimeZone
+			clocks := make(map[string]int64, len(previousProgress.ProgressObservedAt)+len(view.Records))
+			for id, at := range previousProgress.ProgressObservedAt {
+				clocks[id] = at
+			}
+			for n := range view.Records {
+				record := &view.Records[n]
+				at, seen := clocks[record.ItemID]
+				if !seen {
+					// Historical replay and legacy mirrors cannot prove when an
+					// individual record was first received. Preserve that unknown.
+					if !replay && !(hadProgress && previousProgress.ProgressObservedAt == nil) {
+						at = observedAtMS
+					}
+					clocks[record.ItemID] = at
+				}
+				record.ReceivedAtMS = at
+			}
+			card, err := boundedRenderedProgress(view, markerCardBudget(e.MaxCardBytes), render)
 			if err != nil {
 				return snapshotPlan{}, err
 			}
 			if card != "" {
-				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
+				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, ProgressObservedAt: clocks, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
 			}
 		}
 		if turn.Status != "inProgress" {
@@ -298,7 +318,7 @@ func progressView(t codexclient.Turn, observedAtMS int64) cards.ProgressView {
 			(n == legacyFinal && !explicitFinal) {
 			continue
 		}
-		v.Records = append(v.Records, i.Text)
+		v.Records = append(v.Records, cards.ProgressRecord{ItemID: i.ID, Text: i.Text})
 		v.Body = i.Text
 	}
 	runes := []rune(v.Body)
@@ -331,7 +351,11 @@ func boundedRenderedProgress(v cards.ProgressView, limit int, render func(cards.
 		limit = cards.DefaultMaxCardBytes
 	}
 	// Copy the slice before replacing its final element during truncation.
-	v.Records = append([]string(nil), v.Records...)
+	v.Records = append([]cards.ProgressRecord(nil), v.Records...)
+	if omitted := len(v.Records) - cards.MaxProgressRecords; omitted > 0 {
+		v.Records = v.Records[omitted:]
+		v.OmittedRecords += omitted
+	}
 	card := render(v)
 	if card == "" {
 		return "", nil
@@ -382,7 +406,7 @@ func boundedRenderedProgress(v cards.ProgressView, limit int, render func(cards.
 		return true
 	}
 	if len(card) > limit && len(v.Records) == 1 {
-		if !shorten(v.Records[0], func(s string) { v.Records[0] = s }) {
+		if !shorten(v.Records[0].Text, func(s string) { v.Records[0].Text = s }) {
 			v.Records = nil
 			v.OmittedRecords++
 		}

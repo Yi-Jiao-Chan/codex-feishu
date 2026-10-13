@@ -471,7 +471,7 @@ func TestVersionNineMigrationPreservesMirrorAndM0Journals(t *testing.T) {
 	if err := s.FinishMirrorAttempt(ctx, first.ID, "unknown", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`DROP TABLE legacy_adoptions; DROP TABLE outbound_throttles; PRAGMA user_version=9`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE legacy_adoptions; DROP TABLE outbound_throttles; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=9`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {

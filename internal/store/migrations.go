@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 21
+const SchemaVersion = 22
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -292,6 +292,15 @@ PRAGMA user_version=4;
 			return err
 		}
 		if _, err = tx.Exec("PRAGMA user_version=21"); err != nil {
+			return err
+		}
+	}
+
+	if version < 22 {
+		if _, err = tx.Exec(`ALTER TABLE mirrors ADD COLUMN progress_observed_at_json TEXT NOT NULL DEFAULT 'null'`); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=22"); err != nil {
 			return err
 		}
 	}

@@ -1,8 +1,11 @@
 package cards
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strings"
+	"time"
+	"unicode"
 )
 
 type TaskView struct {
@@ -48,6 +51,10 @@ func Task(v TaskView) string {
 	if progress.Body == "" {
 		progress.Body = v.Body
 	}
+	if omitted := len(progress.Records) - MaxProgressRecords; omitted > 0 {
+		progress.Records = progress.Records[omitted:]
+		progress.OmittedRecords += omitted
+	}
 	terminal := (v.Status == "completed" || v.Status == "failed" || v.Status == "interrupted") &&
 		v.State != "pending" && v.State != "unknown" && v.Reason != "verifying"
 	if progress.ElapsedSeconds > 0 {
@@ -59,26 +66,22 @@ func Task(v TaskView) string {
 	}
 	var els []element
 	history := progress.Records
-	toolSummary := ""
-	if progress.RunningTools+progress.FinishedTools > 0 {
-		toolSummary = fmt.Sprintf("工具：%d 项执行中 · %d 项已结束", progress.RunningTools, progress.FinishedTools)
-	}
 	if terminal && len(history) == 0 && strings.TrimSpace(progress.Body) != "" {
-		history = []string{progress.Body}
+		history = []ProgressRecord{{Text: progress.Body}}
 	}
-	if terminal && (len(history) > 0 || progress.OmittedRecords > 0 || toolSummary != "") {
-		els = append(els, taskHistory(label, history, progress.OmittedRecords, toolSummary))
+	if terminal && (len(history) > 0 || progress.OmittedRecords > 0) {
+		els = append(els, taskHistory(label, history, progress.OmittedRecords, progress.TimeZone))
 	} else {
 		els = append(els, element{"tag": "markdown", "content": Safe(label), "text_size": "notation"})
 		if !terminal && strings.TrimSpace(progress.Body) != "" {
 			els = append(els, element{"tag": "markdown", "content": Safe(progress.Body), "text_size": "normal"})
 		}
-		if len(history) > 0 || progress.OmittedRecords > 0 || toolSummary != "" {
+		if len(history) > 0 || progress.OmittedRecords > 0 {
 			title := fmt.Sprintf("执行过程 · %d 条记录", len(history))
 			if len(history) == 0 {
 				title = "执行过程"
 			}
-			els = append(els, taskHistory(title, history, progress.OmittedRecords, toolSummary))
+			els = append(els, taskHistory(title, history, progress.OmittedRecords, progress.TimeZone))
 		}
 	}
 	if v.State == "available" && v.Reason != "verifying" && v.Token != "" && v.Revision > 0 &&
@@ -104,27 +107,72 @@ func taskDuration(seconds int64) string {
 	return fmt.Sprintf("%d 小时 %d 分", seconds/3600, seconds%3600/60)
 }
 
-func taskHistory(title string, records []string, omitted int, toolSummary string) element {
-	parts := make([]string, 0, len(records)+1)
+func taskHistory(title string, records []ProgressRecord, omitted int, zone string) element {
+	children := make([]element, 0, len(records)+1)
 	if omitted > 0 {
-		parts = append(parts, fmt.Sprintf("此前 %d 条记录已省略，请回 Codex App 查看。", omitted))
+		children = append(children, element{"tag": "markdown", "text_size": "notation", "margin": "0px", "content": fmt.Sprintf("此前 %d 条记录已省略，请回 Codex App 查看。", omitted)})
 	}
-	for _, record := range records {
-		if strings.TrimSpace(record) != "" {
-			parts = append(parts, Safe(record))
+	for n, record := range records {
+		if strings.TrimSpace(record.Text) != "" {
+			key := record.ItemID
+			if key == "" {
+				key = fmt.Sprint(n)
+			}
+			sum := sha256.Sum256([]byte(key))
+			row := taskPanel(taskRecordTime(record.ReceivedAtMS, zone)+" · "+taskRecordSummary(record.Text),
+				[]element{{"tag": "markdown", "text_size": "notation", "margin": "0px", "content": Safe(record.Text)}})
+			row["element_id"] = fmt.Sprintf("history_record_%x", sum[:10])
+			children = append(children, row)
 		}
 	}
-	if toolSummary != "" {
-		parts = append(parts, toolSummary)
-	}
+	panel := taskPanel(title, children)
+	panel["element_id"] = "execution_history"
+	return panel
+}
+
+func taskPanel(title string, children []element) element {
 	return element{
-		"tag": "collapsible_panel", "element_id": "execution_history", "expanded": false,
-		"padding": "0px", "vertical_spacing": "8px",
+		"tag": "collapsible_panel", "expanded": false,
+		"padding": "0px", "vertical_spacing": "4px", "margin": "0px",
 		"header": element{
-			"title": element{"tag": "plain_text", "content": title}, "padding": "0px",
+			"title": element{"tag": "plain_text", "content": Safe(title), "text_size": "notation", "text_color": "grey"}, "padding": "0px",
 			"icon":          element{"tag": "standard_icon", "token": "down-small-ccm_outlined", "size": "16px 16px"},
 			"icon_position": "right",
 		},
-		"elements": []element{{"tag": "markdown", "text_size": "notation", "content": strings.Join(parts, "\n\n")}},
+		"elements": children,
 	}
+}
+
+func taskRecordTime(ms int64, zone string) string {
+	if ms <= 0 {
+		return "时间未记录"
+	}
+	if zone == "" {
+		zone = "Asia/Shanghai"
+	}
+	location, err := time.LoadLocation(zone)
+	if err != nil {
+		location = time.UTC
+	}
+	return time.UnixMilli(ms).In(location).Format("15:04:05")
+}
+
+// Keep plain-text previews short enough for the compact mobile card. Newlines
+// and Markdown structure belong only in the expanded full-text body.
+func taskRecordSummary(text string) string {
+	flat := strings.Join(strings.Fields(text), " ")
+	width := 0
+	for offset, r := range flat {
+		step := 1
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) {
+			step = 0
+		} else if r >= 0x2e80 {
+			step = 2
+		}
+		if width+step > 28 {
+			return flat[:offset] + "…"
+		}
+		width += step
+	}
+	return flat
 }

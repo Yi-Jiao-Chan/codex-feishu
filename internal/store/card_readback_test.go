@@ -121,7 +121,7 @@ func TestCommandReadbackCooldownAndMarkerSurviveSchema16Migration(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`DROP TABLE card_request_markers; PRAGMA user_version=16`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE card_request_markers; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=16`); err != nil {
 		t.Fatal(err)
 	}
 	var seq int

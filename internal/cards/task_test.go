@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTaskUsesCompactNotationAndOnlyScopedOpaqueCallback(t *testing.T) {
@@ -36,36 +37,85 @@ func TestTaskUsesCompactNotationAndOnlyScopedOpaqueCallback(t *testing.T) {
 	}
 }
 
+func TestTaskRecordsUseSmallIndependentCollapsedPreviewsInEveryState(t *testing.T) {
+	text := "第一段很长的公开执行记录，应该在单行摘要中省略而且保留全文。\n\n第二段\n```go\nfmt.Println(\"public\")\n```"
+	at := time.Date(2026, 10, 13, 14, 12, 3, 0, time.UTC).UnixMilli()
+	for _, status := range []string{"inProgress", "completed", "interrupted", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			card := Task(TaskView{Status: status, Progress: ProgressView{
+				Records:  []ProgressRecord{{ItemID: "public-1", Text: text, ReceivedAtMS: at}, {ItemID: "public-2", Text: "同一条摘要", ReceivedAtMS: at + 1000}},
+				TimeZone: "Asia/Shanghai", RunningTools: 2, FinishedTools: 9,
+			}})
+			if strings.Contains(card, "工具：") || strings.Contains(card, "项已结束") {
+				t.Fatal("meaningless tool counts remain visible")
+			}
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(card), &doc); err != nil {
+				t.Fatal(err)
+			}
+			els := doc["body"].(map[string]any)["elements"].([]any)
+			outer := els[len(els)-1].(map[string]any)
+			title := outer["header"].(map[string]any)["title"].(map[string]any)
+			if title["text_size"] != "notation" || title["text_color"] != "grey" || outer["vertical_spacing"] != "4px" {
+				t.Fatal("history title lost explicit small native type or compact spacing")
+			}
+			rows := outer["elements"].([]any)
+			if len(rows) != 2 {
+				t.Fatal("public history was merged into paragraphs")
+			}
+			ids := map[string]bool{}
+			for n, value := range rows {
+				row := value.(map[string]any)
+				if row["tag"] != "collapsible_panel" || row["expanded"] != false {
+					t.Fatal("record did not retain its individual closed disclosure")
+				}
+				id := row["element_id"].(string)
+				if ids[id] {
+					t.Fatal("different native records share a panel identity")
+				}
+				ids[id] = true
+				heading := row["header"].(map[string]any)["title"].(map[string]any)
+				preview := heading["content"].(string)
+				if strings.ContainsAny(preview, "\r\n") || !strings.HasPrefix(preview, "22:12:0") || heading["text_size"] != "notation" {
+					t.Fatal("record preview is multiline or lost its configured-time-zone timestamp")
+				}
+				full := row["elements"].([]any)[0].(map[string]any)
+				if full["margin"] != "0px" || full["text_size"] != "notation" || n == 0 && (full["content"] != text || !strings.HasSuffix(preview, "…")) {
+					t.Fatal("preview truncation altered full Markdown or reintroduced loose record spacing")
+				}
+			}
+		})
+	}
+}
+
 func TestCompletedTaskRetainsCollapsedPublicHistory(t *testing.T) {
-	base := Task(TaskView{Status: "completed", Progress: ProgressView{Records: []string{"已检查模板", "已验证布局"}, ElapsedSeconds: 102}})
+	base := Task(TaskView{Status: "completed", Progress: ProgressView{Records: []ProgressRecord{{ItemID: "a", Text: "已检查模板"}, {ItemID: "b", Text: "已验证布局"}}, ElapsedSeconds: 102}})
 	marked, ok, err := WithRequestMarker(base, "cabcdefghijklmnopqrs")
 	if err != nil || !ok || len(marked)-len(base) != MaxRequestMarkerBytes {
 		t.Fatal("collapsed task did not reserve its exact delivery marker budget", err)
 	}
-	var doc struct {
-		Body struct {
-			Elements []struct {
-				Tag       string
-				ElementID string `json:"element_id"`
-				Expanded  bool
-				Header    struct{ Title struct{ Content string } }
-				Elements  []struct {
-					Content   string
-					ElementID string `json:"element_id"`
-				}
-			} `json:"elements"`
-		} `json:"body"`
-	}
+	var doc map[string]any
 	if err := json.Unmarshal([]byte(marked), &doc); err != nil {
 		t.Fatal(err)
 	}
-	els := doc.Body.Elements
-	if len(els) != 1 || els[0].Tag != "collapsible_panel" || els[0].ElementID != "execution_history" || els[0].Expanded || els[0].Header.Title.Content != "已完成 · 用时 1 分 42 秒" {
+	els := doc["body"].(map[string]any)["elements"].([]any)
+	panel := els[0].(map[string]any)
+	title := panel["header"].(map[string]any)["title"].(map[string]any)
+	if len(els) != 1 || panel["tag"] != "collapsible_panel" || panel["element_id"] != "execution_history" || panel["expanded"] != false || title["content"] != "已完成 · 用时 1 分 42 秒" {
 		t.Fatal("completed execution did not collapse to a single reviewable line")
 	}
-	if !strings.Contains(els[0].Elements[0].Content, "已检查模板") || !strings.Contains(els[0].Elements[0].Content, "已验证布局") || els[0].Elements[0].ElementID != "cabcdefghijklmnopqrs" {
-		t.Fatal("terminal card lost public history or its hidden delivery marker")
+	children := panel["elements"].([]any)
+	for n, expected := range []string{"已检查模板", "已验证布局"} {
+		row := children[n].(map[string]any)
+		if row["tag"] != "collapsible_panel" || row["expanded"] != false {
+			t.Fatal("completed history record is not individually collapsed")
+		}
+		text := row["elements"].([]any)[0].(map[string]any)
+		if text["content"] != expected || n == 0 && text["element_id"] != "cabcdefghijklmnopqrs" {
+			t.Fatal("terminal card lost full history or its nested delivery marker")
+		}
 	}
+
 }
 
 func TestTaskPendingUnknownAndUnprovenQueueHaveNoButtons(t *testing.T) {

@@ -232,7 +232,7 @@ func TestCommandRetryMigrationPreservesUnknownWithoutInventingAttempt(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec("UPDATE command_replies SET state='dispatching'; DROP TABLE command_reply_throttles; DROP TABLE command_reply_attempts; PRAGMA user_version=13"); err != nil {
+	if _, err := s.DB.Exec("UPDATE command_replies SET state='dispatching'; DROP TABLE command_reply_throttles; DROP TABLE command_reply_attempts; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=13"); err != nil {
 		t.Fatal(err)
 	}
 	var sequence int

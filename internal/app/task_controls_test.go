@@ -429,7 +429,7 @@ func TestTaskTypedProgressPreservesRecordsWhileMismatchedStatusSuppressesControl
 	f := newTaskFixture(t, true, "inProgress")
 	f.prepare(t, 200)
 	reads := f.native.reads
-	progress := cards.ProgressView{Records: []string{"first public action", "second public action"}, ElapsedSeconds: 3}
+	progress := cards.ProgressView{Records: []cards.ProgressRecord{{Text: "first public action"}, {Text: "second public action"}}, ElapsedSeconds: 3}
 	card := f.controls.Render("thread", "original-turn", "completed", progress)
 	if !strings.Contains(card, "正在核验任务状态") || strings.Contains(card, `"tag":"button"`) || !strings.Contains(card, "first public action") || !strings.Contains(card, "second public action") || f.native.reads != reads {
 		t.Fatal("typed process history bypassed stale-state controls or performed RPC")

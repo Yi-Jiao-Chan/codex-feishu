@@ -16,7 +16,8 @@ type Mirror struct {
 	ParentKey, ParentMessageID, RemoteID      string
 	State                                     string
 	EventType                                 string
-	EventAt                                   int64 // Original terminal event, Unix seconds; zero means unknown.
+	EventAt                                   int64            // Original terminal event, Unix seconds; zero means unknown.
+	ProgressObservedAt                        map[string]int64 // First local reception per public item; zero means unrecorded.
 }
 
 // Watermark records the end of a complete native history scan. It is a local
@@ -33,12 +34,16 @@ type MirrorAttempt struct {
 	Revision, CreatedAtMS                                 int64
 }
 
-const mirrorColumns = `m.host_id,m.thread_id,m.mirror_key,m.turn_id,m.kind,m.card_json,m.revision,m.delivered_revision,m.terminal,m.retired,m.replay,m.parent_key,m.parent_message_id,m.remote_id,o.state,m.event_type,m.event_at`
+const mirrorColumns = `m.host_id,m.thread_id,m.mirror_key,m.turn_id,m.kind,m.card_json,m.revision,m.delivered_revision,m.terminal,m.retired,m.replay,m.parent_key,m.parent_message_id,m.remote_id,o.state,m.event_type,m.event_at,m.progress_observed_at_json`
 
 type rowScanner interface{ Scan(...any) error }
 
 func scanMirror(row rowScanner) (m Mirror, err error) {
-	err = row.Scan(&m.HostID, &m.ThreadID, &m.Key, &m.TurnID, &m.Kind, &m.Card, &m.Revision, &m.DeliveredRevision, &m.Terminal, &m.Retired, &m.Replay, &m.ParentKey, &m.ParentMessageID, &m.RemoteID, &m.State, &m.EventType, &m.EventAt)
+	var clocks string
+	err = row.Scan(&m.HostID, &m.ThreadID, &m.Key, &m.TurnID, &m.Kind, &m.Card, &m.Revision, &m.DeliveredRevision, &m.Terminal, &m.Retired, &m.Replay, &m.ParentKey, &m.ParentMessageID, &m.RemoteID, &m.State, &m.EventType, &m.EventAt, &clocks)
+	if err == nil {
+		err = json.Unmarshal([]byte(clocks), &m.ProgressObservedAt)
+	}
 	return
 }
 
@@ -100,6 +105,11 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			return errors.New("invalid or duplicate public mirror")
 		}
 		seen[m.Key] = true
+		for id, at := range m.ProgressObservedAt {
+			if m.Kind != "progress" || id == "" || at < 0 {
+				return errors.New("invalid progress reception time")
+			}
+		}
 		if m.EventAt < 0 || m.EventType == "" && m.EventAt != 0 || m.EventType != "" && (m.Kind != "final" || m.EventType != "completed" && m.EventType != "failed") {
 			return errors.New("invalid public notification event")
 		}
@@ -122,7 +132,11 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			if m.Retired {
 				return ErrConflict // Only an existing obsolete segment can retire.
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,replay,parent_key,parent_message_id,event_type,event_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, host, thread, m.Key, m.TurnID, m.Kind, m.Card, m.Terminal, m.Replay, m.ParentKey, m.ParentMessageID, m.EventType, m.EventAt)
+			clocks, marshalErr := json.Marshal(m.ProgressObservedAt)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,replay,parent_key,parent_message_id,event_type,event_at,progress_observed_at_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, host, thread, m.Key, m.TurnID, m.Kind, m.Card, m.Terminal, m.Replay, m.ParentKey, m.ParentMessageID, m.EventType, m.EventAt, string(clocks))
 			if err == nil {
 				_, err = tx.ExecContext(ctx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, host, thread, m.Key)
 			}
@@ -132,7 +146,29 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			if old.Kind != m.Kind || old.TurnID != m.TurnID || old.ParentKey != m.ParentKey || old.ParentMessageID != m.ParentMessageID {
 				return ErrConflict
 			}
-			if old.Terminal && !m.Terminal || old.Card == m.Card && old.Terminal == m.Terminal && old.Retired == m.Retired {
+			if old.Terminal && !m.Terminal {
+				continue
+			}
+			// Presentation updates and callbacks may omit this metadata. Merge
+			// only new item identities, retaining the first value even if zero.
+			if m.ProgressObservedAt != nil {
+				if old.ProgressObservedAt == nil {
+					old.ProgressObservedAt = make(map[string]int64)
+				}
+				for id, at := range m.ProgressObservedAt {
+					if _, seen := old.ProgressObservedAt[id]; !seen {
+						old.ProgressObservedAt[id] = at
+					}
+				}
+				clocks, marshalErr := json.Marshal(old.ProgressObservedAt)
+				if marshalErr != nil {
+					return marshalErr
+				}
+				if _, err = tx.ExecContext(ctx, `UPDATE mirrors SET progress_observed_at_json=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, string(clocks), host, thread, m.Key); err != nil {
+					return err
+				}
+			}
+			if old.Card == m.Card && old.Terminal == m.Terminal && old.Retired == m.Retired {
 				continue
 			}
 			// Replay provenance belongs to the first observation. Reconnect

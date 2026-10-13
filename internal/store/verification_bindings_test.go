@@ -110,7 +110,7 @@ func TestVerificationBindingMigrationFromTwentyPreservesJournals(t *testing.T) {
 	if err := s.Finish(ctx, "m0-retained", "confirmed", "om_m0"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`DROP TABLE verification_bindings; PRAGMA user_version=20`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE verification_bindings; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=20`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {

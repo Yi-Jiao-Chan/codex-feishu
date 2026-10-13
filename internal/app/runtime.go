@@ -46,6 +46,7 @@ type Runtime struct {
 	DirectoryRules             func(context.Context) ([]rules.DirectoryRule, error)
 	ScanInterval, PollInterval time.Duration
 	MinProgressIntervalMS      int64
+	ProgressTimeZone           string
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
 	BeginDelivery              func(context.Context, store.Binding) (context.Context, func(), error)
@@ -376,7 +377,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	}
 	timer := time.NewTicker(interval)
 	defer timer.Stop()
-	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID}
+	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
 	engine.ProgressRender = r.RenderProgress
 	if r.Mentions.Enabled {
 		engine.MentionTargets = r.Mentions.Targets

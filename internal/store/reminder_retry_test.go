@@ -243,7 +243,7 @@ func TestReminderRetryMigratesSchema14WithoutInventingRejection(t *testing.T) {
 	ctx := context.Background()
 	s, path, o, _, at := retryRequestFixture(t)
 	a := claimRequest(t, s, o, at)
-	if _, err := s.DB.Exec(`DROP TABLE request_reminder_throttles; PRAGMA user_version=14`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE request_reminder_throttles; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=14`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {

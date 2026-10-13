@@ -176,7 +176,7 @@ func TestReactionRetryMigrationPreservesExistingFeedback(t *testing.T) {
 	if err := s.FinishReactionTransition(ctx, tr, "confirmed", "known"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec("DROP TABLE reaction_throttles; PRAGMA user_version=11"); err != nil {
+	if _, err := s.DB.Exec("DROP TABLE reaction_throttles; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=11"); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
