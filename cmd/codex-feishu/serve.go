@@ -102,7 +102,7 @@ func runServe(ctx context.Context, args []string) int {
 		return 7
 	}
 	defer db.Close()
-	pairManager, err := pairing.New(cfg.Feishu.AppID, cfg.Access.OwnerOpenID)
+	pairManager, err := pairing.NewWithOptions(cfg.Feishu.AppID, cfg.Access.OwnerOpenID, pairing.Options{BotOpenID: bot})
 	if err != nil {
 		emit(output{Command: "serve", State: "pairing-unavailable"})
 		return 7

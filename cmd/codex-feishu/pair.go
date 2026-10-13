@@ -152,11 +152,6 @@ func executePair(ctx context.Context, p setup.PairPreparation, ttl time.Duration
 		}
 		defer lock.Close()
 	}
-	manager, err := pairing.New(p.AppID, p.ExpectedOwner)
-	if err != nil {
-		return failure("pair-input-invalid", 2)
-	}
-	defer manager.Close()
 	gateway := deps.gateway(p.AppID, p.Secret)
 	preflight, cancel := context.WithTimeout(ctx, 30*time.Second)
 	bot, err := gateway.Bot(preflight)
@@ -164,6 +159,11 @@ func executePair(ctx context.Context, p setup.PairPreparation, ttl time.Duration
 	if err != nil || !config.ValidOpenID(bot) {
 		return failure("pair-feishu-unavailable", 4)
 	}
+	manager, err := pairing.NewWithOptions(p.AppID, p.ExpectedOwner, pairing.Options{BotOpenID: bot})
+	if err != nil {
+		return failure("pair-input-invalid", 2)
+	}
+	defer manager.Close()
 	listenCtx, stop := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {

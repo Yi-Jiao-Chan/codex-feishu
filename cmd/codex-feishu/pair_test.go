@@ -142,7 +142,10 @@ func TestTemporaryPairingOnlyListensAndJoinsBeforeReleasingLocks(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatal("unrecognized message produced pairing success")
 	}
-	if err := g.message(ctx, pairEvent(t, p.AppID, command, "p2p", p.ExpectedOwner)); err != nil {
+	matching := pairEvent(t, p.AppID, " @_user_1 "+command+"\n", "p2p", p.ExpectedOwner)
+	key, bot := "@_user_1", "ou_fixture_bot_valid"
+	matching.Event.Message.Mentions = []*im.MentionEvent{{Key: &key, Id: &im.UserId{OpenId: &bot}}}
+	if err := g.message(ctx, matching); err != nil {
 		t.Fatal(err)
 	}
 	result := readPairOutput(t, events)

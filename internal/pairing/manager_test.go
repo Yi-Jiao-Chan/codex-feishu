@@ -84,6 +84,9 @@ func TestValidationAndRandomness(t *testing.T) {
 	if _, err := New("", ""); !errors.Is(err, ErrInvalid) {
 		t.Fatal("empty app accepted")
 	}
+	if _, err := NewWithOptions(testApp, testOwner, Options{BotOpenID: "invalid<bot>"}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("invalid bot identity accepted")
+	}
 	m, _ := fakeManager(t, "")
 	for _, requestID := range []string{"", "input contains secret", strings.Repeat("A", 32), strings.Repeat("g", 32), strings.Repeat("0", 31)} {
 		if _, err := m.Begin(requestID, time.Second); !errors.Is(err, ErrInvalid) {
@@ -202,6 +205,52 @@ func TestPairCommandAcceptsClipboardWhitespace(t *testing.T) {
 		if got.OwnerOpenID != testOwner {
 			t.Fatal("clipboard normalization changed the paired identity")
 		}
+	}
+}
+
+func TestPairCommandLeadingMentionUsesAuthenticatedBotIdentity(t *testing.T) {
+	const bot = "ou_pairing_bot"
+	for _, tc := range []struct {
+		name      string
+		botID     string
+		mentionID string
+		edit      func(*im.P2MessageReceiveV1)
+		handled   bool
+		confirmed bool
+	}{
+		{name: "bot", botID: bot, mentionID: bot, handled: true, confirmed: true},
+		{name: "wrong-target", botID: bot, mentionID: testOwner},
+		{name: "no-bot-proof", mentionID: bot},
+		{name: "group", botID: bot, mentionID: bot, handled: true, edit: func(e *im.P2MessageReceiveV1) { e.Event.Message.ChatType = ptr("group") }},
+		{name: "wrong-app", botID: bot, mentionID: bot, handled: true, edit: func(e *im.P2MessageReceiveV1) { e.EventV2Base.Header.AppID = "cli_another" }},
+		{name: "wrong-sender", botID: bot, mentionID: bot, handled: true, edit: func(e *im.P2MessageReceiveV1) { e.Event.Sender.SenderId.OpenId = ptr("ou_other_owner") }},
+		{name: "missing-mention-id", botID: bot, mentionID: bot, edit: func(e *im.P2MessageReceiveV1) { e.Event.Message.Mentions[0].Id = nil }},
+		{name: "missing-mention-key", botID: bot, mentionID: bot, edit: func(e *im.P2MessageReceiveV1) { e.Event.Message.Mentions[0].Key = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := NewWithOptions(testApp, testOwner, Options{BotOpenID: tc.botID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(m.Close)
+			c := begin(t, m, 1, time.Second)
+			e := message("  @_user_1 /pair " + c.Code + "\n")
+			e.Event.Message.Mentions = []*im.MentionEvent{{Key: ptr("@_user_1"), Id: &im.UserId{OpenId: ptr(tc.mentionID)}}}
+			if tc.edit != nil {
+				tc.edit(e)
+			}
+			if m.Handle(e) != tc.handled {
+				t.Fatal("unexpected pairing command interception")
+			}
+			want := StateWaiting
+			if tc.confirmed {
+				want = StateConfirmed
+			}
+			got := state(t, m, 1, want)
+			if tc.confirmed && got.OwnerOpenID != testOwner {
+				t.Fatal("mention normalization changed the authenticated owner")
+			}
+		})
 	}
 }
 

@@ -53,7 +53,8 @@ type Challenge struct {
 // calls. A custom clock is checked on every operation; the real-time expiry
 // timer additionally clears the active code when its deadline is reached.
 type Options struct {
-	Now func() time.Time
+	Now       func() time.Time
+	BotOpenID string // Resolved by the authenticated bot API before listening.
 }
 
 type request struct {
@@ -68,6 +69,7 @@ type Manager struct {
 	mu            sync.Mutex
 	appID         string
 	expectedOwner string
+	botOpenID     string
 	now           func() time.Time
 	active        *request
 	terminal      []*request
@@ -80,13 +82,13 @@ func New(appID, expectedOwner string) (*Manager, error) {
 }
 
 func NewWithOptions(appID, expectedOwner string, options Options) (*Manager, error) {
-	if !config.ValidAppID(appID) || expectedOwner != "" && !config.ValidOpenID(expectedOwner) {
+	if !config.ValidAppID(appID) || expectedOwner != "" && !config.ValidOpenID(expectedOwner) || options.BotOpenID != "" && !config.ValidOpenID(options.BotOpenID) {
 		return nil, ErrInvalid
 	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
-	return &Manager{appID: appID, expectedOwner: expectedOwner, now: options.Now}, nil
+	return &Manager{appID: appID, expectedOwner: expectedOwner, botOpenID: options.BotOpenID, now: options.Now}, nil
 }
 
 // GenerateRequestID returns a cryptographically random 128-bit correlation ID.
@@ -197,6 +199,25 @@ func (m *Manager) Handle(e *im.P2MessageReceiveV1) bool {
 	// Clipboard copies can include surrounding whitespace. Normalize only the
 	// outside of the command; the token and internal separator remain exact.
 	text := strings.TrimSpace(content.Text)
+	// Private-chat users can also @ the bot. Remove only leading placeholders
+	// whose structured mention identity matches the authenticated bot.
+	for m.botOpenID != "" {
+		removed := false
+		for _, mention := range msg.Mentions {
+			if mention == nil || mention.Id == nil || value(mention.Id.OpenId) != m.botOpenID {
+				continue
+			}
+			key := value(mention.Key)
+			if key != "" && strings.HasPrefix(text, key) {
+				text = strings.TrimSpace(strings.TrimPrefix(text, key))
+				removed = true
+				break
+			}
+		}
+		if !removed {
+			break
+		}
+	}
 	fields := strings.Fields(text)
 	if len(fields) == 0 || fields[0] != "/pair" {
 		return false
