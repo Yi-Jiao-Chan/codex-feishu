@@ -101,7 +101,7 @@ func TestMirrorSchema15UpgradeDoesNotInventMarkersForFrozenUnknown(t *testing.T)
 	bindMirrorThread(t, s)
 	stage(t, s, 100, mirrorDoc("human", "human", "legacy frozen document"))
 	a := claimMirror(t, s, "human", 1000)
-	if _, err := s.DB.Exec(`DROP TABLE outbound_request_markers; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=15`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE outbound_request_markers; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; ALTER TABLE create_intents DROP COLUMN description; PRAGMA user_version=15`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {

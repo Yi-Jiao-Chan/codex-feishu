@@ -487,6 +487,18 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	}
 	r.CanDeliver = s.canDeliver
 	r.BeginDelivery = s.beginCardDelivery
+	media := &messages.HumanMedia{Store: s.Store, AppID: s.Config.Feishu.AppID,
+		BeginWrite: func(ctx context.Context, thread string) (context.Context, func(), error) {
+			binding, err := s.Store.Binding(ctx, s.Config.Host.ID, thread)
+			if err != nil {
+				return ctx, func() {}, err
+			}
+			return s.beginCardDelivery(ctx, binding)
+		}}
+	if uploader, ok := s.Gateway.(messages.ImageUploader); ok {
+		media.Uploader = uploader
+	}
+	r.PrepareHuman = media.Resolve
 	r.VerificationAuthorize = func(ctx context.Context, t codexclient.Thread, automatic bool) (bool, error) {
 		_, handled, err := s.verificationMarker(ctx, t.ID)
 		if !handled {

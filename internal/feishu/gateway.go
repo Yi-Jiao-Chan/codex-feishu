@@ -114,12 +114,16 @@ func (g *Gateway) Bot(ctx context.Context) (string, error) {
 	return r.Bot.OpenID, err
 }
 func (g *Gateway) CreateGroup(ctx context.Context, name, owner string, members []string, uuid string) (string, error) {
+	return g.CreateGroupWithDescription(ctx, name, owner, members, uuid, "跟进同一个 Codex 会话的任务与公开回复")
+}
+
+func (g *Gateway) CreateGroupWithDescription(ctx context.Context, name, owner string, members []string, uuid, description string) (string, error) {
 	var r struct {
 		Data struct {
 			ChatID string `json:"chat_id"`
 		} `json:"data"`
 	}
-	body := map[string]any{"name": name, "owner_id": owner, "user_id_list": members, "chat_mode": "group", "chat_type": "private", "description": "跟进同一个 Codex 会话的任务与公开回复"}
+	body := map[string]any{"name": name, "owner_id": owner, "user_id_list": members, "chat_mode": "group", "chat_type": "private", "description": description}
 	err := g.request(ctx, "POST", "/open-apis/im/v1/chats", core.QueryParams{"user_id_type": {"open_id"}, "uuid": {uuid}}, body, &r)
 	if err == nil && r.Data.ChatID == "" {
 		err = &Unknown{"create group response missing chat_id"}

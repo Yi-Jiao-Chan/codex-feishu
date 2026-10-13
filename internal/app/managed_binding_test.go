@@ -54,6 +54,10 @@ type managedBindingGateway struct {
 	reactionParents []string
 }
 
+func (g *managedBindingGateway) CreateGroupWithDescription(ctx context.Context, name, owner string, members []string, uuid, _ string) (string, error) {
+	return g.CreateGroup(ctx, name, owner, members, uuid)
+}
+
 func (g *managedBindingGateway) CreateGroup(context.Context, string, string, []string, string) (string, error) {
 	g.creates.Add(1)
 	return "verification-chat", nil

@@ -16,8 +16,8 @@ type Observation struct {
 	CreatedAt                                                                                  int64
 }
 type GroupIntent struct {
-	ID, HostID, ThreadID, OwnerID, Name, State, ChatID string
-	Members                                            []string
+	ID, HostID, ThreadID, OwnerID, Name, State, ChatID, Description string
+	Members                                                         []string
 }
 
 func (s *Store) BaselineFence(ctx context.Context, host string) (int64, bool, error) {
@@ -54,7 +54,7 @@ func (s *Store) Binding(ctx context.Context, host, thread string) (Binding, erro
 func (s *Store) GroupIntent(ctx context.Context, id string) (GroupIntent, error) {
 	var i GroupIntent
 	var members string
-	err := s.DB.QueryRowContext(ctx, "SELECT intent_id,host_id,thread_id,owner_id,name,members_json,state,chat_id FROM create_intents WHERE intent_id=?", id).Scan(&i.ID, &i.HostID, &i.ThreadID, &i.OwnerID, &i.Name, &members, &i.State, &i.ChatID)
+	err := s.DB.QueryRowContext(ctx, "SELECT intent_id,host_id,thread_id,owner_id,name,members_json,state,chat_id,description FROM create_intents WHERE intent_id=?", id).Scan(&i.ID, &i.HostID, &i.ThreadID, &i.OwnerID, &i.Name, &members, &i.State, &i.ChatID, &i.Description)
 	if err != nil {
 		return i, err
 	}
@@ -200,11 +200,11 @@ func (s *Store) PrepareGroup(ctx context.Context, host, thread, owner, name stri
 	if err != nil {
 		return intent, err
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT OR IGNORE INTO create_intents(intent_id,host_id,thread_id,owner_id,name,members_json,state,created_at) VALUES(?,?,?,?,?,?,'ready',?)", ID(), host, thread, owner, name, string(memberJSON), time.Now().Unix()); err != nil {
+	if _, err = tx.ExecContext(ctx, "INSERT OR IGNORE INTO create_intents(intent_id,host_id,thread_id,owner_id,name,members_json,state,created_at,description) VALUES(?,?,?,?,?,?,'ready',?,'')", ID(), host, thread, owner, name, string(memberJSON), time.Now().Unix()); err != nil {
 		return intent, err
 	}
 	var raw string
-	err = tx.QueryRowContext(ctx, "SELECT intent_id,host_id,thread_id,owner_id,name,members_json,state,chat_id FROM create_intents WHERE host_id=? AND thread_id=?", host, thread).Scan(&intent.ID, &intent.HostID, &intent.ThreadID, &intent.OwnerID, &intent.Name, &raw, &intent.State, &intent.ChatID)
+	err = tx.QueryRowContext(ctx, "SELECT intent_id,host_id,thread_id,owner_id,name,members_json,state,chat_id,description FROM create_intents WHERE host_id=? AND thread_id=?", host, thread).Scan(&intent.ID, &intent.HostID, &intent.ThreadID, &intent.OwnerID, &intent.Name, &raw, &intent.State, &intent.ChatID, &intent.Description)
 	if err != nil {
 		return intent, err
 	}
@@ -217,6 +217,30 @@ func (s *Store) PrepareGroup(ctx context.Context, host, thread, owner, name stri
 func (s *Store) ClaimGroupDispatch(ctx context.Context, id string) (bool, error) {
 	_, claimed, err := s.ClaimGroupAttempt(ctx, id, time.Now().UnixMilli())
 	return claimed, err
+}
+
+// FreezeGroupDescription records the attached thread's actual cwd before its
+// first dispatch. Rate-limit retries keep the original description and UUID.
+func (s *Store) FreezeGroupDescription(ctx context.Context, id, description string) (string, error) {
+	if description == "" {
+		return "", ErrConflict
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE create_intents SET description=? WHERE intent_id=? AND state='ready' AND description='' AND NOT EXISTS(SELECT 1 FROM group_attempts a WHERE a.intent_id=create_intents.intent_id)`, description, id); err != nil {
+		return "", err
+	}
+	var frozen string
+	if err := tx.QueryRowContext(ctx, "SELECT description FROM create_intents WHERE intent_id=?", id).Scan(&frozen); err != nil {
+		return "", err
+	}
+	if frozen == "" {
+		return "", ErrConflict
+	}
+	return frozen, tx.Commit()
 }
 
 // Only use after acquiring this deployment's process lock at startup.

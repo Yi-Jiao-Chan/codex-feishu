@@ -117,7 +117,7 @@ func (g *serveVersionGateway) Listen(ctx context.Context, _ func(context.Context
 	<-ctx.Done()
 	return ctx.Err()
 }
-func (g *serveVersionGateway) CreateGroup(context.Context, string, string, []string, string) (string, error) {
+func (g *serveVersionGateway) CreateGroupWithDescription(context.Context, string, string, []string, string, string) (string, error) {
 	g.groups.Add(1)
 	return "", errors.New("unexpected group mutation")
 }

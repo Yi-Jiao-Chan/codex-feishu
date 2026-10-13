@@ -77,7 +77,7 @@ func TestSchema21ProgressClockMigrationDoesNotInventReceptionTimes(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=21`); err != nil {
+	if _, err := s.DB.Exec(`ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; ALTER TABLE create_intents DROP COLUMN description; PRAGMA user_version=21`); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

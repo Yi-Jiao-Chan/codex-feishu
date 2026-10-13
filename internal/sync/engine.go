@@ -21,14 +21,17 @@ type NativeHistory interface {
 
 // Engine converts complete public history into durable deliveries. A per-thread
 // actor serializes Reconcile calls; events only trigger a new full reconciliation
-// and never publish token deltas directly. No remote writes happen here.
+// and never publish token deltas directly. Optional image preparation journals
+// resource uploads before the pure renderer stages message delivery.
 type Engine struct {
-	Store          *store.Store
-	Native         NativeHistory
-	HostID         string
-	TimeZone       string
-	MaxCardBytes   int
-	MentionTargets []string // Reserve the complete structured reminder before splitting final text.
+	Store            *store.Store
+	Native           NativeHistory
+	HostID           string
+	TimeZone         string
+	MaxCardBytes     int
+	MentionTargets   []string // Reserve the complete structured reminder before splitting final text.
+	PrepareHuman     func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
+	humanAttachments map[string][]cards.AttachmentView
 	// ProgressRender is pure; the actor prepares its durable control state first.
 	// An empty interrupted render suppresses a new historical progress card.
 	ProgressRender func(thread, turn, nativeStatus string, progress cards.ProgressView) string
@@ -68,6 +71,43 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 	plan, err := e.renderSnapshot(thread, turns, receipts, old, replay, observedAtMS)
 	if err != nil {
 		return err
+	}
+	// Validate the complete snapshot before any resource upload. The renderer
+	// remains pure for recovery and reviewed legacy adoption.
+	if e.PrepareHuman != nil {
+		e.humanAttachments = make(map[string][]cards.AttachmentView)
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if item.Type != "userMessage" {
+					continue
+				}
+				external := false
+				if item.ClientID != nil {
+					for _, receipt := range receipts {
+						if receipt.ClientID == *item.ClientID {
+							external = true
+							break
+						}
+					}
+				}
+				if external {
+					continue
+				}
+				refs := item.UserPresentation().Attachments
+				if len(refs) == 0 {
+					continue
+				}
+				views, err := e.PrepareHuman(ctx, thread, refs)
+				if err != nil {
+					return err
+				}
+				e.humanAttachments[mirrorKey("attachments", turn.ID, item.ID)] = views
+			}
+		}
+		plan, err = e.renderSnapshot(thread, turns, receipts, old, replay, observedAtMS)
+		if err != nil {
+			return err
+		}
 	}
 	return e.Store.StageSnapshot(ctx, e.HostID, thread, plan.Docs, plan.Links, plan.Mark)
 }
@@ -128,11 +168,16 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 					continue // Feishu's original message is already human context.
 				}
 			}
-			text := i.PublicText()
-			if strings.TrimSpace(text) == "" {
+			presentation := i.UserPresentation()
+			text := presentation.Text
+			views, prepared := e.humanAttachments[mirrorKey("attachments", turn.ID, i.ID)]
+			if !prepared {
+				views = attachmentPlaceholders(presentation.Attachments)
+			}
+			if strings.TrimSpace(text) == "" && len(views) == 0 {
 				text = "此条输入没有可同步的文本，请在 Codex 中查看。"
 			}
-			parts, err := cards.SplitMessage("人类发送", "Codex 端", text, markerCardBudget(e.MaxCardBytes))
+			parts, err := cards.SplitHuman("Codex 端", text, views, markerCardBudget(e.MaxCardBytes))
 			if err != nil {
 				return snapshotPlan{}, err
 			}

@@ -18,11 +18,11 @@ type runtimeGroupRateFixture struct {
 	calls atomic.Int32
 }
 
-func (g *runtimeGroupRateFixture) CreateGroup(ctx context.Context, name, owner string, members []string, uuid string) (string, error) {
+func (g *runtimeGroupRateFixture) CreateGroupWithDescription(ctx context.Context, name, owner string, members []string, uuid, description string) (string, error) {
 	if g.calls.Add(1) == 1 {
 		return "", &feishu.RateLimited{RetryAfter: 10 * time.Second}
 	}
-	return g.runtimeGateway.CreateGroup(ctx, name, owner, members, uuid)
+	return g.runtimeGateway.CreateGroupWithDescription(ctx, name, owner, members, uuid, description)
 }
 
 func TestRuntimeGroupDeadlinePreservesFinalAndWakesWithoutNewInput(t *testing.T) {

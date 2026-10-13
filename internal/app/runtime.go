@@ -47,6 +47,7 @@ type Runtime struct {
 	ScanInterval, PollInterval time.Duration
 	MinProgressIntervalMS      int64
 	ProgressTimeZone           string
+	PrepareHuman               func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
 	BeginDelivery              func(context.Context, store.Binding) (context.Context, func(), error)
@@ -378,6 +379,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	timer := time.NewTicker(interval)
 	defer timer.Stop()
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
+	engine.PrepareHuman = r.PrepareHuman
 	engine.ProgressRender = r.RenderProgress
 	if r.Mentions.Enabled {
 		engine.MentionTargets = r.Mentions.Targets
@@ -385,6 +387,40 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership, MinProgressIntervalMS: r.MinProgressIntervalMS, Now: r.now, BeginWrite: r.BeginDelivery}
 	if reader, ok := r.Messages.(messages.MessageReadbackGateway); ok {
 		outbound.Readback = reader
+	}
+	deliver := func(b store.Binding, turns []codexclient.Turn, historyOK bool) {
+		if r.ready() && (r.CanDeliver == nil || r.CanDeliver(ctx, b) == nil) {
+			// Bounded batch prevents one long answer from monopolizing
+			// shutdown; every segment has its own pre-RPC journal.
+			for i := 0; i < 16 && ctx.Err() == nil; i++ {
+				result, err := outbound.DispatchOne(ctx, r.HostID, a.thread, r.now().UnixMilli())
+				if err != nil {
+					r.notice("delivery.commit_pending")
+					break
+				}
+				if result.AttemptID == "" {
+					break
+				}
+				if result.State == "deferred" {
+					r.notice("delivery.rate_limited")
+					continue // Independent final or queue cards may still deliver.
+				}
+				if result.State != "confirmed" {
+					r.notice("delivery.verification_required")
+					break
+				}
+			}
+			if r.AfterDelivery != nil {
+				if err := r.AfterDelivery(ctx, a.thread, turns); err != nil {
+					r.notice("feedback.reconcile_pending")
+				}
+			}
+			if r.WaitingReminder != nil && historyOK {
+				if _, err := r.WaitingReminder(ctx, a.thread); err != nil {
+					r.notice("request.reminder_pending")
+				}
+			}
+		}
 	}
 	members := []string{r.OwnerID}
 	seenMembers := map[string]bool{r.OwnerID: true}
@@ -402,6 +438,9 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	var groupRetryAtMS int64
 	dirty := true
 	lastRead := time.Time{}
+	deliveryAuthorized := false
+	var latestTurns []codexclient.Turn
+	latestHistoryOK := false
 	title := "Codex"
 actorLoop:
 	for {
@@ -412,7 +451,8 @@ actorLoop:
 			groupRetryAtMS = 0
 			dirty = true
 		}
-		if dirty || r.now().Sub(lastRead) >= 15*time.Second {
+		readHistory := dirty || r.now().Sub(lastRead) >= 15*time.Second
+		if readHistory {
 			dirty = false
 			lastRead = r.now()
 			if !attached {
@@ -438,6 +478,7 @@ actorLoop:
 				cancel()
 			}
 			if attached {
+				deliveryAuthorized = false
 				readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				meta, err := r.Native.Metadata(readCtx, a.thread)
 				verificationHandled := false
@@ -451,6 +492,7 @@ actorLoop:
 					r.notice("thread.authorization_pending")
 					continue actorLoop
 				}
+				deliveryAuthorized = true
 				if r.ActorTick != nil {
 					if _, err := r.Store.Binding(readCtx, r.HostID, a.thread); err == nil {
 						if err := r.ActorTick(readCtx, a.thread); err != nil {
@@ -506,40 +548,10 @@ actorLoop:
 					hydrated = true
 					a.replay = false
 				}
+				latestTurns, latestHistoryOK = turns, err == nil
 				b, bindingErr := r.Store.Binding(ctx, r.HostID, a.thread)
 				if bindingErr == nil {
-					if r.ready() && (r.CanDeliver == nil || r.CanDeliver(ctx, b) == nil) {
-						// Bounded batch prevents one long answer from monopolizing
-						// shutdown; every segment has its own pre-RPC journal.
-						for i := 0; i < 16 && ctx.Err() == nil; i++ {
-							result, err := outbound.DispatchOne(ctx, r.HostID, a.thread, r.now().UnixMilli())
-							if err != nil {
-								r.notice("delivery.commit_pending")
-								break
-							}
-							if result.AttemptID == "" {
-								break
-							}
-							if result.State == "deferred" {
-								r.notice("delivery.rate_limited")
-								continue // Independent final or queue cards may still deliver.
-							}
-							if result.State != "confirmed" {
-								r.notice("delivery.verification_required")
-								break
-							}
-						}
-						if r.AfterDelivery != nil {
-							if err := r.AfterDelivery(ctx, a.thread, turns); err != nil {
-								r.notice("feedback.reconcile_pending")
-							}
-						}
-						if r.WaitingReminder != nil && err == nil {
-							if _, err := r.WaitingReminder(ctx, a.thread); err != nil {
-								r.notice("request.reminder_pending")
-							}
-						}
-					}
+					deliver(b, turns, err == nil)
 				} else if !errors.Is(bindingErr, sql.ErrNoRows) {
 					r.notice("binding.read_pending")
 				} else if hydrated && !a.boundOnly && !verificationHandled && r.DiscoveryEnabled && r.ready() && !groupRunning && !groupBlocked && r.now().UnixMilli() >= groupRetryAtMS {
@@ -560,6 +572,20 @@ actorLoop:
 						case <-ctx.Done():
 						}
 					}(title)
+				}
+			}
+		}
+		if !readHistory && deliveryAuthorized && r.ready() {
+			// Pending cards have their own local deadline. Retrying delivery
+			// must not re-read native history on every actor tick.
+			due, err := r.Store.HasDueMirrors(ctx, r.HostID, a.thread, r.now().UnixMilli(), r.MinProgressIntervalMS)
+			if err != nil {
+				r.notice("delivery.selection_pending")
+			} else if due {
+				if b, err := r.Store.Binding(ctx, r.HostID, a.thread); err == nil {
+					deliver(b, latestTurns, latestHistoryOK)
+				} else if !errors.Is(err, sql.ErrNoRows) {
+					r.notice("binding.read_pending")
 				}
 			}
 		}

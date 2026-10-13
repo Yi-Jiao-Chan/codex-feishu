@@ -62,7 +62,7 @@ func TestVerificationGroupMigrationFromEighteenPreservesM0AndCard(t *testing.T) 
 	if err := s.Finish(ctx, "m0-retained", "confirmed", "om_m0"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`DROP TABLE verification_groups; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; PRAGMA user_version=18`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE verification_groups; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; ALTER TABLE create_intents DROP COLUMN description; PRAGMA user_version=18`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {

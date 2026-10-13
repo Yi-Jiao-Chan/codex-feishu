@@ -31,6 +31,8 @@ creating_group 响应未知 → reconciling_group
 
 创建前在 SQLite 领取 `(host_id, thread_id)`，保存 stable intent 与预期成员，并先附着原生线程接收公开事件；建群在独立步骤执行，不阻塞事件存储。群名采用项目名 + 短任务标题，完整路径与线程 ID 放卡片详情。默认加入 owner 与机器人；其他用户只有列在 groups.additional_member_open_ids、且确认平台允许时才加入。notification target 不隐式扩大成员或操作权限。
 
+新建群描述写 `工作目录：<首次附着的实际 CWD>`，完整保留 worktree 路径，不用项目根替代、不截断。schema 23 在首次 dispatch 前冻结描述，限流重试与重启保持原描述和 UUID；已有 attempt 保留旧版原描述，既有群由单独 GET / PUT / GET 核验更新，不随发现隐式修改。接口与长度建议见[群工作目录研究](../research/chat-working-directory-2026-10-13.md)。
+
 群 API 的幂等字段由 03 提供。响应未知先核验；没有可靠核验通道时停止该意图并显示阻塞，绝不根据群名猜测并再次创建。拿到 chat ID 后保存绑定，再发送任务卡并由 05 补齐首轮全部人类输入/公开 AI 内容。
 
 即使建群较慢、AI 已完成，也补齐内容而不丢首条人类消息。创建失败的线程保留同步意图；恢复到原意图继续。

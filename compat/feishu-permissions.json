@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "verified_at": "2026-10-10",
+  "verified_at": "2026-10-13",
   "source_research": "docs/research/feishu-m0-permissions-2026-10-10.md",
   "sdk": "github.com/larksuite/oapi-sdk-go/v3",
   "sdk_version": "v3.12.0",
@@ -11,7 +11,8 @@
     "im:chat:read",
     "im:chat.members:read",
     "im:message:send_as_bot",
-    "im:message.reactions:write_only"
+    "im:message.reactions:write_only",
+    "im:resource:upload"
   ],
   "capabilities": [
     {
@@ -330,6 +331,28 @@
         "interactive_card_component"
       ],
       "verification_method": "Click an actual card action and observe its callback and response within three seconds."
+    },
+    {
+      "id": "upload_message_images",
+      "required": false,
+      "api": [
+        "POST /open-apis/im/v1/images"
+      ],
+      "any_of_permissions": [
+        "im:resource:upload",
+        "im:resource"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/server-docs/im-v1/image/create"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "valid_tenant_access_token",
+        "image_nonempty_and_within_limits"
+      ],
+      "verification_method": "Upload a supplied test image once and render its confirmed image_key in a human card; verify actual client preview separately."
     }
   ]
 }

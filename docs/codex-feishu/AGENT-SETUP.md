@@ -107,6 +107,8 @@ development 包的 `phase1_released=false` 和 pending 验收模板不能改成 
 1. 在飞书开放平台创建企业自建应用，启用机器人，取得 App ID 和 Secret。
 2. 配置长连接接收事件，添加 `im.message.receive_v1` 和 `card.action.trigger`。
 3. 按发布包 `compat/feishu-permissions.json` 的精确权限 ID 申请：私聊收消息、群内 @ 收消息、发送/回复/更新、创建群和所需成员管理、读取核验所需群/成员/自身投递记录及原消息 reaction 写权限 `im:message.reactions:write_only`；二期另含话题能力。
+
+   图片预览需要 tenant 权限 `im:resource:upload`（或更宽的 `im:resource`）。缺失时正文和附件清单仍同步，图片提示回 App 查看；不将本地路径当下载 URL。新群在创建请求中写入工作目录，无需另加更新权限；给既有群补目录则需要 `im:chat:update`（或 `im:chat`），并需核验群编辑权限。只申请上述功能需要的权限，发布版本后用 doctor 检查当前已授予项。
 4. 发布版本，完成组织需要的审批，设置应用可见范围包含本人及计划使用的群成员。
 5. 在飞书找到机器人并打开单聊。需要群内收发时，机器人须在目标群中。
 

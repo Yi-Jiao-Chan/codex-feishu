@@ -36,6 +36,8 @@ schema 21 新增私有 `verification_bindings`：仅将同一请求中已确认�
 
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 
+schema 23 为 `create_intents` 增加 `description`。未曾 dispatch 的意图首次附着实际会话 CWD 后、领取 attempt 前事务冻结群描述；明确限流重试沿用原描述和 UUID。旧已有 attempt / unknown 意图保留旧固定描述，不改已发送请求参数，也不重新创建已有群，见[群工作目录研究](../research/chat-working-directory-2026-10-13.md)。
+
 | 表 | 主键 / 唯一约束 | 主要字段 |
 | --- | --- | --- |
 | deployment | host_id | app_id、基线建立时间、schema 版本 |
