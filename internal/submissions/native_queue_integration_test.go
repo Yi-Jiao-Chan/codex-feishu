@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -371,4 +372,315 @@ func TestNativeQueueChildCrash(t *testing.T) {
 		t.Fatal("child failed before accepted native deletion")
 	}
 	t.Fatal("child did not reach the owned successful-delete exit boundary")
+}
+
+// These callbacks enter after authorization at the Controller boundary. They
+// test durable arbitration and real native dispatch, not Feishu authentication.
+func TestNativeControllerQ2Q3MixedQueueOrderAndMiddleSteer(t *testing.T) {
+	requireNativeQueueOptIn(t)
+	for _, steer := range []bool{false, true} {
+		name := "Q2_normal"
+		if steer {
+			name = "Q3_middle_steer"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newNativeQueueHarness(t, true)
+			appID := "owned-app-A-" + h.spec.RunID
+			if _, err := h.other.Add(h.ctx, h.thread, "owned native A", appID); err != nil {
+				t.Fatal("owned App-origin A add failed")
+			}
+			b := h.claim(t)
+			h.tick(t)
+			c := h.claim(t)
+			h.tick(t)
+			nativeQueueOrder(t, h, []string{appID, b.ClientID, c.ClientID})
+			if h.view(t, b.ID).QueueOrdinal != 2 || h.view(t, c.ID).QueueOrdinal != 3 {
+				t.Fatal("bridge ordinals excluded App queue input")
+			}
+			expectedTurns := 4
+			if steer {
+				op := h.steerAction(t, b.ID)
+				h.tick(t)
+				got, err := h.db.SubmissionAction(h.ctx, h.controller.scope(), op.ID)
+				if err != nil || got.State != "confirmed" || got.Result != "steered" || got.ExpectedTurnID != h.active || h.boundary.deletes != 1 || h.boundary.steers != 1 {
+					t.Fatal("middle B was not guided once into original turn")
+				}
+				nativeQueueOrder(t, h, []string{appID, c.ClientID})
+				expectedTurns = 3
+			}
+			nativeQueueDrain(t, h, expectedTurns)
+			if steer {
+				if m := h.history(t, b.ClientID); len(m) != 1 || m[0] != h.active {
+					t.Fatal("B history missing from original target")
+				}
+			}
+			h.tick(t)
+			aTurn := nativeQueueHistoryPosition(t, h, appID)
+			bTurn := nativeQueueHistoryPosition(t, h, b.ClientID)
+			cTurn := nativeQueueHistoryPosition(t, h, c.ClientID)
+			if aTurn >= cTurn || !steer && !(aTurn < bTurn && bTurn < cTurn) || steer && bTurn != 0 {
+				t.Fatal("native history order changed or steered B executed again")
+			}
+			wantB := "consumed"
+			if steer {
+				wantB = "steered"
+			}
+			if h.view(t, b.ID).State != wantB || h.view(t, c.ID).State != "consumed" || h.boundary.adds != 2 {
+				t.Fatal("bridge inputs failed exact-once consumption")
+			}
+			t.Log("daemon=0.162.0 " + name + " mixed native/Controller A-B-C; exact native ordinals and history; untouched inputs preserve order")
+		})
+	}
+}
+
+func nativeQueueOrder(t *testing.T, h *nativeQueueHarness, clients []string) {
+	t.Helper()
+	q, err := h.client.Queue(h.ctx, h.thread)
+	if err != nil || len(q) != len(clients) {
+		t.Fatal("owned native queue length mismatch")
+	}
+	for i, id := range clients {
+		if q[i].ClientUserMessageID == nil || *q[i].ClientUserMessageID != id {
+			t.Fatal("owned native queue order mismatch")
+		}
+	}
+}
+
+func nativeQueueDrain(t *testing.T, h *nativeQueueHarness, completed int) {
+	t.Helper()
+	if err := nativeQueueEventually(h.ctx, func() (bool, error) {
+		// Release only this model's fixture requests. Steering can require another
+		// inference in the same original turn; request count is not a turn count.
+		h.model.mu.Lock()
+		for _, g := range h.model.gates {
+			g.once.Do(func() { close(g.release) })
+		}
+		h.model.mu.Unlock()
+		turns, err := h.client.Turns(h.ctx, h.thread)
+		if err != nil {
+			return false, err
+		}
+		done := 0
+		for _, turn := range turns {
+			if turn.Status == "completed" {
+				done++
+			}
+		}
+		q, err := h.client.Queue(h.ctx, h.thread)
+		return done == completed && len(q) == 0, err
+	}); err != nil {
+		t.Fatal("owned native queue did not drain expected completed turns")
+	}
+}
+
+func nativeQueueHistoryPosition(t *testing.T, h *nativeQueueHarness, client string) int {
+	t.Helper()
+	turns, err := h.client.Turns(h.ctx, h.thread)
+	if err != nil {
+		t.Fatal("owned native history unavailable")
+	}
+	position, count := -1, 0
+	for i, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Type == "userMessage" && item.ClientID != nil && *item.ClientID == client {
+				count++
+				position = i
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatal("owned input history association is not exactly once")
+	}
+	return position
+}
+
+func TestNativeControllerQ9ConcurrentAuthorizedCallbacksAndReplay(t *testing.T) {
+	requireNativeQueueOptIn(t)
+	for _, mixed := range []bool{false, true} {
+		name := "same_button"
+		if mixed {
+			name = "steer_remove"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newNativeQueueHarness(t, true)
+			r := h.claim(t)
+			h.tick(t)
+			n := h.view(t, r.ID)
+			type result struct {
+				action store.SubmissionAction
+				err    error
+			}
+			results := make(chan result, 12)
+			gate := make(chan struct{})
+			var wg sync.WaitGroup
+			for i := 0; i < 12; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					<-gate
+					callback := &Controller{Store: h.db, HostID: "native-fixture", AppID: "native-fixture", ThreadID: h.thread}
+					kind := "steer"
+					if mixed && i%2 != 0 {
+						kind = "remove"
+					}
+					a, err := callback.ClaimAction(h.ctx, r.ID, kind, n.QueueID, n.Revision)
+					results <- result{a, err}
+				}(i)
+			}
+			close(gate)
+			wg.Wait()
+			close(results)
+			var winner store.SubmissionAction
+			for result := range results {
+				if result.err != nil {
+					if mixed && errors.Is(result.err, store.ErrSubmissionStale) {
+						continue
+					}
+					t.Fatal("authorized callback arbitration failed")
+				}
+				if winner.ID != "" && winner.ID != result.action.ID {
+					t.Fatal("callbacks created multiple durable winners")
+				}
+				winner = result.action
+			}
+			if winner.ID == "" {
+				t.Fatal("callbacks had no winner")
+			}
+			h.tick(t)
+			got, err := h.db.SubmissionAction(h.ctx, h.controller.scope(), winner.ID)
+			wantSteer := 0
+			wantResult := "removed"
+			if winner.Kind == "steer" {
+				wantSteer = 1
+				wantResult = "steered"
+			}
+			if err != nil || got.State != "confirmed" || got.Result != wantResult || h.boundary.deletes != 1 || h.boundary.steers != wantSteer || h.boundary.adds != 1 {
+				t.Fatal("durable winner did not dispatch exactly one native action pipeline")
+			}
+			for i := 0; i < 3; i++ {
+				replay, err := h.controller.ClaimAction(h.ctx, r.ID, winner.Kind, n.QueueID, n.Revision)
+				if err != nil || replay.ID != winner.ID || replay.Result != wantResult {
+					t.Fatal("completed callback replay changed result")
+				}
+				other := "remove"
+				if winner.Kind == "remove" {
+					other = "steer"
+				}
+				if _, err := h.controller.ClaimAction(h.ctx, r.ID, other, n.QueueID, n.Revision); !errors.Is(err, store.ErrSubmissionStale) {
+					t.Fatal("stale conflicting callback accepted")
+				}
+				h.tick(t)
+			}
+			actions, err := h.db.SubmissionActions(h.ctx, h.controller.scope())
+			if err != nil || len(actions) != 1 || h.boundary.deletes != 1 || h.boundary.steers != wantSteer || h.boundary.adds != 1 {
+				t.Fatal("callback replay repeated a native mutation")
+			}
+			nativeQueueOrder(t, h, nil)
+			nativeQueueDrain(t, h, 1)
+			if m := h.history(t, r.ClientID); len(m) != wantSteer || wantSteer == 1 && m[0] != h.active {
+				t.Fatal("winner disagrees with native input history")
+			}
+			t.Logf("daemon=0.162.0 Q9 %s 12 simultaneous authorized Controller claims; one durable %s pipeline; delete=1 steer=%d; replays do not mutate", name, winner.Kind, wantSteer)
+		})
+	}
+}
+
+func TestNativeControllerQ10ContinueRacesSecondNativeStart(t *testing.T) {
+	requireNativeQueueOptIn(t)
+	for _, simultaneous := range []bool{false, true} {
+		name := "native_wins_busy"
+		if simultaneous {
+			name = "simultaneous_start"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newNativeQueueHarness(t, true)
+			a := h.claim(t)
+			h.tick(t)
+			if _, err := h.controller.StopExpected(h.ctx, "owned-stop-"+h.spec.RunID, h.active); err != nil {
+				t.Fatal("owned stop claim failed")
+			}
+			h.tick(t)
+			c := h.claim(t)
+			h.tick(t)
+			nativeQueueOrder(t, h, []string{a.ClientID, c.ClientID})
+			turns, err := h.client.Turns(h.ctx, h.thread)
+			if err != nil || len(turns) != 1 || turns[0].Status != "interrupted" || h.boundary.starts != 0 || h.boundary.interrupts != 1 {
+				t.Fatal("stop or append implicitly resumed owned queue")
+			}
+			var nativeResult chan error
+			h.boundary.beforeStart = func(ctx context.Context) error {
+				if !simultaneous {
+					if err := h.other.StartQueue(ctx, h.thread); err != nil {
+						return err
+					}
+					if err := h.model.wait(ctx, 2); err != nil {
+						return err
+					}
+					return nativeQueueEventually(ctx, func() (bool, error) {
+						ts, err := h.other.Turns(ctx, h.thread)
+						for _, turn := range ts {
+							if turn.Status == "inProgress" {
+								return true, err
+							}
+						}
+						return false, err
+					})
+				}
+				nativeResult = make(chan error, 1)
+				ready := make(chan struct{})
+				start := make(chan struct{})
+				go func() { close(ready); <-start; nativeResult <- h.other.StartQueue(ctx, h.thread) }()
+				<-ready
+				close(start)
+				return nil
+			}
+			op, err := h.controller.Continue(h.ctx, "owned-continue-"+h.spec.RunID)
+			if err != nil {
+				t.Fatal("owned continue claim failed")
+			}
+			h.tick(t)
+			got, err := h.db.SubmissionAction(h.ctx, h.controller.scope(), op.ID)
+			if err != nil {
+				t.Fatal("continue result unavailable")
+			}
+			if simultaneous {
+				var otherErr error
+				select {
+				case otherErr = <-nativeResult:
+				case <-h.ctx.Done():
+					t.Fatal("second owned start did not finish")
+				}
+				var rpc *codexclient.RPCError
+				if got.State == "confirmed" {
+					if !errors.As(otherErr, &rpc) {
+						t.Fatal("bridge winner did not exclude other native start")
+					}
+				} else if got.State == "rejected" {
+					if otherErr != nil {
+						t.Fatal("both concurrent native starts failed")
+					}
+				} else {
+					t.Fatal("concurrent native start outcome unresolved")
+				}
+			} else if got.State != "rejected" {
+				t.Fatal("real native busy did not reject bridge start")
+			}
+			if h.boundary.starts != 1 || h.boundary.steers != 0 || h.boundary.deletes != 0 || h.boundary.adds != 2 {
+				t.Fatal("continue competition steered or repeated queue inputs")
+			}
+			if err := h.model.wait(h.ctx, 2); err != nil {
+				t.Fatal("continue winner did not start owned A")
+			}
+			nativeQueueOrder(t, h, []string{c.ClientID})
+			if len(h.history(t, a.ClientID)) != 1 || len(h.history(t, c.ClientID)) != 0 {
+				t.Fatal("start competition lost or duplicated native consumption")
+			}
+			nativeQueueDrain(t, h, 2)
+			h.tick(t)
+			if nativeQueueHistoryPosition(t, h, a.ClientID) >= nativeQueueHistoryPosition(t, h, c.ClientID) || h.view(t, a.ID).State != "consumed" || h.view(t, c.ID).State != "consumed" {
+				t.Fatal("stopped/appended inputs did not drain once in order")
+			}
+			t.Log("daemon=0.162.0 Q10 " + name + " real stop+append and two-client start competition; one start winner; steer=0; A-C preserved once")
+		})
+	}
 }

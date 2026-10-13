@@ -167,13 +167,14 @@ func writeNativePrivateJSON(path string, value any) error {
 }
 
 type nativeQueueBoundary struct {
-	client                                  *codexclient.Client
-	owned                                   string
-	adds, deletes, steers                   int
-	beforeDelete                            func(context.Context, string) error
-	afterDelete                             func(context.Context, string) error
-	discardAdd, discardDelete, discardSteer bool
-	steerTargets                            []string
+	client                                    *codexclient.Client
+	owned                                     string
+	adds, deletes, steers, starts, interrupts int
+	beforeDelete                              func(context.Context, string) error
+	beforeStart                               func(context.Context) error
+	afterDelete                               func(context.Context, string) error
+	discardAdd, discardDelete, discardSteer   bool
+	steerTargets                              []string
 }
 
 func (n *nativeQueueBoundary) check(thread string) error {
@@ -237,12 +238,19 @@ func (n *nativeQueueBoundary) Interrupt(ctx context.Context, thread, turn string
 	if err := n.check(thread); err != nil {
 		return err
 	}
+	n.interrupts++
 	return n.client.Interrupt(ctx, thread, turn)
 }
 func (n *nativeQueueBoundary) StartQueue(ctx context.Context, thread string) error {
 	if err := n.check(thread); err != nil {
 		return err
 	}
+	if n.beforeStart != nil {
+		if err := n.beforeStart(ctx); err != nil {
+			return err
+		}
+	}
+	n.starts++
 	return n.client.StartQueue(ctx, thread)
 }
 func (n *nativeQueueBoundary) Queue(ctx context.Context, thread string) ([]codexclient.Queued, error) {
