@@ -87,6 +87,10 @@ const appRequestHeader = "## My request:"
 // Only a complete, known envelope at the beginning can change the public
 // presentation. Unknown or malformed envelopes remain ordinary user text.
 func appAttachmentEnvelope(text string) (string, []AttachmentReference, bool) {
+	// The App may precede its attachment envelope with empty separator lines.
+	// Keep indentation and all request bytes intact; only a complete envelope
+	// after those separators is eligible for presentation cleanup.
+	text = strings.TrimLeft(text, "\r\n")
 	lines := strings.SplitAfter(text, "\n")
 	lineText := func(line string) string { return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r") }
 	if lineText(lines[0]) != appAttachmentHeader {

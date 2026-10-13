@@ -108,3 +108,23 @@ func TestUserPresentationCRLFAndImageOnlyWrapper(t *testing.T) {
 		t.Fatalf("CRLF or attachment-only envelope changed: %#v", got)
 	}
 }
+
+func TestUserPresentationLeadingAppSeparators(t *testing.T) {
+	request := "\n  保留正文缩进\n\n```text\n  example\n```\n"
+	for _, prefix := range []string{"\n", "\r\n\r\n"} {
+		wrapped := prefix + attachmentWrapper("## image.png: /not-read/image.png\nImage attachment: true", request)
+		item := presentationItem(map[string]string{"type": "text", "text": wrapped})
+		got := item.UserPresentation()
+		if got.Text != request || len(got.Attachments) != 1 || got.Attachments[0].Kind != "image" {
+			t.Fatal("App separator cleanup changed the request or lost its image")
+		}
+		if item.PublicText() != wrapped {
+			t.Fatal("App separator cleanup changed the original native input")
+		}
+		malformed := strings.Replace(wrapped, appAttachmentSentinel, "unrecognized attachment instructions", 1)
+		got = presentationItem(map[string]string{"type": "text", "text": malformed}).UserPresentation()
+		if got.Text != malformed || len(got.Attachments) != 0 {
+			t.Fatal("leading separators made a malformed envelope eligible")
+		}
+	}
+}
