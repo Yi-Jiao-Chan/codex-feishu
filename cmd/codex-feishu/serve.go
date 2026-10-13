@@ -108,18 +108,7 @@ func runServe(ctx context.Context, args []string) int {
 		return 7
 	}
 	defer pairManager.Close()
-	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Pairing: pairManager, Connect: func(ctx context.Context) (app.ServiceNative, error) {
-		inspectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		daemon, err := codexclient.Discover(inspectCtx, cfg.Codex.CLIPath)
-		if err != nil {
-			return nil, errors.New("existing daemon unavailable")
-		}
-		if daemon.AppServerVersion != "0.162.0" {
-			return nil, errors.New("native version is not in the verified compatibility list")
-		}
-		return codexclient.Connect(ctx, daemon.SocketPath)
-	}}
+	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Pairing: pairManager, Connect: serveNativeConnect(cfg.Codex.CLIPath, codexclient.Discover, codexclient.Connect)}
 	var noticeMu sync.Mutex
 	last := map[string]time.Time{}
 	service.Notice = func(code string) {
@@ -221,4 +210,22 @@ func validateLockedServeConfig(path string, identity string) (config.Config, err
 		return config.Config{}, err
 	}
 	return current, nil
+}
+
+// Each generation rechecks the existing daemon before opening its native
+// connection. The injected calls are the same production discovery and dial
+// operations; tests can exercise this boundary without a shared daemon.
+func serveNativeConnect(cli string, discover func(context.Context, string) (codexclient.Daemon, error), connect func(context.Context, string) (*codexclient.Client, error)) func(context.Context) (app.ServiceNative, error) {
+	return func(ctx context.Context) (app.ServiceNative, error) {
+		inspectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		daemon, err := discover(inspectCtx, cli)
+		if err != nil {
+			return nil, errors.New("existing daemon unavailable")
+		}
+		if daemon.AppServerVersion != "0.162.0" {
+			return nil, errors.New("native version is not in the verified compatibility list")
+		}
+		return connect(ctx, daemon.SocketPath)
+	}
 }
