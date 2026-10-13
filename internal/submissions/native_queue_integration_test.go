@@ -684,3 +684,46 @@ func TestNativeControllerQ10ContinueRacesSecondNativeStart(t *testing.T) {
 		})
 	}
 }
+
+// This fact probe never primes a cold thread or retries resume. It distinguishes
+// the original creator connection from the previously observed second-client
+// cold resume rejection without changing the production typed proof.
+func TestNativeControllerColdCreatorAttachWithoutInput(t *testing.T) {
+	h := newNativeQueueHarness(t, false)
+	if h.other != nil {
+		t.Fatal("cold creator probe must not initialize a second client")
+	}
+	joined, attachErr := h.client.AttachLocalVerification(h.ctx, h.thread, h.spec)
+	outcome := "typed_success"
+	code := 0
+	if attachErr != nil {
+		var rpc *codexclient.RPCError
+		if !errors.As(attachErr, &rpc) || rpc.Code != -32600 || !strings.Contains(rpc.Message, "no rollout found for thread id") {
+			t.Fatal("cold creator attach returned an unexpected error; no resume retry or input follows")
+		}
+		outcome, code = "no_rollout", rpc.Code
+	} else if joined.ID != h.thread || joined.CWD != h.spec.CWD || joined.Preview != "" || len(joined.Turns) != 0 {
+		t.Fatal("typed cold creator response does not match owned zero-input birth")
+	}
+	queue, err := h.client.Queue(h.ctx, h.thread)
+	if err != nil || len(queue) != 0 {
+		t.Fatal("cold creator probe queue is not empty")
+	}
+	turns, err := h.client.Turns(h.ctx, h.thread)
+	history := "empty"
+	if codexclient.BeforeFirstInput(err) {
+		history = "before_first_user_message"
+	} else if err != nil || len(turns) != 0 {
+		t.Fatal("cold creator probe did not retain zero-input history")
+	}
+	h.model.mu.Lock()
+	requests := len(h.model.gates)
+	h.model.mu.Unlock()
+	if requests != 0 || h.boundary.adds != 0 || h.boundary.deletes != 0 || h.boundary.steers != 0 || h.boundary.starts != 0 || h.boundary.interrupts != 0 {
+		t.Fatal("cold creator probe issued input or model requests")
+	}
+	t.Logf("daemon=0.162.0 original_creator cold typed_attach=%s RPC_code=%d; single resume without overrides; queue=0 history=%s model_requests=0; no prime/retry", outcome, code, history)
+	if attachErr == nil {
+		t.Log("typed readback checked owned ID/private cwd, fixture-model/run provider, never approval, readOnly/no-network, non-ephemeral, validation label and no lineage against original spec")
+	}
+}

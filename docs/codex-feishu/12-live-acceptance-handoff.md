@@ -6,9 +6,13 @@
 
 2026-10-13 用户开始新版联调后重新核验：旧 `m0-listen` 已退出。已使用下表的候选包、独立私有配置/schema 21 数据库和测试目录安装并启动 `codex-feishu.service`，复用原共享 daemon 0.162.0；没有迁移旧 M0 数据库。实际 plan/apply/install/start、启动后 doctor 与实时 status 已取证。配置、路由标识和用户确认保存在仓库外的本人私有证据目录。
 
-当前候选的真实 App 自动建群、两端往返、默认排队与显式引导、停止后保留队列并明确继续、off/on/snooze、daily quiet、quiet off、until、精确/递归目录 mute 与独立 unmute，均已由用户确认，并核验相应后台记录。on 保留 daily quiet，until 按 Asia/Shanghai 转成固定 UTC 截止时间；相关最终卡真实发送载荷均无被抑制的 @。
+当前候选的真实 App 自动建群、两端往返、默认排队与显式引导、停止后保留队列并明确继续、off/on/snooze、每日 quiet、quiet off、until、精确/递归目录 mute 与独立 unmute，均已由用户确认，并核验相应后台记录。on 保留每日 quiet，until 按 Asia/Shanghai 转成固定 UTC 截止时间；相关最终卡真实发送载荷均无被抑制的 @。
 
-目录规则已恢复。本工具用户服务已完成实际 stop/start，恢复原四个普通绑定、两侧连接和相同通知规则/截止时间；输入和投递记录总数未变，没有重放旧消息。重启后客户端继续对话、跨两个群的 until、手机长代码/路径布局和最后恢复提醒正在等待用户确认。共享 Codex daemon 未重启，不能把此记录当作系统重启或 SSH 注销常驻证据。P1-01、P1-03、P1-04、P1-06 已完成，其他案例仍须核对下面的完整覆盖，不能将这些正常流程扩大为全部一期通过。
+目录规则已恢复。本工具用户服务已完成实际 stop/start，恢复原四个普通绑定、两侧连接和相同通知规则/截止时间；输入和投递记录总数未变，没有重放旧消息。用户已确认重启后仍跟进同一 App 会话和原群，跨两个群的 until、手机长代码/路径完整查看与底部小字、恢复 @ 后无积压提醒均正常。原通知设置已恢复。共享 Codex daemon 未重启，不能把此记录当作系统重启或 SSH 注销观察。
+
+独立配置 Agent 只拿到包内指南和必要输入，已完成真实候选首次安装、既有部署两次重跑/no-op、卸载保留数据、原服务恢复。首次安装用全新私有配置/schema 21 数据库与空 scratch；完成基线后零绑定、零建群、零消息。原配置/unit/binary 摘要、身份、四个绑定和全部规则恢复一致，最终 doctor/status 退出 0。无差异 apply 仍要求先停桥、启动后需等待只读健康就绪的实际体验已补入指南。已知本人 ID 的配置路线无需配对；配对私聊 UI 另行验证。
+
+当前源码的 rules/discovery/app/store/sync 五个包已集中完成 `go test -race`，903 个测试或子测试通过。它补齐领域、权限、恢复和限流等待边界，不替代以上真实 UI。P1-01、P1-03、P1-04、P1-06 已完成，其他案例正在合并覆盖证据；正式发布标志仍为 false。
 
 已核验的候选包位于仓库 `dist/`：
 
@@ -30,7 +34,7 @@
 4. 新的配置 Agent 只收到独立的 `AGENT-SETUP.md`、已核验候选包和必要的输入引用，完成候选 plan/apply/install/start。保存它实际索取的信息、配对动作、命令退出码与二次执行 no-op 证据，作为 P1-11；不要让继承全部开发上下文的 Agent 冒充首次配置体验。
 5. 配置 Agent 先读取 version 再使用显式 `--candidate-test` 路径；启动后 doctor `--require-running`、status 必须核验实际实例、两个连接、普通绑定与发现基线。组件 observed、进程启动或 systemd active 均不算整体验收成功。
 
-上述部署步骤已由主开发 Agent 执行；独立配置 Agent 的指南体验仍待验收。不得把主开发 Agent 的配置记录当作首次配置体验，也不得为重跑指南并行启动第二个接收器。
+最初部署由主开发 Agent 执行；后续首次安装及重跑已有独立配置 Agent 的实际记录。两者分开保存，不将主开发上下文冒充新 Agent 的指南体验，也不并行启动第二个接收器。
 
 ## 用户集中操作与 Agent 取证
 
@@ -47,6 +51,8 @@
 目录命令是 `/mute-dir /absolute/path [--recursive]`、`/unmute-dir /absolute/path [--recursive]`、`/mute-dir list`。通知命令是 `/notify at off`、`on`、`snooze 2h`、`until YYYY-MM-DD HH:mm`、`quiet HH:mm-HH:mm`、`quiet off`、`status`；日期和时区用执行时的真实值，until 须为未来。D 结束恢复原规则，不用全局时间修改制造边界。
 
 受控忙时资源只有原五分钟窗口，创建/绑定/释放分别使用指南中已有的独立授权和管理命令。Agent 用原本机模型门控制忙时，用户跟进才提交输入；资源到期或重启失去原资源时保持冻结，不续期、不重建原 ID、不把查询当作输入授权。若 C 需要多轮，应在每个有效测试窗口分别取证，不把整份清单强塞进一次窗口。
+
+当前受控测试的零输入绑定路径已确认受 0.162.0 的 `no_rollout` 限制阻塞，原 creator 也不能在首条输入前完成 typed resume。它仍 pending，不能自动补发输入或放宽检查；本轮真实队列/引导使用用户主动发起的 App 测试会话，原生故障验证使用独立、明确授权初始输入的固定模型 fixture。详见 [直接核验](../research/native-controller-q4-q8-2026-10-13.md#原-creator-connection-的零输入核验)。
 
 ## 不额外打扰用户的覆盖与剩余门槛
 

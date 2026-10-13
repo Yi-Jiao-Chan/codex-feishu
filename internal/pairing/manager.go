@@ -194,7 +194,10 @@ func (m *Manager) Handle(e *im.P2MessageReceiveV1) bool {
 	if json.Unmarshal([]byte(value(msg.Content)), &content) != nil {
 		return false
 	}
-	fields := strings.Fields(content.Text)
+	// Clipboard copies can include surrounding whitespace. Normalize only the
+	// outside of the command; the token and internal separator remain exact.
+	text := strings.TrimSpace(content.Text)
+	fields := strings.Fields(text)
 	if len(fields) == 0 || fields[0] != "/pair" {
 		return false
 	}
@@ -208,7 +211,7 @@ func (m *Manager) Handle(e *im.P2MessageReceiveV1) bool {
 	}
 	owner := value(e.Event.Sender.SenderId.OpenId)
 	if !config.ValidOpenID(owner) || m.expectedOwner != "" && owner != m.expectedOwner ||
-		len(fields) != 2 || content.Text != "/pair "+fields[1] {
+		len(fields) != 2 || text != "/pair "+fields[1] {
 		return true
 	}
 	digest := sha256.Sum256([]byte(fields[1]))

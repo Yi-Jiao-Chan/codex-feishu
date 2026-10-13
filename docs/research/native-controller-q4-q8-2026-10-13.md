@@ -56,3 +56,30 @@ fixture model/provider、private cwd、never、readonly/no-network、non-ephemer
 因此没有成功 resume response 可比较 model/provider/policy/cwd/endpoint；这不是策略字段不匹配。
 失败 fixture 未补发输入或以 override 修复，已清理。后续新建 busy fixture 按上述构造顺序通过。
 这一限制可能影响 managed binding 的 pre-input join；本轮没有改动该 production 路径或扩大调查。
+
+### 原 creator connection 的零输入核验
+
+此前只证明第二客户端 cold resume 拒绝，不能据此推断保持原 creator connection 的
+managed BindingManager 行为。2026-10-13 新增一次受限事实探针
+`TestNativeControllerColdCreatorAttachWithoutInput`，复用 `newNativeQueueHarness(t,false)`：
+创建全新私有 fixture，typed birth 保持原策略检查，不初始化第二客户端、不发送任何输入，
+仅由原 `h.client` 调用一次 `AttachLocalVerification`，原 spec 不变、无 override、无重试。
+
+真实共享 `0.162.0` daemon **同样拒绝原 creator 的 cold attach**：RPC `-32600`，
+分类 `no_rollout`。这是直接观察，不是跨客户端结果的推断；没有成功 resume readback，
+不能声称 attach 策略/cwd/model 字段通过。随后仅对自有 thread 只读核验：queue=0；
+Turns 返回既有 `BeforeFirstInput` 分类（首个 user message 前不可用）；model requests=0；
+所有输入 mutation counters=0。自有 cleanup 完成无错误，未 prime 或修复 production。
+这条命令 PASS 表示上述拒绝及零输入事实断言成立，**不表示 attach 成功**。
+
+```sh
+# 默认跳过，无 daemon 操作。
+go test -race ./internal/submissions \
+  -run '^TestNativeControllerColdCreatorAttachWithoutInput$' -count=1 -v
+# 实际一次 owned cold probe，结果如上。
+CODEX_FEISHU_NATIVE_CONTROLLER_TEST=1 go test -race ./internal/submissions \
+  -run '^TestNativeControllerColdCreatorAttachWithoutInput$' -count=1 -v -timeout=110s
+```
+
+因此本次也直接记录了同 creator 的 pre-input typed join 阻塞；不提出 cache、guard 放宽或
+自动 input 修复。本探针不修改服务、实际用户线程、全局 daemon 或飞书资源。

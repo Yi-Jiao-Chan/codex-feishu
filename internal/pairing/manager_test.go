@@ -173,7 +173,7 @@ func TestRejectsUnauthenticatedOrInexactCommands(t *testing.T) {
 	}
 	m, _ := fakeManager(t, "")
 	c := begin(t, m, 1, time.Second)
-	for _, text := range []string{"/pair", "/pair wrong-token", "/pair " + c.Code + " extra", "/pair  " + c.Code, " /pair " + c.Code, "/pair " + c.Code + "\n", "/pair\t" + c.Code} {
+	for _, text := range []string{"/pair", "/pair wrong-token", "/pair " + c.Code + " extra", "/pair  " + c.Code, "/pair\t" + c.Code, "/pair\n" + c.Code} {
 		if !m.Handle(message(text)) {
 			t.Fatal("invalid pairing command escaped interception")
 		}
@@ -188,6 +188,20 @@ func TestRejectsUnauthenticatedOrInexactCommands(t *testing.T) {
 	e.Event.Message.Content = ptr("malformed JSON")
 	if m.Handle(e) {
 		t.Fatal("unreadable content consumed")
+	}
+}
+
+func TestPairCommandAcceptsClipboardWhitespace(t *testing.T) {
+	for _, surroundings := range [][2]string{{" ", ""}, {"", "\n"}, {"\t\r\n ", " \n\t"}} {
+		m, _ := fakeManager(t, testOwner)
+		c := begin(t, m, 1, time.Second)
+		if !m.Handle(message(surroundings[0] + "/pair " + c.Code + surroundings[1])) {
+			t.Fatal("clipboard pairing command escaped interception")
+		}
+		got := state(t, m, 1, StateConfirmed)
+		if got.OwnerOpenID != testOwner {
+			t.Fatal("clipboard normalization changed the paired identity")
+		}
 	}
 }
 

@@ -1,6 +1,6 @@
 # Agent 一键配置指南：Codex × 飞书
 
-版本：2026-10-12 / 配置 schema v1。对象：用户和负责配置的 Agent。
+版本：2026-10-13 / 配置 schema v1。对象：用户和负责配置的 Agent。
 
 本指南自包含，目标是在用户提供少量信息后，由 Agent 检测环境、生成配置、安装用户服务并验证。**M0 真实联调已通过，当前整合 M1–M3；development 版已有 serve、setup plan / apply、service 和实时 / 只读 status，但一期发布仍待验收。本文安装流程是正式发布契约。** Agent 必须检查 version 的 `phase1_released` 与具体 capabilities：开发版可做 plan，正式 apply / install / start 会拒绝，setup pair 已有开发实现但真实私聊 UI 尚待验收（`setup_pair_ui_verified=false`）。status 实时健康只对提供管理通道的新版运行实例有效，旧 M0 返回只读快照和 pending。命令存在不代表可正式安装；缺少已验收版本时完成只读环境检查并报告前置条件，不能假装配置完成。开发任务另见开发手册，不在一次配置任务里默认编写整个产品。
 
@@ -171,6 +171,8 @@ Agent 将以下变量设为验证过的绝对路径/计划 ID；它们是任务�
 
 CLI 已通过能力检查且 plan 无必需缺项时：
 
+首次安装没有运行中的桥，可按下列步骤执行。已有部署先检查计划差异；若确实没有差异且没有待恢复事务，可以保留服务，只核验 doctor/status。需要执行 apply 时，即使 `changed=false`、`can_apply=true`，也必须先停止这个应用的桥，再生成新计划并 apply。实际候选联调已确认：活动桥下无差异 apply 仍退出 3，不能把预览结果当作取得了写锁。不要因此重新创建配置、数据库或第二份服务。
+
 ```sh
 "$cfb_cli" setup --input "$cfb_intake" --apply --plan-id "$cfb_plan_id" --json
 "$cfb_cli" doctor --config "$cfb_config" --json
@@ -181,6 +183,8 @@ CLI 已通过能力检查且 plan 无必需缺项时：
 ```
 
 逐步检查退出码，不用 shell 链把后续步骤在失败后继续跑。setup 生成正式 TOML，备份现有配置并原子写入；目录 0700，配置/secret 0600。保留原 host_id、数据库和绑定。重复配置差异为空时 no-op，不换身份、不清空历史、不重建群。
+
+start 成功后，管理端点和历史基线可能仍在恢复；实际首次安装与重复配置都曾短暂返回 doctor/status 退出 5。先每隔几秒只读重查，直到 `doctor --require-running` 必需项通过且 status 为 running；不要重复 apply、另开接收器或反复重启。明确失败、构建/配置冲突或 unknown 操作按 H 处理，不能将它们当作普通启动等待。
 
 重配已有部署时，先读 plan 的现有通知规则与独立差异。省略 quiet / timezone 保留有效规则；只有用户明确要求清除免打扰时才传 `quiet_hours: ""`。更新仅影响 owner 的明确字段，保留关闭 @ 与 snooze，其他接收者保持原值。已有规则更新需当前 schema 21；旧 M0 数据库不能由配置任务顺手迁移。普通启动也会拒绝未接管的 schema 1。迁移命令、备份和中断恢复已有隔离测试，但开发版拒绝真实迁移；不要改 user_version、清空日志或启动新实例绕过该边界，见[接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
 
@@ -246,6 +250,8 @@ doctor 是只读检查，不自动发送消息。基础失败立即停止对应�
 ```
 
 第一条保存原群 / 线程关系并请求现有 runtime 跟进；启用后仅 owner 的新群消息可进入该测试线程。结果 `verification_binding.binding_status=pass` 仅为本地登记，`activation_requested` 为本次入队，`actor_started` 为本地 actor 存在，均不证明 UI、输入或送达。第二条不请求激活；历史登记不会自动续期或重建模型。`verification-managed-binding-observed` 仍 `ok=false` / 退出 5、12 项 P1 pending。创建授权与绑定授权四项独立；用户未允许的字段保持 false。不要为组件能力安装未发布版本，也不要把 owner 群跟进当作自动化 queue / steer 场景已验收。
+
+当前 0.162.0 有一个已本地验证的限制：新建但尚无输入的线程，即使由原 creator 连接执行无覆盖的 typed resume，也返回 `-32600/no_rollout`。因此当前候选的这个 pre-input 受控绑定路径不能作为完整测试入口。保留为 pending，不自动补发输入或放宽策略检查；本次配置改走下表的 App 新任务、自动建群和用户群内跟进流程。创建组件成功不代表这条绑定路径可用；已有输入的普通 App 会话已另行验证。
 
 原绑定的只读查询可返回 `verification_binding.input_evidence_status` 和 `input_evidence`。前者 pass 只说明本地快照成功，所有计数为零时仍没有输入证据。`add_confirmed` 表示默认提交已确认；`history_linked` 表示收据与原生 user item 的真实关联；`steer_confirmed` 要求同一显式动作的 delete 成功及 steer 确认，`steer_history_linked` 还要求进入原目标轮。`queued_snapshot` 仅为已保存的队列观察，`unresolved_attempts` 是尚待核验的输入尝试。缺字段 / pending 时保留证据缺失，不推导无输入或失败，不重发输入。计数不证明 App 页面、忙时顺序、无重复执行或最终卡送达；仍按下表完成实际验收。
 
