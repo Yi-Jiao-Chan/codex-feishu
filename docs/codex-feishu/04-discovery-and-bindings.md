@@ -29,9 +29,11 @@ creating_group 响应未知 → reconciling_group
 目录 mute / 非主会话 / 不在范围 → excluded
 ```
 
-创建前在 SQLite 领取 `(host_id, thread_id)`，保存 stable intent 与预期成员，并先附着原生线程接收公开事件；建群在独立步骤执行，不阻塞事件存储。群名采用项目名 + 短任务标题，完整路径与线程 ID 放卡片详情。默认加入 owner 与机器人；其他用户只有列在 groups.additional_member_open_ids、且确认平台允许时才加入。notification target 不隐式扩大成员或操作权限。
+创建前在 SQLite 领取 `(host_id, thread_id)`，保存 stable intent 与预期成员，并先附着原生线程接收公开事件；建群在独立步骤执行，不阻塞事件存储。群名优先直接采用原生 `Thread.Name`，与 Codex App 的显示标题对齐，不加项目目录前缀、不截短有效 Name。Name 未提供时依次使用 preview、首条已清理附件包装的实际用户正文，附件单独输入使用简短任务名称；回退预览可缩短。工作目录放群描述。默认加入 owner 与机器人；其他用户只有列在 groups.additional_member_open_ids、且确认平台允许时才加入。notification target 不隐式扩大成员或操作权限。
 
 新建群描述写 `工作目录：<首次附着的实际 CWD>`，完整保留 worktree 路径，不用项目根替代、不截断。schema 23 在首次 dispatch 前冻结描述，限流重试与重启保持原描述和 UUID；已有 attempt 保留旧版原描述，既有群由单独 GET / PUT / GET 核验更新，不随发现隐式修改。接口与长度建议见[群工作目录研究](../research/chat-working-directory-2026-10-13.md)。
+
+已绑定群名跟随每次已授权元数据读取；`thread/name/updated` 沿用 threadId 唤醒 actor，即使事件丢失也会在周期元数据读取时补偿。首次建群 UUID 和请求名称保持冻结，不在创建中的请求上改名；绑定确认后以独立 PUT 仅更新 name。已确认标题在 actor 内缓存，未变更时不反复请求平台；新的连接代际会重新读回核验。改名使用现有 `m0_operations` 按 kind 保存私有冻结计划，无新增 schema：发送前事务领取，成功后 GET 核对；unknown / 崩溃 dispatching 仅核验冻结目标，不能被新标题绕过；明确限流保存截止时间，明确永久拒绝不反复发送相同标题。改名失败不阻断正文和队列，诊断仅提供状态数量。
 
 群 API 的幂等字段由 03 提供。响应未知先核验；没有可靠核验通道时停止该意图并显示阻塞，绝不根据群名猜测并再次创建。拿到 chat ID 后保存绑定，再发送任务卡并由 05 补齐首轮全部人类输入/公开 AI 内容。
 

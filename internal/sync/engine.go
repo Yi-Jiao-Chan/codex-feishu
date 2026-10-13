@@ -365,6 +365,9 @@ func progressView(t codexclient.Turn, observedAtMS int64) cards.ProgressView {
 		}
 		v.Records = append(v.Records, cards.ProgressRecord{ItemID: i.ID, Text: i.Text})
 		v.Body = i.Text
+		if t.Status == "inProgress" {
+			v.CurrentItemID = i.ID
+		}
 	}
 	runes := []rune(v.Body)
 	if len(runes) > 800 {
@@ -372,6 +375,7 @@ func progressView(t codexclient.Turn, observedAtMS int64) cards.ProgressView {
 	}
 	if t.Status != "inProgress" {
 		v.Body = "" // Keep completed process details in the collapsed records.
+		v.CurrentItemID = ""
 	}
 	// Native turn timestamps are seconds. Terminal duration never advances on
 	// replay, and missing/invalid timestamps never become an invented duration.

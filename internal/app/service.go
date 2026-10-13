@@ -487,6 +487,11 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	}
 	r.CanDeliver = s.canDeliver
 	r.BeginDelivery = s.beginCardDelivery
+	if gateway, ok := s.Gateway.(bindings.GroupNameGateway); ok {
+		names := &bindings.GroupNames{Store: s.Store, Gateway: gateway, AppID: s.Config.Feishu.AppID,
+			OwnerID: s.Config.Access.OwnerOpenID, Now: s.Now, BeginWrite: s.beginCardDelivery}
+		r.SyncGroupName = names.Reconcile
+	}
 	media := &messages.HumanMedia{Store: s.Store, AppID: s.Config.Feishu.AppID,
 		BeginWrite: func(ctx context.Context, thread string) (context.Context, func(), error) {
 			binding, err := s.Store.Binding(ctx, s.Config.Host.ID, thread)

@@ -16,6 +16,7 @@ type ProgressRecord struct {
 // Non-positive elapsed time is omitted rather than inventing a duration.
 type ProgressView struct {
 	Body           string
+	CurrentItemID  string
 	Records        []ProgressRecord
 	TimeZone       string
 	OmittedRecords int

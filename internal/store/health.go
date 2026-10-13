@@ -21,6 +21,7 @@ type PersistentHealth struct {
 	Reactions        map[string]int64 `json:"reactions"`
 	GroupAttempts    map[string]int64 `json:"group_attempts"`
 	GroupIntents     map[string]int64 `json:"group_intents"`
+	GroupNames       map[string]int64 `json:"group_names"`
 	TaskControls     map[string]int64 `json:"task_controls"`
 	TaskClaims       map[string]int64 `json:"task_claims"`
 	Requests         map[string]int64 `json:"requests"`
@@ -32,7 +33,7 @@ type PersistentHealth struct {
 func (s *Store) Health(ctx context.Context, schema int, host, app string) (PersistentHealth, error) {
 	h := PersistentHealth{Schema: schema, LegacyM0: schema == 1,
 		Inputs: map[string]int64{}, Outbound: map[string]int64{}, OutboundAttempts: map[string]int64{}, NativeActions: map[string]int64{}, NativeAttempts: map[string]int64{},
-		CommandAttempts: map[string]int64{}, CommandReplies: map[string]int64{}, Reactions: map[string]int64{}, GroupAttempts: map[string]int64{}, GroupIntents: map[string]int64{}, TaskControls: map[string]int64{}, TaskClaims: map[string]int64{}, Requests: map[string]int64{}, ReminderAttempts: map[string]int64{}}
+		CommandAttempts: map[string]int64{}, CommandReplies: map[string]int64{}, Reactions: map[string]int64{}, GroupAttempts: map[string]int64{}, GroupIntents: map[string]int64{}, GroupNames: map[string]int64{}, TaskControls: map[string]int64{}, TaskClaims: map[string]int64{}, Requests: map[string]int64{}, ReminderAttempts: map[string]int64{}}
 	count := func(query string, args ...any) (int64, error) {
 		var n int64
 		err := s.DB.QueryRowContext(ctx, query, args...).Scan(&n)
@@ -56,6 +57,12 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 	}
 	if err != nil {
 		return h, errors.New("binding health unavailable")
+	}
+	if schema >= 2 {
+		h.GroupNames, err = s.GroupNameHealth(ctx, host, app)
+		if err != nil {
+			return h, errors.New("group name health unavailable")
+		}
 	}
 	for _, state := range []string{"received", "submitting", "accepted", "queued", "consumed", "steering", "steered", "removing", "removed", "unknown", "failed"} {
 		if schema == 1 {

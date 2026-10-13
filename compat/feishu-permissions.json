@@ -9,6 +9,7 @@
     "im:message.group_at_msg:readonly",
     "im:chat:create",
     "im:chat:read",
+    "im:chat:update",
     "im:chat.members:read",
     "im:message:send_as_bot",
     "im:message.reactions:write_only",
@@ -353,6 +354,30 @@
         "image_nonempty_and_within_limits"
       ],
       "verification_method": "Upload a supplied test image once and render its confirmed image_key in a human card; verify actual client preview separately."
+    },
+    {
+      "id": "sync_group_name",
+      "required": false,
+      "api": [
+        "GET /open-apis/im/v1/chats/:chat_id",
+        "PUT /open-apis/im/v1/chats/:chat_id"
+      ],
+      "any_of_permissions": [
+        "im:chat",
+        "im:chat:update"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/chat/update"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "bot_is_in_chat",
+        "bound_group_owner_verified",
+        "group_edit_permission"
+      ],
+      "verification_method": "Freeze a bound group name update before PUT; GET confirms the exact title without modifying description, owner or membership. Unknown responses are read back without blindly resending."
     }
   ]
 }

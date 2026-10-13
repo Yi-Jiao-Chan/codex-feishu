@@ -35,12 +35,12 @@ func TestProgressViewKeepsOnlyOrderedPublicRecordsAndSeparatesLegacyFinal(t *tes
 		agent("blank", " ", ""),
 	}
 	view = progressView(turn, 200000)
-	if !reflect.DeepEqual(recordTexts(view.Records), []string{"identical text", "public commentary"}) || finalBody(turn) != "identical text" {
+	if !reflect.DeepEqual(recordTexts(view.Records), []string{"identical text", "public commentary"}) || view.CurrentItemID != "" || finalBody(turn) != "identical text" {
 		t.Fatal("legacy final exclusion removed an earlier item or duplicated final")
 	}
 	turn.Status = "inProgress"
 	view = progressView(turn, 200000)
-	if len(view.Records) != 3 || view.Body != "identical text" {
+	if len(view.Records) != 3 || view.Body != "identical text" || view.CurrentItemID != "selected-final" {
 		t.Fatal("running legacy items were treated as terminal final")
 	}
 }

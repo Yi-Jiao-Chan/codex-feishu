@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +47,7 @@ type Runtime struct {
 	MinProgressIntervalMS      int64
 	ProgressTimeZone           string
 	PrepareHuman               func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
+	SyncGroupName              func(context.Context, store.Binding, string) error
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
 	BeginDelivery              func(context.Context, store.Binding) (context.Context, func(), error)
@@ -442,6 +442,28 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	var latestTurns []codexclient.Turn
 	latestHistoryOK := false
 	title := "Codex"
+	syncedTitle := ""
+	var nextNameSyncAtMS int64
+	syncName := func(b store.Binding) {
+		if r.SyncGroupName == nil || syncedTitle == title || r.now().UnixMilli() < nextNameSyncAtMS || !r.ready() ||
+			(r.CanDeliver != nil && r.CanDeliver(ctx, b) != nil) {
+			return
+		}
+		nameCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		err := r.SyncGroupName(nameCtx, b, title)
+		cancel()
+		if err == nil {
+			syncedTitle, nextNameSyncAtMS = title, 0
+			return
+		}
+		syncedTitle = "" // A pending rename may have changed the previous name.
+		nextNameSyncAtMS = r.now().Add(15 * time.Second).UnixMilli()
+		var deferred *bindings.GroupNameDeferredError
+		if errors.As(err, &deferred) && deferred.RetryAtMS > nextNameSyncAtMS {
+			nextNameSyncAtMS = deferred.RetryAtMS
+		}
+		r.notice("group.name_sync_pending")
+	}
 actorLoop:
 	for {
 		if ctx.Err() != nil {
@@ -467,13 +489,6 @@ actorLoop:
 					r.notice("thread.attach_pending")
 				} else {
 					attached = true
-					if t.Name != nil && *t.Name != "" {
-						runes := []rune(*t.Name)
-						if len(runes) > 40 {
-							runes = runes[:40]
-						}
-						title = string(runes)
-					}
 				}
 				cancel()
 			}
@@ -493,6 +508,9 @@ actorLoop:
 					continue actorLoop
 				}
 				deliveryAuthorized = true
+				// Name is the App's user-facing title. Refresh it from every
+				// authorized metadata read, including name-update wakeups.
+				title = threadGroupTitle(meta, latestTurns)
 				if r.ActorTick != nil {
 					if _, err := r.Store.Binding(readCtx, r.HostID, a.thread); err == nil {
 						if err := r.ActorTick(readCtx, a.thread); err != nil {
@@ -509,19 +527,7 @@ actorLoop:
 					turns, err = nil, nil
 				}
 				if err == nil {
-					if title == "Codex" {
-						for _, turn := range turns {
-							for _, item := range turn.Items {
-								if item.Type == "userMessage" && strings.TrimSpace(item.PublicText()) != "" {
-									title = shortGroupText(item.PublicText(), 40)
-									break
-								}
-							}
-							if title != "Codex" {
-								break
-							}
-						}
-					}
+					title = threadGroupTitle(meta, turns)
 					if r.HistoryPreparing != nil {
 						err = r.HistoryPreparing(readCtx, a.thread, turns)
 					}
@@ -552,6 +558,7 @@ actorLoop:
 				b, bindingErr := r.Store.Binding(ctx, r.HostID, a.thread)
 				if bindingErr == nil {
 					deliver(b, turns, err == nil)
+					syncName(b)
 				} else if !errors.Is(bindingErr, sql.ErrNoRows) {
 					r.notice("binding.read_pending")
 				} else if hydrated && !a.boundOnly && !verificationHandled && r.DiscoveryEnabled && r.ready() && !groupRunning && !groupBlocked && r.now().UnixMilli() >= groupRetryAtMS {
@@ -563,10 +570,7 @@ actorLoop:
 						defer groupWG.Done()
 						groupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 						defer cancel()
-						o, err := r.Store.Observation(groupCtx, r.HostID, a.thread)
-						if err == nil {
-							_, err = manager.Ensure(groupCtx, a.thread, shortGroupText(filepath.Base(o.ProjectRoot)+" · "+taskTitle, 60))
-						}
+						_, err := manager.Ensure(groupCtx, a.thread, taskTitle)
 						select {
 						case groupDone <- err:
 						case <-ctx.Done():

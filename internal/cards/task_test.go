@@ -2,6 +2,7 @@ package cards
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -89,7 +90,7 @@ func TestTaskRecordsUseSmallIndependentCollapsedPreviewsInEveryState(t *testing.
 }
 
 func TestCompletedTaskRetainsCollapsedPublicHistory(t *testing.T) {
-	base := Task(TaskView{Status: "completed", Progress: ProgressView{Records: []ProgressRecord{{ItemID: "a", Text: "已检查模板"}, {ItemID: "b", Text: "已验证布局"}}, ElapsedSeconds: 102}})
+	base := Task(TaskView{Status: "completed", Progress: ProgressView{Body: "已验证布局", CurrentItemID: "b", Records: []ProgressRecord{{ItemID: "a", Text: "已检查模板"}, {ItemID: "b", Text: "已验证布局"}}, ElapsedSeconds: 102}})
 	marked, ok, err := WithRequestMarker(base, "cabcdefghijklmnopqrs")
 	if err != nil || !ok || len(marked)-len(base) != MaxRequestMarkerBytes {
 		t.Fatal("collapsed task did not reserve its exact delivery marker budget", err)
@@ -116,6 +117,64 @@ func TestCompletedTaskRetainsCollapsedPublicHistory(t *testing.T) {
 		}
 	}
 
+}
+
+func TestTaskSeparatesCurrentProgressFromRunningHistory(t *testing.T) {
+	records := []ProgressRecord{
+		{ItemID: "first", Text: "同一条公开动作"},
+		{ItemID: "latest", Text: "同一条公开动作"},
+	}
+	original := append([]ProgressRecord(nil), records...)
+	card := Task(TaskView{Status: "inProgress", Progress: ProgressView{
+		Body: "同一条公开动作", CurrentItemID: "latest", Records: records,
+	}})
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(card), &doc); err != nil {
+		t.Fatal(err)
+	}
+	els := doc["body"].(map[string]any)["elements"].([]any)
+	if len(els) != 3 {
+		t.Fatalf("running card should contain status, current body and history: %s", card)
+	}
+	history := els[2].(map[string]any)
+	rows := history["elements"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("current record was not excluded by ID while the earlier identical record was retained: %s", card)
+	}
+	if !reflect.DeepEqual(records, original) {
+		t.Fatal("rendering changed the complete records projection")
+	}
+
+	single := Task(TaskView{Status: "inProgress", Progress: ProgressView{
+		Body: "同一条公开动作", CurrentItemID: "latest", Records: records[1:],
+	}})
+	if strings.Contains(single, `"tag":"collapsible_panel"`) {
+		t.Fatal("a single current progress record created an empty history panel")
+	}
+}
+
+func TestTaskLegacyCurrentFallbackOnlyRemovesLastMatchingRecord(t *testing.T) {
+	records := []ProgressRecord{{Text: "相同正文"}, {Text: "相同正文"}}
+	card := Task(TaskView{Status: "inProgress", Progress: ProgressView{Body: "相同正文", Records: records}})
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(card), &doc); err != nil {
+		t.Fatal(err)
+	}
+	els := doc["body"].(map[string]any)["elements"].([]any)
+	if len(els) != 3 || len(els[2].(map[string]any)["elements"].([]any)) != 1 {
+		t.Fatalf("legacy fallback removed more than the last matching record: %s", card)
+	}
+}
+
+func TestTaskCurrentIDExclusionSurvivesTruncatedBody(t *testing.T) {
+	full := strings.Repeat("公开动作", 300)
+	body := string([]rune(full)[:800]) + "…（内容已截短）"
+	card := Task(TaskView{Status: "inProgress", Progress: ProgressView{
+		Body: body, CurrentItemID: "latest", Records: []ProgressRecord{{ItemID: "latest", Text: full}},
+	}})
+	if strings.Contains(card, `"tag":"collapsible_panel"`) {
+		t.Fatal("truncated current body failed to exclude its full record by ID")
+	}
 }
 
 func TestTaskPendingUnknownAndUnprovenQueueHaveNoButtons(t *testing.T) {

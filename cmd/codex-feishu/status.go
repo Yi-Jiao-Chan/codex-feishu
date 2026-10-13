@@ -140,6 +140,14 @@ func liveStatus(s control.Snapshot) (output, int) {
 		}
 	}
 	observe("instance.operations_known", known, "current remote writes and recovered requests require confirmation; resolved native attempt ambiguity is retained only as historical audit counts")
+	if s.Persistent.GroupNames != nil {
+		status := "pass"
+		if s.Persistent.GroupNames["dispatching"]+s.Persistent.GroupNames["unknown"] > 0 {
+			status = "pending"
+		}
+		o.Checks = append(o.Checks, check{"instance.group_name_sync", status, false,
+			"group name writes await authoritative readback; message and queue delivery remain available"})
+	}
 	if !o.OK {
 		o.State = "reconciling"
 		o.NextSteps = []string{"inspect pending checks and frozen operations; do not resubmit unknown operations"}

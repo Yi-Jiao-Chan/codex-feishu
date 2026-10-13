@@ -18,8 +18,8 @@ func TestManifestEmbeddedAndBounded(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(old) })
 	m := FeishuManifest()
-	want := []string{"im:message.p2p_msg:readonly", "im:message.group_at_msg:readonly", "im:chat:create", "im:chat:read", "im:chat.members:read", "im:message:send_as_bot", "im:message.reactions:write_only", "im:resource:upload"}
-	if !reflect.DeepEqual(m.RecommendedTenantScopes, want) || m.SDKVersion != "v3.12.0" || len(m.Capabilities) != 15 {
+	want := []string{"im:message.p2p_msg:readonly", "im:message.group_at_msg:readonly", "im:chat:create", "im:chat:read", "im:chat:update", "im:chat.members:read", "im:message:send_as_bot", "im:message.reactions:write_only", "im:resource:upload"}
+	if !reflect.DeepEqual(m.RecommendedTenantScopes, want) || m.SDKVersion != "v3.12.0" || len(m.Capabilities) != 16 {
 		t.Fatalf("unexpected manifest boundary: %+v", m)
 	}
 	for _, c := range m.Capabilities {

@@ -66,6 +66,9 @@ func Task(v TaskView) string {
 	}
 	var els []element
 	history := progress.Records
+	if !terminal && strings.TrimSpace(progress.Body) != "" {
+		history = progressHistoryWithoutCurrent(progress.Body, progress.CurrentItemID, history)
+	}
 	if terminal && len(history) == 0 && strings.TrimSpace(progress.Body) != "" {
 		history = []ProgressRecord{{Text: progress.Body}}
 	}
@@ -95,6 +98,33 @@ func Task(v TaskView) string {
 		els = append(els, b)
 	}
 	return render(els)
+}
+
+// progressHistoryWithoutCurrent only changes the slice used for display. The
+// complete public projection remains available to the caller for persistence,
+// byte budgeting and later reconciliations.
+func progressHistoryWithoutCurrent(body, currentID string, records []ProgressRecord) []ProgressRecord {
+	if len(records) == 0 {
+		return records
+	}
+	remove := -1
+	if currentID != "" {
+		for n, record := range records {
+			if record.ItemID == currentID {
+				remove = n
+				break
+			}
+		}
+	} else if records[len(records)-1].Text == body {
+		remove = len(records) - 1
+	}
+	if remove < 0 {
+		return records
+	}
+	history := make([]ProgressRecord, 0, len(records)-1)
+	history = append(history, records[:remove]...)
+	history = append(history, records[remove+1:]...)
+	return history
 }
 
 func taskDuration(seconds int64) string {
