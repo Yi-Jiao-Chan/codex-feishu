@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"codex-feishu/internal/bindings"
+	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/pairing"
@@ -525,7 +526,9 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		}
 		return task(thread).Prepare(ctx, thread, turns)
 	}
-	r.RenderProgress = func(thread, turn, status, body string) string { return task(thread).Render(thread, turn, status, body) }
+	r.RenderProgress = func(thread, turn, status string, progress cards.ProgressView) string {
+		return task(thread).Render(thread, turn, status, progress)
+	}
 	r.HistoryStaged = func(ctx context.Context, thread string, _ []codexclient.Turn) error {
 		opctx, release, _, err := s.beginVerificationOperation(ctx, thread)
 		if err != nil {

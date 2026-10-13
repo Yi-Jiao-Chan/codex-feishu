@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"codex-feishu/internal/bindings"
+	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/discovery"
 	"codex-feishu/internal/rules"
@@ -57,7 +58,7 @@ type Runtime struct {
 	AfterDelivery              func(context.Context, string, []codexclient.Turn) error
 	EventObserved              func(codexclient.Event)
 	EventObservedContext       func(context.Context, codexclient.Event) error
-	RenderProgress             func(string, string, string, string) string
+	RenderProgress             func(string, string, string, cards.ProgressView) string
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
 	Notice      func(string)
 	Now         func() time.Time

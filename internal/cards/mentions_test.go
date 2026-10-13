@@ -30,11 +30,31 @@ func TestWithMentionsUsesOnlyExplicitTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := mentionTestContents(t, got)
-	if strings.Contains(contents[0], "<at") || contents[len(contents)-1] != Mention("ou_receiver")+" "+Mention("ou_second") {
+	prefix := Mention("ou_receiver") + " " + Mention("ou_second") + " "
+	if !strings.HasPrefix(contents[0], prefix) || strings.Count(contents[0], "<at") != 2 || contents[len(contents)-1] != "> AI · Codex" || len(contents) != 2 {
 		t.Fatalf("body created an unauthorized mention: %q", contents)
 	}
 	if unchanged, err := WithMentions(base, nil); err != nil || unchanged != base {
 		t.Fatalf("empty mentions changed base: %v", err)
+	}
+}
+
+func TestMentionsKeepParagraphInlineAndPreserveMarkdownBlocks(t *testing.T) {
+	for _, tt := range []struct{ body, want string }{
+		{"这是最终答案。", Mention("ou_user") + " 这是最终答案。"},
+		{"# 标题\n\n正文", "# " + Mention("ou_user") + " 标题\n\n正文"},
+		{"- 第一项\n- 第二项", "- " + Mention("ou_user") + " 第一项\n- 第二项"},
+		{"```go\nfmt.Println(1)\n```", Mention("ou_user") + "\n\n```go\nfmt.Println(1)\n```"},
+		{"| A | B |\n| --- | --- |", Mention("ou_user") + "\n\n| A | B |\n| --- | --- |"},
+		{"    indented code", Mention("ou_user") + "\n\n    indented code"},
+	} {
+		card, err := WithMentions(Message("AI", "Codex", tt.body), []string{"ou_user"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := mentionTestContents(t, card)[0]; got != tt.want {
+			t.Fatalf("prefix corrupted visible Markdown: got %q want %q", got, tt.want)
+		}
 	}
 }
 

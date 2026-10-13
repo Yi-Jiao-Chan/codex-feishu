@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"codex-feishu/compat"
 	"codex-feishu/internal/app"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
@@ -223,7 +224,7 @@ func serveNativeConnect(cli string, discover func(context.Context, string) (code
 		if err != nil {
 			return nil, errors.New("existing daemon unavailable")
 		}
-		if daemon.AppServerVersion != "0.162.0" {
+		if !compat.VerifiedCodexVersion(daemon.AppServerVersion) {
 			return nil, errors.New("native version is not in the verified compatibility list")
 		}
 		return connect(ctx, daemon.SocketPath)

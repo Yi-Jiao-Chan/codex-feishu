@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"codex-feishu/compat"
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/rules"
 	"codex-feishu/internal/store"
@@ -256,7 +257,7 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	if p.CandidateTest && !plan.Environment.Artifact.Capabilities.CandidateDeployment {
 		return plan, errors.New("artifact does not advertise candidate deployment support")
 	}
-	if plan.Environment.Daemon.Status != "running" || plan.Environment.Daemon.AppServerVersion != "0.162.0" || plan.Environment.Artifact.CodexProtocol != "0.162.0" || plan.Environment.Artifact.ConfigSchema != 1 || !filepath.IsAbs(plan.Environment.CLIPath) {
+	if plan.Environment.Daemon.Status != "running" || !compat.VerifiedCodexVersion(plan.Environment.Daemon.AppServerVersion) || plan.Environment.Artifact.CodexProtocol != "0.162.0" || plan.Environment.Artifact.ConfigSchema != 1 || !filepath.IsAbs(plan.Environment.CLIPath) {
 		return plan, errors.New("existing daemon or artifact compatibility is unverified")
 	}
 	for _, command := range []string{"version", "doctor", "setup", "serve", "service", "status", "verify"} {

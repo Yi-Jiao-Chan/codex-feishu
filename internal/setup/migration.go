@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"codex-feishu/compat"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/feishu"
@@ -160,7 +161,7 @@ func (p MigrationPlanner) identity(ctx context.Context, configFile, binary strin
 	if err != nil {
 		return c, env, "", errors.New("migration artifact or existing daemon unavailable")
 	}
-	if env.Daemon.Status != "running" || env.Daemon.AppServerVersion != "0.162.0" || env.Artifact.CodexProtocol != "0.162.0" || env.Artifact.ConfigSchema != 1 || !has(env.Artifact.Commands, "serve") || !filepath.IsAbs(env.CLIPath) {
+	if env.Daemon.Status != "running" || !compat.VerifiedCodexVersion(env.Daemon.AppServerVersion) || env.Artifact.CodexProtocol != "0.162.0" || env.Artifact.ConfigSchema != 1 || !has(env.Artifact.Commands, "serve") || !filepath.IsAbs(env.CLIPath) {
 		return c, env, "", errors.New("migration compatibility is unverified")
 	}
 	if c.Codex.CLIPath != "auto" {

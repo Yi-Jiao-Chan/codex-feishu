@@ -171,6 +171,23 @@ func TestServeNativeFactoryRejectsInitialUnverifiedBeforeConnect(t *testing.T) {
 	}
 }
 
+func TestServeNativeFactoryAcceptsVerifiedDotOneWithLocalUnixWebSocket(t *testing.T) {
+	root := t.TempDir()
+	socket := newServeVersionSocket(t, root)
+	var dials atomic.Int32
+	factory := serveNativeConnect("local-cli", func(context.Context, string) (codexclient.Daemon, error) {
+		return codexclient.Daemon{Status: "running", AppServerVersion: "0.162.1", SocketPath: socket.path}, nil
+	}, func(ctx context.Context, path string) (*codexclient.Client, error) {
+		dials.Add(1)
+		return codexclient.Connect(ctx, path)
+	})
+	native, err := factory(context.Background())
+	if err != nil || native == nil || dials.Load() != 1 || socket.accepted.Load() != 1 {
+		t.Fatalf("verified 0.162.1 was not accepted by the local Unix WebSocket gate: native=%v err=%v dials=%d accepted=%d", native != nil, err, dials.Load(), socket.accepted.Load())
+	}
+	native.Close()
+}
+
 func TestServeNativeFactoryRechecksVersionAfterDisconnectWithoutNativeWrites(t *testing.T) {
 	path, _, _, _ := doctorFixture(t)
 	cfg, err := config.Load(path)

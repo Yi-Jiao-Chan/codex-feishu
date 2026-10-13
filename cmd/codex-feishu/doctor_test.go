@@ -207,17 +207,35 @@ func TestDoctorConfigurationAndEndpointConflictsFailBeforeAuth(t *testing.T) {
 
 func TestDoctorConfiguredVersionBoundaryAndStandaloneCodexProbe(t *testing.T) {
 	path, _, deps, _ := doctorFixture(t)
-	for _, version := range []string{"0.162.0", "0.163.0"} {
+	for _, test := range []struct {
+		version  string
+		accepted bool
+	}{
+		{version: "0.162.0", accepted: true},
+		{version: "0.162.1", accepted: true},
+		{version: "0.162.2", accepted: false},
+		{version: "0.163.0", accepted: false},
+	} {
+		version := test.version
 		deps.discover = func(context.Context, string) (codexclient.Daemon, error) {
 			return codexclient.Daemon{Status: "running", AppServerVersion: version}, nil
 		}
 		called := 0
 		deps.nativeProbe = func(context.Context, codexclient.Daemon) (int, error) { called++; return 3, nil }
-		if o, code := inspectDoctor(context.Background(), path, false, false, deps); (version == "0.162.0" && code != 0) || (version != "0.162.0" && code != 3) || called != 0 {
+		o, code := inspectDoctor(context.Background(), path, false, false, deps)
+		if test.accepted && code != 0 || !test.accepted && code != 3 || called != 0 {
 			t.Fatal("configured version check opened native probe", o, code)
 		}
-		o, code := inspectDoctor(context.Background(), "", true, false, deps)
-		if version == "0.162.0" && (code != 0 || !o.OK || called != 1) || version != "0.162.0" && (code != 3 || o.OK || called != 0) {
+		encoded, _ := json.Marshal(o)
+		wantDetail := "actual server version " + version
+		if test.accepted {
+			wantDetail = "actual shared server version " + version
+		}
+		if !strings.Contains(string(encoded), wantDetail) {
+			t.Fatal("doctor omitted the actual observed version", string(encoded))
+		}
+		o, code = inspectDoctor(context.Background(), "", true, false, deps)
+		if test.accepted && (code != 0 || !o.OK || called != 1) || !test.accepted && (code != 3 || o.OK || called != 0) {
 			t.Fatal("unverified standalone native probe", o, code, called)
 		}
 	}

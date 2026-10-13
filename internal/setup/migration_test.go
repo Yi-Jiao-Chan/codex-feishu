@@ -118,6 +118,31 @@ func migrationSchema(t *testing.T, database string) int {
 	return version
 }
 
+func TestMigrationUsesVerifiedCodexVersionGate(t *testing.T) {
+	for _, test := range []struct {
+		version  string
+		accepted bool
+	}{
+		{version: "0.162.1", accepted: true},
+		{version: "0.162.2", accepted: false},
+		{version: "0.163.0", accepted: false},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			p, cfg, binary, _, _ := migrationFixture(t)
+			probe := p.Probe
+			p.Probe = func(ctx context.Context, path string) (Environment, error) {
+				env, err := probe(ctx, path)
+				env.Daemon.AppServerVersion = test.version
+				return env, err
+			}
+			_, err := p.Preview(context.Background(), cfg, binary)
+			if test.accepted && err != nil || !test.accepted && err == nil {
+				t.Fatalf("migration version gate accepted=%v for %s: err=%v", test.accepted, test.version, err)
+			}
+		})
+	}
+}
+
 func TestMigrationPreviewStablePrivateAndApplyReusesRoute(t *testing.T) {
 	p, cfg, binary, native, _ := migrationFixture(t)
 	ctx := context.Background()

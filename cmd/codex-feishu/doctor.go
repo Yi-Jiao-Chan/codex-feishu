@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	"codex-feishu/compat"
@@ -127,18 +128,19 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 		cli = cfg.Codex.CLIPath
 	}
 	daemon, err := deps.discover(ctx, cli)
-	compatible := err == nil && daemon.Status == "running" && daemon.AppServerVersion == "0.162.0"
+	compatible := err == nil && daemon.Status == "running" && compat.VerifiedCodexVersion(daemon.AppServerVersion)
 	if err != nil {
 		o.Checks = append(o.Checks, check{"codex.daemon", "fail", true, "existing shared daemon unavailable; no daemon started"})
 		fail(3)
 	} else {
 		data["codex_daemon"] = daemon
 		o.Checks = append(o.Checks, check{"codex.daemon", "pass", true, "inspected existing shared daemon using the configured CLI"})
+		verifiedVersions := strings.Join(compat.VerifiedCodexVersions(), ", ")
 		if !compatible {
-			o.Checks = append(o.Checks, check{"codex.compatibility", "fail", true, "actual server version is outside the verified 0.162.0 compatibility boundary"})
+			o.Checks = append(o.Checks, check{"codex.compatibility", "fail", true, "actual server version " + daemon.AppServerVersion + " is outside the verified compatibility versions: " + verifiedVersions})
 			fail(3)
 		} else {
-			o.Checks = append(o.Checks, check{"codex.compatibility", "pass", true, "actual shared server version 0.162.0"})
+			o.Checks = append(o.Checks, check{"codex.compatibility", "pass", true, "actual shared server version " + daemon.AppServerVersion + "; verified compatibility versions: " + verifiedVersions})
 		}
 	}
 	if codexOnly {

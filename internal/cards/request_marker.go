@@ -19,8 +19,9 @@ var (
 	errRequestMarkerCardTooLarge  = errors.New("request marker card exceeds byte limit")
 )
 
-// WithRequestMarker adds marker to the first top-level markdown element that
-// does not already have an element_id. Legacy cards are returned unchanged.
+// WithRequestMarker marks a free top-level markdown element, falling back to
+// a collapsed history body. Existing panel IDs remain stable across updates.
+// Legacy cards are returned unchanged.
 func WithRequestMarker(base, marker string) (rendered string, marked bool, err error) {
 	if !validRequestMarker(marker) {
 		return "", false, errInvalidRequestMarker
@@ -57,15 +58,8 @@ func WithRequestMarker(base, marker string) (rendered string, marked bool, err e
 		return "", false, errRequestMarkerAlreadyExists
 	}
 
-	for _, value := range elements {
-		element, ok := value.(map[string]any)
-		if !ok || element == nil || element["tag"] != "markdown" {
-			continue
-		}
-		if _, exists := element["element_id"]; exists {
-			continue
-		}
-		element["element_id"] = marker
+	if target := freeRequestMarkdown(elements); target != nil {
+		target["element_id"] = marker
 		encoded, err := json.Marshal(card)
 		if err != nil {
 			return "", false, errInvalidRequestMarkerCard
@@ -77,6 +71,30 @@ func WithRequestMarker(base, marker string) (rendered string, marked bool, err e
 	}
 
 	return "", false, errRequestMarkerNoMarkdown
+}
+
+func freeRequestMarkdown(elements []any) map[string]any {
+	for _, value := range elements {
+		e, ok := value.(map[string]any)
+		if !ok || e["tag"] != "markdown" {
+			continue
+		}
+		if _, occupied := e["element_id"]; !occupied {
+			return e
+		}
+	}
+	for _, value := range elements {
+		e, ok := value.(map[string]any)
+		if !ok || e["tag"] != "collapsible_panel" {
+			continue
+		}
+		if children, ok := e["elements"].([]any); ok {
+			if target := freeRequestMarkdown(children); target != nil {
+				return target
+			}
+		}
+	}
+	return nil
 }
 
 func validRequestMarker(marker string) bool {

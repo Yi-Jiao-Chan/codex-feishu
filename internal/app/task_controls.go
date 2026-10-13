@@ -150,18 +150,18 @@ func (t *TaskControls) Prepare(ctx context.Context, thread string, turns []codex
 
 // Render is pure: it reads only the cache populated by this actor's Prepare.
 // An empty interrupted render suppresses creation of unrelated historical cards.
-func (t *TaskControls) Render(thread, turn, status, body string) string {
+func (t *TaskControls) Render(thread, turn, status string, progress cards.ProgressView) string {
 	v, ok := t.cache[taskRenderKey{thread, turn}]
 	if !ok {
 		if status == "interrupted" {
 			return ""
 		}
-		return cards.Task(cards.TaskView{Status: status, Body: body, State: "unavailable", QueueCount: -1})
+		return cards.Task(cards.TaskView{Status: status, Progress: progress, State: "unavailable", QueueCount: -1})
 	}
 	if v.NativeStatus != status {
 		v.Kind, v.State, v.Reason = "", "unknown", "verifying"
 	}
-	return cards.Task(cards.TaskView{Status: status, Body: body, Token: v.Token, Kind: v.Kind, State: v.State, Reason: v.Reason, Revision: v.Revision, QueueCount: v.QueueCount, Waiting: v.Waiting})
+	return cards.Task(cards.TaskView{Status: status, Progress: progress, Token: v.Token, Kind: v.Kind, State: v.State, Reason: v.Reason, Revision: v.Revision, QueueCount: v.QueueCount, Waiting: v.Waiting})
 }
 
 // Claim is local-only. The Receiver authenticates the operator first; the store

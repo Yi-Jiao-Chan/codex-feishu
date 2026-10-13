@@ -30,7 +30,7 @@ type Engine struct {
 	MentionTargets []string // Reserve the complete structured reminder before splitting final text.
 	// ProgressRender is pure; the actor prepares its durable control state first.
 	// An empty interrupted render suppresses a new historical progress card.
-	ProgressRender func(thread, turn, nativeStatus, body string) string
+	ProgressRender func(thread, turn, nativeStatus string, progress cards.ProgressView) string
 }
 
 // HistoryError keeps native payloads out of ordinary error text.
@@ -163,11 +163,15 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 		key := mirrorKey("progress", turn.ID)
 		_, hadProgress := existing[key]
 		if turn.Status == "inProgress" || hadProgress || turn.Status == "interrupted" && e.ProgressRender != nil {
-			render := func(body string) string { return cards.Progress(turnLabel(turn.Status), body) }
-			if e.ProgressRender != nil {
-				render = func(body string) string { return e.ProgressRender(thread, turn.ID, turn.Status, body) }
+			render := func(progress cards.ProgressView) string {
+				return cards.Task(cards.TaskView{Status: turn.Status, Progress: progress})
 			}
-			card, err := boundedRenderedProgress(progressBody(turn), markerCardBudget(e.MaxCardBytes), render)
+			if e.ProgressRender != nil {
+				render = func(progress cards.ProgressView) string {
+					return e.ProgressRender(thread, turn.ID, turn.Status, progress)
+				}
+			}
+			card, err := boundedRenderedProgress(progressView(turn, observedAtMS), markerCardBudget(e.MaxCardBytes), render)
 			if err != nil {
 				return snapshotPlan{}, err
 			}
@@ -261,47 +265,74 @@ func finalBody(t codexclient.Turn) string {
 	return strings.Join(texts, "\n\n")
 }
 
-func progressBody(t codexclient.Turn) string {
-	latest := ""
-	running, finished := 0, 0
-	for _, i := range t.Items {
-		if i.Type == "agentMessage" && (i.Phase == nil || *i.Phase == "commentary" || *i.Phase == "partial_answer") {
-			latest = i.Text
-		}
-		switch i.Type {
-		case "commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange":
-			if i.Status == "inProgress" {
-				running++
-			} else if i.Status == "completed" || i.Status == "failed" || i.Status == "declined" {
-				finished++
+// progressView projects public assistant commentary in native item order and
+// counts tool status metadata without retaining tool payloads.
+// The complete snapshot replaces the previous projection rather than appending
+// deltas. A legacy terminal's selected final item is not also a process record.
+func progressView(t codexclient.Turn, observedAtMS int64) cards.ProgressView {
+	v := cards.ProgressView{ElapsedSeconds: -1}
+	legacyFinal, explicitFinal := -1, false
+	if t.Status != "inProgress" {
+		for n, i := range t.Items {
+			if i.Type != "agentMessage" || strings.TrimSpace(i.Text) == "" {
+				continue
+			}
+			if i.Phase == nil {
+				legacyFinal = n
+			} else if *i.Phase == "final_answer" {
+				explicitFinal = true
 			}
 		}
 	}
-	if t.Status != "inProgress" {
-		return ""
-	}
-	runes := []rune(latest)
-	if len(runes) > 800 {
-		latest = string(runes[:800]) + "…"
-	}
-	if running+finished != 0 {
-		if latest != "" {
-			latest += "\n\n"
+	for n, i := range t.Items {
+		switch i.Type {
+		case "commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange":
+			if i.Status == "inProgress" {
+				v.RunningTools++
+			} else if i.Status == "completed" || i.Status == "failed" || i.Status == "declined" {
+				v.FinishedTools++
+			}
 		}
-		latest += fmt.Sprintf("工具：%d 项执行中 · %d 项已结束", running, finished)
+		if i.Type != "agentMessage" || strings.TrimSpace(i.Text) == "" ||
+			(i.Phase != nil && *i.Phase != "commentary" && *i.Phase != "partial_answer") ||
+			(n == legacyFinal && !explicitFinal) {
+			continue
+		}
+		v.Records = append(v.Records, i.Text)
+		v.Body = i.Text
 	}
-	return latest
+	runes := []rune(v.Body)
+	if len(runes) > 800 {
+		v.Body = string(runes[:800]) + "…（内容已截短）"
+	}
+	if t.Status != "inProgress" {
+		v.Body = "" // Keep completed process details in the collapsed records.
+	}
+	// Native turn timestamps are seconds. Terminal duration never advances on
+	// replay, and missing/invalid timestamps never become an invented duration.
+	observed := observedAtMS / 1000
+	if t.StartedAt != nil && *t.StartedAt > 0 && observed >= *t.StartedAt {
+		end := observed
+		if t.Status != "inProgress" {
+			if t.CompletedAt == nil {
+				return v
+			}
+			end = *t.CompletedAt
+		}
+		if end >= *t.StartedAt && end <= observed {
+			v.ElapsedSeconds = end - *t.StartedAt
+		}
+	}
+	return v
 }
 
-func boundedProgress(label, body string, limit int) (string, error) {
-	return boundedRenderedProgress(body, limit, func(body string) string { return cards.Progress(label, body) })
-}
-
-func boundedRenderedProgress(body string, limit int, render func(string) string) (string, error) {
+func boundedRenderedProgress(v cards.ProgressView, limit int, render func(cards.ProgressView) string) (string, error) {
 	if limit == 0 {
 		limit = cards.DefaultMaxCardBytes
 	}
-	card := render(body)
+	// Copy the slice before replacing its final element during truncation.
+	v.Records = append([]string(nil), v.Records...)
+	card := render(v)
 	if card == "" {
 		return "", nil
 	}
@@ -311,38 +342,67 @@ func boundedRenderedProgress(body string, limit int, render func(string) string)
 	if len(card) <= limit {
 		return card, nil
 	}
-	if limit < len(render("")) {
-		return "", errors.New("card limit cannot hold progress status")
-	}
-	// Progress is a compact latest-action summary. Only this summary may be
-	// shortened; public human text and the final answer always use full splits.
-	runes := []rune(body)
-	lo, hi := 0, len(runes)
-	for lo < hi {
-		mid := (lo + hi + 1) / 2
-		if len(render(string(runes[:mid])+"…")) <= limit {
-			lo = mid
-		} else {
-			hi = mid - 1
+	// Prefer the newest complete records. The omission count remains explicit
+	// even if none of the process records fit this card's budget.
+	if len(v.Records) > 1 {
+		// The pure renderer's fixed state and controls do not change while
+		// evicting records. Search the oldest prefix instead of serializing
+		// every remaining suffix of a long native history.
+		records, omitted := v.Records, v.OmittedRecords
+		lo, hi := 1, len(records)-1
+		for lo < hi {
+			mid := (lo + hi) / 2
+			v.Records, v.OmittedRecords = records[mid:], omitted+mid
+			if len(render(v)) <= limit {
+				hi = mid
+			} else {
+				lo = mid + 1
+			}
 		}
+		v.Records, v.OmittedRecords = records[lo:], omitted+lo
+		card = render(v)
 	}
-	if lo == 0 {
-		return render(""), nil
+	shorten := func(text string, set func(string)) bool {
+		runes := []rune(text)
+		set("…（内容已截短）")
+		if len(render(v)) > limit {
+			return false
+		}
+		lo, hi := 0, len(runes)
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			set(string(runes[:mid]) + "…（内容已截短）")
+			if len(render(v)) <= limit {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		set(string(runes[:lo]) + "…（内容已截短）")
+		return true
 	}
-	return render(string(runes[:lo]) + "…"), nil
-}
-
-func turnLabel(status string) string {
-	switch status {
-	case "completed":
-		return "已完成"
-	case "failed":
-		return "执行失败 · 请查看 Codex"
-	case "interrupted":
-		return "已停止"
-	default:
-		return "执行中"
+	if len(card) > limit && len(v.Records) == 1 {
+		if !shorten(v.Records[0], func(s string) { v.Records[0] = s }) {
+			v.Records = nil
+			v.OmittedRecords++
+		}
+		card = render(v)
 	}
+	if len(card) > limit {
+		body := v.Body
+		v.Body = ""
+		if len(render(v)) > limit {
+			return "", errors.New("card limit cannot hold progress status and omission notice")
+		}
+		if !shorten(body, func(s string) { v.Body = s }) {
+			v.Body = ""
+		}
+		card = render(v)
+	}
+	if !json.Valid([]byte(card)) || len(card) > limit {
+		return "", errors.New("progress renderer returned invalid or oversized card")
+	}
+	return card, nil
 }
 
 func emptyResult(status string) string {
@@ -415,7 +475,7 @@ func finalCardBudget(limit int, targets []string) (int, error) {
 	if err != nil {
 		return 0, errors.New("notification targets exceed card budget")
 	}
-	budget -= len(mentioned) - len(base)
+	budget -= len(mentioned) - len(base) + cards.MaxMentionBlockExtraBytes
 	if budget <= 0 {
 		return 0, errors.New("card budget cannot hold notification targets")
 	}

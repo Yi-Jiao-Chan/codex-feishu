@@ -17,7 +17,7 @@ import (
 )
 
 // None of these cases uses fakeNative. The wrapper forwards each operation to
-// a real 0.162.0 client and only injects deterministic scheduling or discards an
+// an explicitly version-checked native client and only injects scheduling or discards an
 // already-successful reply at the Controller boundary. This is not a claim of
 // a network transport outage or App/Feishu UI verification.
 func TestNativeControllerQ4OtherClientDeletesBeforeBridgeDelete(t *testing.T) {
@@ -50,7 +50,7 @@ func TestNativeControllerQ4OtherClientDeletesBeforeBridgeDelete(t *testing.T) {
 			t.Fatal("actual false delete was not journaled")
 		}
 	}
-	t.Log("daemon=0.162.0 Q4 real second-client delete; bridge delete=false; add=1 delete=1 steer=0 restore=0; owned fixture only")
+	t.Log("daemon=" + h.version + " Q4 real second-client delete; bridge delete=false; add=1 delete=1 steer=0 restore=0; owned fixture only")
 }
 
 func TestNativeControllerQ5OldTurnEndsBeforeSteerAndNeverRetargets(t *testing.T) {
@@ -130,7 +130,7 @@ func TestNativeControllerQ5OldTurnEndsBeforeSteerAndNeverRetargets(t *testing.T)
 	if len(matches) != 1 || matches[0] == h.active || matches[0] == replacement || h.view(t, r.ID).State != "consumed" {
 		t.Fatal("restored input must execute once in its subsequent turn")
 	}
-	t.Log("daemon=0.162.0 Q5 real old-turn completion and second-client replacement; original-target steer rejected once; restore=1; subsequent history=1")
+	t.Log("daemon=" + h.version + " Q5 real old-turn completion and second-client replacement; original-target steer rejected once; restore=1; subsequent history=1")
 }
 
 func TestNativeControllerQ6AcceptedSteerReplyDiscardedAtBoundary(t *testing.T) {
@@ -154,7 +154,7 @@ func TestNativeControllerQ6AcceptedSteerReplyDiscardedAtBoundary(t *testing.T) {
 	if err != nil || got.State != "confirmed" || got.Result != "steered" || len(matches) != 1 || matches[0] != h.active || h.boundary.steers != 1 || h.boundary.adds != 1 || h.boundary.deletes != 1 {
 		t.Fatal("steer recovery must prove the original turn without retransmission")
 	}
-	t.Log("daemon=0.162.0 Q6 Controller-boundary accepted-reply loss; SQLite reopen; original-turn history=1; steer=1; not a network-outage claim")
+	t.Log("daemon=" + h.version + " Q6 Controller-boundary accepted-reply loss; SQLite reopen; original-turn history=1; steer=1; not a network-outage claim")
 }
 
 func TestNativeControllerQ7AcceptedAddReplyDiscardedAtBoundary(t *testing.T) {
@@ -207,7 +207,7 @@ func TestNativeControllerQ7AcceptedAddReplyDiscardedAtBoundary(t *testing.T) {
 			if err != nil || len(attempts) != 1 || attempts[0].Stage != "add" || attempts[0].State != "confirmed" {
 				t.Fatal("add journal did not reconcile a single native attempt")
 			}
-			t.Log("daemon=0.162.0 Q7 " + name + " Controller-boundary accepted-reply loss; SQLite reopen; add=1; exact queue/history association; not a network outage")
+			t.Log("daemon=" + h.version + " Q7 " + name + " Controller-boundary accepted-reply loss; SQLite reopen; add=1; exact queue/history association; not a network outage")
 		})
 	}
 }
@@ -226,7 +226,7 @@ func TestNativeControllerQ8AcceptedDeleteReplyDiscardedAtBoundary(t *testing.T) 
 	if h.boundary.adds != 1 || h.boundary.deletes != 1 || h.boundary.steers != 0 {
 		t.Fatal("unknown delete triggered a repeated native mutation")
 	}
-	t.Log("daemon=0.162.0 Q8 Controller-boundary accepted-delete reply loss; SQLite reopen; unknown remains frozen; delete=1 steer=0 restore=0")
+	t.Log("daemon=" + h.version + " Q8 Controller-boundary accepted-delete reply loss; SQLite reopen; unknown remains frozen; delete=1 steer=0 restore=0")
 }
 
 func assertNativeQueueDeleteFrozen(t *testing.T, h *nativeQueueHarness, r store.Receipt) {
@@ -270,7 +270,7 @@ func TestNativeControllerQ8ProcessExitAfterDeleteBeforePersistence(t *testing.T)
 	r := h.claim(t)
 	h.tick(t)
 	h.steerAction(t, r.ID)
-	config := nativeQueueCrashConfig{Ownership: nativeQueueOwnership{Spec: h.spec, ThreadID: h.thread, Version: "0.162.0"}, Database: h.path, Receipt: r.ID}
+	config := nativeQueueCrashConfig{Ownership: nativeQueueOwnership{Spec: h.spec, ThreadID: h.thread, Version: h.version, CLIVersion: h.version}, Database: h.path, Receipt: r.ID}
 	configPath := filepath.Join(h.root, "child-crash.json")
 	if err := writeNativePrivateJSON(configPath, config); err != nil {
 		t.Fatal("cannot write private child scope")
@@ -280,7 +280,7 @@ func TestNativeControllerQ8ProcessExitAfterDeleteBeforePersistence(t *testing.T)
 	}
 	h.db = nil
 	command := exec.CommandContext(h.ctx, os.Args[0], "-test.run=^TestNativeQueueChildCrash$", "-test.timeout=30s")
-	command.Env = append(os.Environ(), nativeControllerOptIn+"=1", "CODEX_FEISHU_NATIVE_CHILD_SCOPE="+configPath, "CODEX_FEISHU_NATIVE_CHILD_RUN="+h.spec.RunID)
+	command.Env = append(os.Environ(), nativeControllerOptIn+"=1", nativeExpectedVersionEnv+"="+h.version, "CODEX_FEISHU_NATIVE_CHILD_SCOPE="+configPath, "CODEX_FEISHU_NATIVE_CHILD_RUN="+h.spec.RunID)
 	output, err := command.CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != nativeCrashExit {
@@ -306,7 +306,7 @@ func TestNativeControllerQ8ProcessExitAfterDeleteBeforePersistence(t *testing.T)
 	if h.boundary.adds != 1 || h.boundary.deletes != 0 || h.boundary.steers != 0 {
 		t.Fatal("post-crash parent retransmitted a native mutation")
 	}
-	t.Log("daemon=0.162.0 Q8 real OS child exit=86 after successful native delete and before local confirmation; reopen converts dispatching to unknown; no steer/restore/re-delete")
+	t.Log("daemon=" + h.version + " Q8 real OS child exit=86 after successful native delete and before local confirmation; reopen converts dispatching to unknown; no steer/restore/re-delete")
 }
 
 // Re-exec entrypoint: it cannot create a thread/model or choose a thread not
@@ -317,6 +317,7 @@ func TestNativeQueueChildCrash(t *testing.T) {
 		t.Skip("owned child process only")
 	}
 	requireNativeQueueOptIn(t)
+	expected := requireNativeExpectedVersion(t)
 	root := filepath.Dir(path)
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
@@ -324,7 +325,7 @@ func TestNativeQueueChildCrash(t *testing.T) {
 	}
 	body, err := os.ReadFile(path)
 	var config nativeQueueCrashConfig
-	if err != nil || json.Unmarshal(body, &config) != nil || config.Ownership.Spec.RunID != os.Getenv("CODEX_FEISHU_NATIVE_CHILD_RUN") || config.Database != filepath.Join(root, "controller.db") || config.Ownership.Spec.CWD != filepath.Join(root, "cwd") || config.Ownership.Version != "0.162.0" {
+	if err != nil || json.Unmarshal(body, &config) != nil || config.Ownership.Spec.RunID != os.Getenv("CODEX_FEISHU_NATIVE_CHILD_RUN") || config.Database != filepath.Join(root, "controller.db") || config.Ownership.Spec.CWD != filepath.Join(root, "cwd") || config.Ownership.Version != expected || config.Ownership.CLIVersion != expected {
 		t.Fatal("child scope does not match its parent-owned scratch fixture")
 	}
 	body, err = os.ReadFile(filepath.Join(root, "owned-thread.json"))
@@ -335,7 +336,7 @@ func TestNativeQueueChildCrash(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	daemon, err := codexclient.Discover(ctx, "auto")
-	if err != nil || daemon.AppServerVersion != "0.162.0" {
+	if err != nil || !nativeDaemonVersionMatches(daemon, expected) {
 		t.Fatal("child requires the existing verified daemon")
 	}
 	client, err := codexclient.Connect(ctx, daemon.SocketPath)
@@ -343,6 +344,9 @@ func TestNativeQueueChildCrash(t *testing.T) {
 		t.Fatal("child native connection failed")
 	}
 	defer client.Close()
+	if err := nativeOwnedBirthVersion(ctx, client, marker.ThreadID, expected); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.AttachLocalVerification(ctx, marker.ThreadID, marker.Spec); err != nil {
 		t.Fatal("child could not verify original fixture policy")
 	}
@@ -428,7 +432,7 @@ func TestNativeControllerQ2Q3MixedQueueOrderAndMiddleSteer(t *testing.T) {
 			if h.view(t, b.ID).State != wantB || h.view(t, c.ID).State != "consumed" || h.boundary.adds != 2 {
 				t.Fatal("bridge inputs failed exact-once consumption")
 			}
-			t.Log("daemon=0.162.0 " + name + " mixed native/Controller A-B-C; exact native ordinals and history; untouched inputs preserve order")
+			t.Log("daemon=" + h.version + " " + name + " mixed native/Controller A-B-C; exact native ordinals and history; untouched inputs preserve order")
 		})
 	}
 }
@@ -580,7 +584,7 @@ func TestNativeControllerQ9ConcurrentAuthorizedCallbacksAndReplay(t *testing.T) 
 			if m := h.history(t, r.ClientID); len(m) != wantSteer || wantSteer == 1 && m[0] != h.active {
 				t.Fatal("winner disagrees with native input history")
 			}
-			t.Logf("daemon=0.162.0 Q9 %s 12 simultaneous authorized Controller claims; one durable %s pipeline; delete=1 steer=%d; replays do not mutate", name, winner.Kind, wantSteer)
+			t.Logf("daemon=%s Q9 %s 12 simultaneous authorized Controller claims; one durable %s pipeline; delete=1 steer=%d; replays do not mutate", h.version, name, winner.Kind, wantSteer)
 		})
 	}
 }
@@ -680,7 +684,7 @@ func TestNativeControllerQ10ContinueRacesSecondNativeStart(t *testing.T) {
 			if nativeQueueHistoryPosition(t, h, a.ClientID) >= nativeQueueHistoryPosition(t, h, c.ClientID) || h.view(t, a.ID).State != "consumed" || h.view(t, c.ID).State != "consumed" {
 				t.Fatal("stopped/appended inputs did not drain once in order")
 			}
-			t.Log("daemon=0.162.0 Q10 " + name + " real stop+append and two-client start competition; one start winner; steer=0; A-C preserved once")
+			t.Log("daemon=" + h.version + " Q10 " + name + " real stop+append and two-client start competition; one start winner; steer=0; A-C preserved once")
 		})
 	}
 }
@@ -722,7 +726,7 @@ func TestNativeControllerColdCreatorAttachWithoutInput(t *testing.T) {
 	if requests != 0 || h.boundary.adds != 0 || h.boundary.deletes != 0 || h.boundary.steers != 0 || h.boundary.starts != 0 || h.boundary.interrupts != 0 {
 		t.Fatal("cold creator probe issued input or model requests")
 	}
-	t.Logf("daemon=0.162.0 original_creator cold typed_attach=%s RPC_code=%d; single resume without overrides; queue=0 history=%s model_requests=0; no prime/retry", outcome, code, history)
+	t.Logf("daemon=%s original_creator cold typed_attach=%s RPC_code=%d; single resume without overrides; queue=0 history=%s model_requests=0; no prime/retry", h.version, outcome, code, history)
 	if attachErr == nil {
 		t.Log("typed readback checked owned ID/private cwd, fixture-model/run provider, never approval, readOnly/no-network, non-ephemeral, validation label and no lineage against original spec")
 	}

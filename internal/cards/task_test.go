@@ -16,14 +16,12 @@ func TestTaskUsesCompactNotationAndOnlyScopedOpaqueCallback(t *testing.T) {
 		t.Fatal("progress gained a header")
 	}
 	body := doc["body"].(map[string]any)
-	if body["padding"] != "8px 12px" || body["vertical_spacing"] != "4px" {
+	if body["padding"] != "12px 12px" || body["vertical_spacing"] != "8px" {
 		t.Fatal("progress lost the confirmed compact layout")
 	}
 	els := body["elements"].([]any)
-	for _, e := range els[:2] {
-		if e.(map[string]any)["text_size"] != "notation" {
-			t.Fatal("progress text is not notation")
-		}
+	if els[0].(map[string]any)["text_size"] != "notation" || els[1].(map[string]any)["text_size"] != "normal" {
+		t.Fatal("status and public body lost their distinct hierarchy")
 	}
 	button := els[2].(map[string]any)
 	if button["tag"] != "button" || button["type"] != "text" || button["size"] != "small" {
@@ -35,6 +33,38 @@ func TestTaskUsesCompactNotationAndOnlyScopedOpaqueCallback(t *testing.T) {
 	}
 	if !strings.Contains(card, "请回 Codex App 处理审批或问题") || strings.Contains(card, "<at") || strings.Contains(card, "approve") || strings.Contains(card, "answer") {
 		t.Fatal("waiting text answered a native request or exposed a mention")
+	}
+}
+
+func TestCompletedTaskRetainsCollapsedPublicHistory(t *testing.T) {
+	base := Task(TaskView{Status: "completed", Progress: ProgressView{Records: []string{"已检查模板", "已验证布局"}, ElapsedSeconds: 102}})
+	marked, ok, err := WithRequestMarker(base, "cabcdefghijklmnopqrs")
+	if err != nil || !ok || len(marked)-len(base) != MaxRequestMarkerBytes {
+		t.Fatal("collapsed task did not reserve its exact delivery marker budget", err)
+	}
+	var doc struct {
+		Body struct {
+			Elements []struct {
+				Tag       string
+				ElementID string `json:"element_id"`
+				Expanded  bool
+				Header    struct{ Title struct{ Content string } }
+				Elements  []struct {
+					Content   string
+					ElementID string `json:"element_id"`
+				}
+			} `json:"elements"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(marked), &doc); err != nil {
+		t.Fatal(err)
+	}
+	els := doc.Body.Elements
+	if len(els) != 1 || els[0].Tag != "collapsible_panel" || els[0].ElementID != "execution_history" || els[0].Expanded || els[0].Header.Title.Content != "已完成 · 用时 1 分 42 秒" {
+		t.Fatal("completed execution did not collapse to a single reviewable line")
+	}
+	if !strings.Contains(els[0].Elements[0].Content, "已检查模板") || !strings.Contains(els[0].Elements[0].Content, "已验证布局") || els[0].Elements[0].ElementID != "cabcdefghijklmnopqrs" {
+		t.Fatal("terminal card lost public history or its hidden delivery marker")
 	}
 }
 
