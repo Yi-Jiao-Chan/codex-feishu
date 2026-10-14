@@ -77,6 +77,19 @@ func TestSplitMessageSingleAndDefault(t *testing.T) {
 	}
 }
 
+func TestSplitMessageCompactQuotedBreaksKeepRawAndActualBudget(t *testing.T) {
+	body := strings.Repeat("> **引用标题**\n>\n> 内容中文 😀 <at id=\"all\"></at>\n> [对应代码](/not-read/file.go:23)\n\n", 150)
+	parts := checkSegments(t, "AI 回复", "Codex", body, 900)
+	if len(parts) < 2 {
+		t.Fatal("quoted fixture did not exercise actual wire segmentation")
+	}
+	for _, part := range parts {
+		if strings.Contains(part.Card, "\\u003cat ") {
+			t.Fatal("quoted text activated an unconfigured mention")
+		}
+	}
+}
+
 func TestSplitMessageUnicodeAndEscaping(t *testing.T) {
 	for _, body := range []string{
 		strings.Repeat("中文😀👨‍👩‍👧‍👦", 300),

@@ -14,7 +14,23 @@ func SafeMarkdown(body string) string {
 	var out strings.Builder
 	var fence *messageFence
 	fenceQuoteDepth, inlineWidth := 0, 0
-	for _, line := range strings.SplitAfter(body, "\n") {
+	lines := strings.SplitAfter(body, "\n")
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		// Feishu discards CommonMark quote paragraph boundaries. Explicit
+		// breaks survive its conversion without fragmenting the quote rail.
+		previousDepth := 0
+		if i > 0 {
+			_, _, previousDepth = publicQuotePrefix(lines[i-1], -1)
+		}
+		if fence == nil && inlineWidth == 0 && previousDepth == 0 {
+			if quote, consumed := publicSimpleQuote(lines[i:]); consumed > 0 {
+				out.WriteString(quote)
+				i += consumed
+				continue
+			}
+		}
+		i++
 		depthLimit := -1
 		if fence != nil {
 			depthLimit = fenceQuoteDepth
@@ -42,6 +58,55 @@ func SafeMarkdown(body string) string {
 		out.WriteString(Safe(publicCodeReferences(text, &inlineWidth)))
 	}
 	return out.String()
+}
+
+// Only ordinary single-layer quotes receive compact explicit line breaks.
+// Complex child blocks keep their Markdown: flattening a code block, nested
+// quote or list would change its meaning. Raw <br> and other input tags are
+// escaped before the renderer inserts its own fixed, trusted break tags.
+func publicSimpleQuote(lines []string) (string, int) {
+	var text []string
+	count, inlineWidth := 0, 0
+	for _, line := range lines {
+		_, content, depth := publicQuotePrefix(line, -1)
+		if depth == 0 {
+			break
+		}
+		if depth != 1 || publicIndented(content) || openingMessageFence(content) != nil ||
+			publicListStart.MatchString(content) || strings.HasPrefix(content, "|") ||
+			strings.HasPrefix(strings.TrimLeft(content, " "), "#") {
+			return "", 0
+		}
+		count++
+		content = strings.TrimRight(content, " \t\r\n")
+		if content == "" {
+			continue
+		}
+		if strings.Trim(content, "-*_= \t") == "" {
+			return "", 0
+		}
+		// A Markdown hard-break backslash is presentation, not quoted text.
+		backslashes := len(content) - len(strings.TrimRight(content, "\\"))
+		if backslashes%2 != 0 {
+			content = strings.TrimSuffix(content, "\\")
+		}
+		content = publicCodeReferences(content, &inlineWidth)
+		if inlineWidth != 0 {
+			return "", 0
+		}
+		text = append(text, Safe(content))
+	}
+	if len(text) < 2 {
+		return "", 0
+	}
+	// Quoted empty paragraphs do not add empty display rows. The body stays
+	// in one native quote with adjacent title, text and link lines.
+	indent := len(lines[0]) - len(strings.TrimLeft(lines[0], " "))
+	quote := lines[0][:indent] + "> " + strings.Join(text, "<br>")
+	if strings.HasSuffix(lines[count-1], "\n") {
+		quote += "\n"
+	}
+	return quote, count
 }
 
 // limit==0 keeps every '>' literal; a positive limit preserves only the outer

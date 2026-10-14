@@ -8,7 +8,7 @@ import (
 func TestSafeMarkdownKeepsQuoteSyntaxWithoutActivatingTags(t *testing.T) {
 	input := "> **引用标题**\n> <at id=\"all\"></at>\n>\n> 第二段\n\n普通比较 2 > 1\n    > literal code\n&gt; already literal"
 	got := SafeMarkdown(input)
-	if !strings.HasPrefix(got, "> **引用标题**\n> &lt;at id=\"all\"&gt;&lt;/at&gt;\n>\n> 第二段") ||
+	if !strings.HasPrefix(got, "> **引用标题**<br>&lt;at id=\"all\"&gt;&lt;/at&gt;<br>第二段") ||
 		!strings.Contains(got, "普通比较 2 &gt; 1") || !strings.Contains(got, "    &gt; literal code") ||
 		!strings.HasSuffix(got, "&gt; already literal") || strings.Contains(got, "<at") {
 		t.Fatal("quote syntax or native-tag safety changed")
@@ -45,7 +45,7 @@ func TestMessageSeparatesParagraphsAndKeepsCompleteStructures(t *testing.T) {
 	if len(elements) != 6 {
 		t.Fatal("paragraph spacing split a list, quote or code block")
 	}
-	contents := []string{"开头", "1. 第一条\n\n   属于第一条的第二段\n\n2. 第二条", "> **引用**\n>\n> 完整段落", "```text\n\n&gt; literal\n\n```", "结束"}
+	contents := []string{"开头", "1. 第一条\n\n   属于第一条的第二段\n\n2. 第二条", "> **引用**<br>完整段落", "```text\n\n&gt; literal\n\n```", "结束"}
 	for n, want := range contents {
 		entry := elements[n].(map[string]any)
 		if entry["tag"] != "markdown" || entry["content"] != want || entry["text_size"] != "normal" || entry["margin"] != "0px" {
@@ -54,6 +54,36 @@ func TestMessageSeparatesParagraphsAndKeepsCompleteStructures(t *testing.T) {
 	}
 	if elements[len(elements)-1].(map[string]any)["content"] != "> AI 回复 · Codex" {
 		t.Fatal("source moved into the public reply")
+	}
+}
+
+func TestSimpleQuoteKeepsCompactLineBreaksAndSafeInlineFormatting(t *testing.T) {
+	input := "> **验证 · 已进入**  \n>\n> 本轮保留 `34` 条检查。\\\n>\n> [查看任务](/not-read/task.go:23)\n\n正文"
+	want := "> **验证 · 已进入**<br>本轮保留 `34` 条检查。<br>[查看任务 · L23](/not-read/task.go:23)\n\n正文"
+	if got := SafeMarkdown(input); got != want {
+		t.Fatalf("quote title, body and link lost compact hard breaks: %q", got)
+	}
+	input = "开头\n\n  > first <at id=\"all\"></at>\r\n  > <br> and 2 > 1\r\n\n尾部"
+	got := SafeMarkdown(input)
+	if !strings.Contains(got, "  > first &lt;at id=\"all\"&gt;&lt;/at&gt;<br>&lt;br&gt; and 2 &gt; 1\n") || strings.Count(got, "<br>") != 1 || strings.Contains(got, "<at") {
+		t.Fatal("quote hard breaks activated input markup or lost surrounding paragraphs")
+	}
+}
+
+func TestSimpleQuoteDoesNotFlattenComplexChildrenOrLiteralCode(t *testing.T) {
+	for _, body := range []string{
+		"> first\n>> nested\n> third",
+		"> first\n> - child\n> second",
+		"> first\n>     code\n> second",
+		"> first\n> # heading\n> second",
+		"> first\n> | table |\n> second",
+		"> first\n> ---\n> second",
+		"> first `\n> code continuation`\n> third",
+		"```text\n> first\n> second\n```",
+	} {
+		if got := SafeMarkdown(body); strings.Contains(got, "<br>") {
+			t.Fatalf("complex quote or literal code gained line-break tags: %q", got)
+		}
 	}
 }
 
