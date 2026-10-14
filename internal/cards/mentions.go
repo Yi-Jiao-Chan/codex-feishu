@@ -79,7 +79,8 @@ var inlineBlockPrefix = regexp.MustCompile(`^(#{1,6}[ \t]+|[-+*][ \t]+|[0-9]+[.)
 func mentionPrefix(mentions, content string) string {
 	text := strings.TrimLeft(content, "\r\n")
 	firstLine, _, _ := strings.Cut(text, "\n")
-	if openingMessageFence(firstLine) != nil || strings.HasPrefix(text, "|") || strings.HasPrefix(text, ">") || strings.HasPrefix(text, "    ") || strings.HasPrefix(text, "\t") {
+	_, _, quoteDepth := publicQuotePrefix(firstLine, -1)
+	if openingMessageFence(firstLine) != nil || strings.HasPrefix(text, "|") || quoteDepth > 0 || strings.HasPrefix(text, "    ") || strings.HasPrefix(text, "\t") {
 		// Code, tables and quoted blocks need their own line start. Keeping
 		// the reminder in a paragraph preserves their original Markdown.
 		return mentions + "\n\n" + content

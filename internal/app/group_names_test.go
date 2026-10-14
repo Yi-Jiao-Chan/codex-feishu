@@ -149,7 +149,12 @@ func TestRuntimePendingRenameInvalidatesPreviouslyConfirmedNameCache(t *testing.
 	runtimeSetTitle(native, "new", "A")
 	now.Add(16000)
 	runtimeNameEvent(native, "new")
-	runtimeWait(t, func() bool { return a.Load() == 2 })
+	runtimeWait(t, func() bool {
+		// A previously read B snapshot may still complete after the clock
+		// advance. Keep the mock clock moving through its retry deadline.
+		now.Add(1000)
+		return a.Load() == 2
+	})
 	cancel()
 	<-done
 }

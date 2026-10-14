@@ -43,16 +43,19 @@ func TestMentionsKeepParagraphInlineAndPreserveMarkdownBlocks(t *testing.T) {
 	for _, tt := range []struct{ body, want string }{
 		{"这是最终答案。", Mention("ou_user") + " 这是最终答案。"},
 		{"# 标题\n\n正文", "# " + Mention("ou_user") + " 标题\n\n正文"},
-		{"- 第一项\n- 第二项", "- " + Mention("ou_user") + " 第一项\n- 第二项"},
+		{"- 第一项\n- 第二项", "- " + Mention("ou_user") + " 第一项\n\n- 第二项"},
 		{"```go\nfmt.Println(1)\n```", Mention("ou_user") + "\n\n```go\nfmt.Println(1)\n```"},
 		{"| A | B |\n| --- | --- |", Mention("ou_user") + "\n\n| A | B |\n| --- | --- |"},
 		{"    indented code", Mention("ou_user") + "\n\n    indented code"},
+		{"> 引用", Mention("ou_user") + "\n\n> 引用"},
+		{"  > 缩进引用", Mention("ou_user") + "\n\n  > 缩进引用"},
 	} {
 		card, err := WithMentions(Message("AI", "Codex", tt.body), []string{"ou_user"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := mentionTestContents(t, card)[0]; got != tt.want {
+		contents := mentionTestContents(t, card)
+		if got := strings.Join(contents[:len(contents)-1], "\n\n"); got != tt.want {
 			t.Fatalf("prefix corrupted visible Markdown: got %q want %q", got, tt.want)
 		}
 	}

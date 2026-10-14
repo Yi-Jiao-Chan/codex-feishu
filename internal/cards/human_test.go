@@ -37,14 +37,16 @@ func TestHumanMixedAttachmentsKeepBodyFirstAndMetadataCollapsed(t *testing.T) {
 		{Kind: "image", Name: "missing.png", Path: "/not-read/missing.png", Status: "unsupported"},
 	})
 	elements := humanElements(t, card)
-	if len(elements) != 4 {
+	if len(elements) != 6 {
 		t.Fatalf("unexpected number of elements: %d", len(elements))
 	}
 	first := elements[0].(map[string]any)
-	if first["text_size"] != "normal" || first["content"] != Safe(body) {
+	if first["text_size"] != "normal" || first["content"] != "# 检查图片" ||
+		elements[1].(map[string]any)["content"] != "```go\nfmt.Println(\"hello\")\n```" ||
+		elements[2].(map[string]any)["content"] != "&lt;at id=\"untrusted\"&gt;&lt;/at&gt;" {
 		t.Fatal("real body Markdown/code changed")
 	}
-	image := elements[1].(map[string]any)
+	image := elements[3].(map[string]any)
 	if image["tag"] != "img" || image["img_key"] != "img_v3_confirmed" || image["preview"] != true || image["scale_type"] != "crop_top" || image["size"] != "large" {
 		t.Fatalf("missing native image fields: %#v", image)
 	}
@@ -52,7 +54,7 @@ func TestHumanMixedAttachmentsKeepBodyFirstAndMetadataCollapsed(t *testing.T) {
 	if alt["tag"] != "plain_text" || alt["content"] != "附件图片 1" {
 		t.Fatal("image alt exposes random filenames or paths")
 	}
-	panel := elements[2].(map[string]any)
+	panel := elements[4].(map[string]any)
 	title := panel["header"].(map[string]any)["title"].(map[string]any)
 	if panel["tag"] != "collapsible_panel" || panel["expanded"] != false || title["content"] != "附件 · 2张图片 · 2个文件" || title["text_size"] != "notation" || title["text_color"] != "grey" {
 		t.Fatalf("attachment disclosure changed: %#v", panel)
@@ -62,7 +64,7 @@ func TestHumanMixedAttachmentsKeepBodyFirstAndMetadataCollapsed(t *testing.T) {
 			t.Fatal("attachment details gained large text")
 		}
 	}
-	for _, n := range []int{0, 1, 3} {
+	for _, n := range []int{0, 1, 2, 3, 5} {
 		raw, _ := json.Marshal(elements[n])
 		if strings.Contains(string(raw), "/not-read/") || strings.Contains(string(raw), "random-uuid") {
 			t.Fatal("attachment metadata is visible outside disclosure")

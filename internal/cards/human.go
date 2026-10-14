@@ -17,7 +17,7 @@ func Human(source, body string, attachments []AttachmentView) string {
 	}
 	var elements []element
 	if strings.TrimSpace(body) != "" {
-		elements = append(elements, element{"tag": "markdown", "content": Safe(body), "text_size": "normal"})
+		elements = append(elements, publicBodyElements(body, "normal")...)
 	} else {
 		elements = append(elements, element{"tag": "markdown", "content": fmt.Sprintf("发送了 %d 个附件", len(attachments)), "text_size": "notation"})
 	}

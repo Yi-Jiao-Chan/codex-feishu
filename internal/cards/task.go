@@ -77,7 +77,7 @@ func Task(v TaskView) string {
 	} else {
 		els = append(els, element{"tag": "markdown", "content": Safe(label), "text_size": "notation"})
 		if !terminal && strings.TrimSpace(progress.Body) != "" {
-			els = append(els, element{"tag": "markdown", "content": Safe(progress.Body), "text_size": "normal"})
+			els = append(els, element{"tag": "markdown", "content": SafeMarkdown(progress.Body), "text_size": "normal"})
 		}
 		if len(history) > 0 || progress.OmittedRecords > 0 {
 			title := fmt.Sprintf("执行过程 · %d 条记录", len(history))
@@ -150,7 +150,7 @@ func taskHistory(title string, records []ProgressRecord, omitted int, zone strin
 			}
 			sum := sha256.Sum256([]byte(key))
 			row := taskPanel(taskRecordTime(record.ReceivedAtMS, zone)+" · "+taskRecordSummary(record.Text),
-				[]element{{"tag": "markdown", "text_size": "notation", "margin": "0px", "content": Safe(record.Text)}})
+				[]element{{"tag": "markdown", "text_size": "notation", "margin": "0px", "content": SafeMarkdown(record.Text)}})
 			row["element_id"] = fmt.Sprintf("history_record_%x", sum[:10])
 			children = append(children, row)
 		}

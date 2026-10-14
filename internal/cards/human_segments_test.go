@@ -159,6 +159,51 @@ func TestSplitHumanImageOnlyCardHasFooterAtBottom(t *testing.T) {
 	}
 }
 
+func TestSplitHumanNativeBlocksAndAttachmentsRespectActualBytes(t *testing.T) {
+	body := strings.Repeat("first paragraph 😀\n\n- list item\n- continued\n\n> quote\n> continuation\n\n", 70)
+	attachments := []AttachmentView{
+		{Kind: "image", Name: "unique-preview.png", Path: "/metadata/unique-preview.png", ImageKey: "img_v3_unique_preview"},
+		{Kind: "file", Name: "unique-file.txt", Path: "/metadata/unique-file.txt"},
+	}
+	parts := checkHumanSegments(t, "Codex 端", body, attachments, 1400)
+	if len(parts) < 2 {
+		t.Fatal("many native blocks should split with attachment metadata")
+	}
+	for _, attachment := range attachments {
+		count := 0
+		for _, part := range parts {
+			if strings.Contains(part.Card, attachment.Name) {
+				count++
+			}
+			if strings.Contains(part.Card, "]("+attachment.Path) {
+				t.Fatal("attachment path became a fake download link")
+			}
+		}
+		if count != 1 {
+			t.Fatalf("attachment metadata appears in %d cards, want one", count)
+		}
+	}
+}
+
+func TestSplitHumanMinimumAttachmentBudgetFallsBackWithoutLosingText(t *testing.T) {
+	attachments := []AttachmentView{{Kind: "file", Name: "file.txt", Path: "/metadata/file.txt"}}
+	limit := len(Human("Codex 端", "", attachments))
+	body := strings.Repeat("正文😀\n\n", 100)
+	parts := checkHumanSegments(t, "Codex 端", body, attachments, limit)
+	foundAttachment := false
+	for _, part := range parts {
+		if strings.Contains(part.Card, "file.txt") {
+			foundAttachment = true
+			if part.Raw != "" {
+				t.Fatal("minimum attachment-only budget unexpectedly included request text")
+			}
+		}
+	}
+	if !foundAttachment {
+		t.Fatal("attachment-only fallback lost the attachment")
+	}
+}
+
 func minHumanSegment(a, b int) int {
 	if a < b {
 		return a

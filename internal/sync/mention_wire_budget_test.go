@@ -84,14 +84,14 @@ func TestLeadingFencedFinalActualOutboundMentionsAndMarkerFitTightBudget(t *test
 				} `json:"elements"`
 			} `json:"body"`
 		}
-		if err := json.Unmarshal([]byte(wire.Card), &decoded); err != nil || len(decoded.Body.Elements) != 2 {
+		if err := json.Unmarshal([]byte(wire.Card), &decoded); err != nil || len(decoded.Body.Elements) < 2 {
 			t.Fatal("actual result wire lost its body/source structure", err)
 		}
-		first, last := decoded.Body.Elements[0], decoded.Body.Elements[1]
+		first, last := decoded.Body.Elements[0], decoded.Body.Elements[len(decoded.Body.Elements)-1]
 		if first.Tag != "markdown" || first.ElementID == "" || last.Tag != "markdown" || !strings.HasPrefix(last.Content, "> AI 回复 · Codex") || strings.Contains(last.Content, "<at ") {
 			t.Fatal("request marker or trailing source was lost")
 		}
-		want := cards.Safe(part.Body)
+		want := strings.Trim(cards.SafeMarkdown(part.Body), "\r\n")
 		if n == 0 {
 			want = cards.Mention("ou_user") + "\n\n" + want
 			if e.MaxCardBytes-len(wire.Card) > 100 {

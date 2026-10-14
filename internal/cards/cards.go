@@ -30,7 +30,7 @@ func footer(s string) element {
 	return element{"tag": "markdown", "content": "> " + Safe(s), "text_size": "notation"}
 }
 func Message(role, source, body string) string {
-	return renderWidth([]element{{"tag": "markdown", "content": Safe(body), "text_size": "normal"}, footer(role + " · " + source)}, "")
+	return renderWidth(append(publicBodyElements(body, "normal"), footer(role+" · "+source)), "")
 }
 func Button(label, action, token string) element {
 	return element{"tag": "button", "type": "text", "size": "small", "text": element{"tag": "plain_text", "content": label}, "behaviors": []element{{"type": "callback", "value": element{"action": action, "token": token, "revision": 1}}}}

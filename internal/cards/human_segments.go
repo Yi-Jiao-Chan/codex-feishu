@@ -44,6 +44,18 @@ func SplitHuman(source, body string, attachments []AttachmentView, limit int) ([
 	// empty-body caption makes this conservative for a normal text paragraph.
 	reserve := len(Human(source, "", groups[0])) - len(Message("人类发送", source, ""))
 	parts, err := SplitMessage("人类发送", source, body, limit-reserve)
+	if err == nil {
+		firstSource := source
+		if len(parts) > 1 {
+			firstSource += fmt.Sprintf(" · 第 1 / 共 %d 段", len(parts))
+		}
+		parts[0].Card = Human(firstSource, parts[0].Body, groups[0])
+		if len(parts[0].Card) > limit {
+			// The body renderer may introduce extra native blocks. Its full
+			// attachment card, rather than an empty-caption delta, is final.
+			err = fmt.Errorf("combined human card exceeds byte limit")
+		}
+	}
 	if err != nil {
 		// An attachment group may leave too little room for text. Keep the full
 		// text first, then place these attachments on their own bounded cards.
@@ -55,11 +67,6 @@ func SplitHuman(source, body string, attachments []AttachmentView, limit int) ([
 			parts = append(parts, Segment{Card: Human(source, "", group)})
 		}
 	} else {
-		firstSource := source
-		if len(parts) > 1 {
-			firstSource += fmt.Sprintf(" · 第 1 / 共 %d 段", len(parts))
-		}
-		parts[0].Card = Human(firstSource, parts[0].Body, groups[0])
 		for _, group := range groups[1:] {
 			parts = append(parts, Segment{Card: Human(source, "", group)})
 		}
