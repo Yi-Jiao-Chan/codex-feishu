@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 23
+const SchemaVersion = 25
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -310,6 +310,23 @@ PRAGMA user_version=4;
 		if _, err = tx.Exec(`ALTER TABLE create_intents ADD COLUMN description TEXT NOT NULL DEFAULT '跟进同一个 Codex 会话的任务与公开回复';
 UPDATE create_intents SET description='' WHERE state='ready' AND NOT EXISTS(SELECT 1 FROM group_attempts a WHERE a.intent_id=create_intents.intent_id);
 PRAGMA user_version=23;`); err != nil {
+			return err
+		}
+	}
+
+	if version < 24 {
+		if _, err = tx.Exec(InteractionsSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=24"); err != nil {
+			return err
+		}
+	}
+	if version < 25 {
+		if _, err = tx.Exec(InteractionAnswersSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=25"); err != nil {
 			return err
 		}
 	}

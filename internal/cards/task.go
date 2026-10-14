@@ -13,6 +13,7 @@ type TaskView struct {
 	Revision                                 int64
 	QueueCount                               int
 	Waiting                                  bool
+	WaitingInFeishu                          bool
 	Progress                                 ProgressView
 }
 
@@ -45,7 +46,11 @@ func Task(v TaskView) string {
 		label = "正在核验任务状态 · 暂不可操作"
 	}
 	if v.Waiting && v.Status == "inProgress" {
-		label += " · 请回 Codex App 处理审批或问题"
+		if v.WaitingInFeishu {
+			label += " · 等待你处理审批或问题"
+		} else {
+			label += " · 请回 Codex App 处理审批或问题"
+		}
 	}
 	progress := v.Progress
 	if progress.Body == "" {

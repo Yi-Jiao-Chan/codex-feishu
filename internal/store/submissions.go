@@ -714,3 +714,7 @@ func (s *Store) ResolveSubmissionAction(ctx context.Context, scope SubmissionSco
 	}
 	return tx.Commit()
 }
+
+func (s *Store) Submission(ctx context.Context, scope SubmissionScope, id string) (Submission, error) {
+	return readSubmission(ctx, s.DB, scope, id)
+}

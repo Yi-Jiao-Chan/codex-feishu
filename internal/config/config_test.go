@@ -39,6 +39,9 @@ func TestValidateRejectsUnsafeIdentityAndInvalidOperationalSettings(t *testing.T
 		{"negative-scan", func(c *Config) { c.Discovery.ScanIntervalSeconds = -1 }},
 		{"too-frequent-update", func(c *Config) { c.Sync.CardUpdateMinIntervalMS = 99 }},
 		{"phase2", func(c *Config) { c.Creation.Enabled = true }},
+		{"interaction-without-types", func(c *Config) { c.Interactions.Enabled = true }},
+		{"unknown-interaction-type", func(c *Config) { c.Interactions.EnabledTypes = []string{"approve_everything"} }},
+		{"duplicate-interaction-type", func(c *Config) { c.Interactions.EnabledTypes = []string{"question", "question"} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			c := validTestConfig(t)
@@ -50,6 +53,17 @@ func TestValidateRejectsUnsafeIdentityAndInvalidOperationalSettings(t *testing.T
 				t.Fatal("invalid settings accepted")
 			}
 		})
+	}
+}
+
+func TestInteractionsRequireExplicitRequestTypesAndDefaultOff(t *testing.T) {
+	c := validTestConfig(t)
+	if c.Interactions.Enabled {
+		t.Fatal("interaction controls enabled implicitly")
+	}
+	c.Interactions.Enabled, c.Interactions.EnabledTypes = true, []string{"question"}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

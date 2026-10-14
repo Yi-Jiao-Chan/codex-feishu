@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/store"
 	"codex-feishu/internal/submissions"
@@ -33,6 +34,7 @@ type Receiver struct {
 	BotID              string
 	Wake               func(string)
 	Command            func(context.Context, InboundCommand) error
+	InteractionAction  func(context.Context, store.SubmissionScope, string, []string, string, string, string, int64, string, map[string]any) (string, error)
 	TaskAction         func(context.Context, string, string, string, string, int64) (string, error)
 	ActionAllowed      func(string) bool
 	BeginBound         func(context.Context, store.Binding, string) (context.Context, func(), error)
@@ -171,6 +173,41 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 			return respond("error", "验证已过期或无法确认，请回到配置终端查看状态"), nil
 		}
 		return respond("success", "已记录卡片回调，请继续发送验证命令"), nil
+	}
+
+	if kind == "interaction_submit" && r.InteractionAction != nil && r.Config.Interactions.Enabled {
+		revision, valid := callbackRevision(a.Action.Value["revision"])
+		if token == "" || !valid {
+			return respond("info", "卡片已更新，请使用最新操作"), nil
+		}
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+		defer cancel()
+		b, err := r.Store.BindingByChat(ctx, r.Config.Host.ID, a.Context.OpenChatID)
+		if err != nil || r.ActionAllowed != nil && !r.ActionAllowed(b.ThreadID) {
+			return respond("info", "连接暂不可用，请恢复同步后重试"), nil
+		}
+		opctx, release, err := r.beginBound(ctx, b, a.Operator.OpenID)
+		if err != nil {
+			return respond("info", "会话暂不可用"), nil
+		}
+		defer release()
+		decision, _ := a.Action.Value["decision"].(string)
+		scope := store.SubmissionScope{HostID: r.Config.Host.ID, AppID: r.Config.Feishu.AppID, ThreadID: b.ThreadID}
+		thread, err := r.InteractionAction(opctx, scope, a.Operator.OpenID, r.Config.Access.OperatorOpenIDs, a.Context.OpenChatID, a.Context.OpenMessageID, token, revision, decision, a.Action.FormValue)
+		if err != nil {
+			if errors.Is(err, codexclient.ErrInvalidAnswer) {
+				return respond("info", "请先选择授权范围，或填写完整回答"), nil
+			}
+			if errors.Is(err, store.ErrSubmissionBusy) {
+				return respond("info", "这份操作已收到，请勿重复提交"), nil
+			}
+			if errors.Is(err, store.ErrSubmissionStale) || errors.Is(err, store.ErrConflict) || errors.Is(err, sql.ErrNoRows) {
+				return respond("info", "请求已更新，请查看最新卡片"), nil
+			}
+			return respond("error", "保存操作失败，请稍后重试"), err
+		}
+		r.wake(thread)
+		return respond("info", "已收到，正在提交"), nil
 	}
 	queue, _ := a.Action.Value["queue_id"].(string)
 	revision, validRevision := callbackRevision(a.Action.Value["revision"])

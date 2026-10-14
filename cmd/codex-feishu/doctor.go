@@ -113,6 +113,7 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 			return o, 2
 		}
 		o.Checks = append(o.Checks, check{"config", "pass", true, "validated phase1 configuration and allowed directories"})
+		data["interactions"] = map[string]any{"enabled": cfg.Interactions.Enabled, "enabled_types": cfg.Interactions.EnabledTypes, "ui_verified": false, "required_protocol": "verified shared app-server"}
 		secret, err = cfg.Secret()
 		if err != nil {
 			o.State, o.Checks = "secret-unavailable", append(o.Checks, check{"feishu.secret", "fail", true, "secret file must be a private regular file containing one value"})

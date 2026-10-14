@@ -35,6 +35,12 @@ quiet_hours = ""
 [sync]
 card_update_min_interval_ms = 800
 
+[interactions]
+# 完成对应类型的真实双端验收后，才显式开启；不修改 Codex 的权限策略。
+enabled = false
+enabled_types = []
+# 可选类型：command、file、network、permissions、question、async_question。
+
 [creation]
 enabled = false
 default_follow_mode = "group"

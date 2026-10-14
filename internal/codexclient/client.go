@@ -84,18 +84,22 @@ type reply struct {
 	err  error
 }
 type Client struct {
-	conn         *websocket.Conn
-	ctx          context.Context
-	cancel       context.CancelFunc
-	mu           sync.Mutex
-	pending      map[string]chan reply
-	seq          atomic.Uint64
-	events       chan Event
-	done         chan struct{}
-	closeOnce    sync.Once
-	generation   uint64
-	connectionID string
-	terminal     error
+	conn           *websocket.Conn
+	ctx            context.Context
+	cancel         context.CancelFunc
+	mu             sync.Mutex
+	pending        map[string]chan reply
+	serverRequests map[string]InteractiveRequest
+	serverAnswered map[string]string
+	serverTerminal map[string]bool
+	writeGate      chan struct{}
+	seq            atomic.Uint64
+	events         chan Event
+	done           chan struct{}
+	closeOnce      sync.Once
+	generation     uint64
+	connectionID   string
+	terminal       error
 }
 
 var generation atomic.Uint64
@@ -123,12 +127,12 @@ func Connect(ctx context.Context, path string) (*Client, error) {
 	}
 	conn.SetReadLimit(32 << 20)
 	life, cancel := context.WithCancel(ctx)
-	c := &Client{conn: conn, ctx: life, cancel: cancel, pending: map[string]chan reply{}, events: make(chan Event, 512), done: make(chan struct{}), generation: generation.Add(1), connectionID: hex.EncodeToString(nonce[:])}
+	c := &Client{conn: conn, ctx: life, cancel: cancel, pending: map[string]chan reply{}, serverRequests: map[string]InteractiveRequest{}, serverAnswered: map[string]string{}, serverTerminal: map[string]bool{}, writeGate: make(chan struct{}, 1), events: make(chan Event, 512), done: make(chan struct{}), generation: generation.Add(1), connectionID: hex.EncodeToString(nonce[:])}
 	go c.read()
 	err = c.Call(setupCtx, "initialize", map[string]any{"clientInfo": map[string]string{"name": "codex-feishu", "title": "Codex Feishu Bridge", "version": "0.0.1-dev"}, "capabilities": map[string]bool{"experimentalApi": true}}, nil)
 	if err == nil {
 		b, _ := json.Marshal(map[string]string{"method": "initialized"})
-		err = c.conn.Write(setupCtx, websocket.MessageText, b)
+		err = c.writeMessage(setupCtx, b, nil)
 	}
 	if err != nil {
 		c.Close()
@@ -161,7 +165,7 @@ func (c *Client) Call(ctx context.Context, method string, params, dst any) error
 	c.pending[id] = wait
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
-	if err = c.conn.Write(ctx, websocket.MessageText, b); err != nil {
+	if err = c.writeMessage(ctx, b, nil); err != nil {
 		return &UnknownError{method, err}
 	}
 	select {
@@ -235,11 +239,82 @@ func (c *Client) read() {
 		if w.Method == "" {
 			continue
 		}
+		// Keep reply capabilities inside this live connection. The public event
+		// stream still carries unsupported requests without auto-responding.
+		event := Event{c.generation, w.Method, w.Params, w.ID}
+		c.mu.Lock()
+		if req, parseErr := ParseInteractiveRequest(event); parseErr == nil {
+			if _, closed := c.serverAnswered[NativeRequestID(req.ID)]; !closed && !c.serverTerminal[serverTurnKey(req.ThreadID, req.TurnID)] {
+				c.serverRequests[NativeRequestID(req.ID)] = req
+			}
+		} else if w.Method == "serverRequest/resolved" {
+			var p struct {
+				ThreadID  string          `json:"threadId"`
+				RequestID json.RawMessage `json:"requestId"`
+			}
+			if json.Unmarshal(w.Params, &p) == nil {
+				key := NativeRequestID(p.RequestID)
+				if req, ok := c.serverRequests[key]; ok && req.ThreadID == p.ThreadID {
+					c.serverAnswered[key] = req.Fingerprint
+					delete(c.serverRequests, key)
+				} else if key != "" {
+					c.serverAnswered[key] = "resolved"
+				}
+
+			}
+		} else if w.Method == "turn/completed" {
+			var p struct {
+				ThreadID string `json:"threadId"`
+				Turn     struct {
+					ID string `json:"id"`
+				} `json:"turn"`
+			}
+			if json.Unmarshal(w.Params, &p) == nil {
+				if p.ThreadID != "" && p.Turn.ID != "" {
+					c.serverTerminal[serverTurnKey(p.ThreadID, p.Turn.ID)] = true
+				}
+				for key, req := range c.serverRequests {
+					if req.ThreadID == p.ThreadID && req.TurnID == p.Turn.ID {
+						c.serverAnswered[key] = req.Fingerprint
+						delete(c.serverRequests, key)
+					}
+				}
+			}
+		}
+		c.mu.Unlock()
 		select {
-		case c.events <- Event{c.generation, w.Method, w.Params, w.ID}:
+		case c.events <- event:
 		default:
 			terminal = errors.New("event overflow; history reconciliation required")
 			return
 		}
 	}
+}
+
+// All application messages share a context-bounded gate. Final guards execute
+// after waiting for other writers, while the reader remains free to resolve
+// requests. The gate is released before Call awaits its RPC response.
+func (c *Client) writeMessage(ctx context.Context, b []byte, before func() error) error {
+	select {
+	case c.writeGate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return ErrRequestStale
+	}
+	defer func() { <-c.writeGate }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if before != nil {
+		if err := before(); err != nil {
+			return err
+		}
+	}
+	return c.conn.Write(ctx, websocket.MessageText, b)
+}
+
+func serverTurnKey(thread, turn string) string {
+	b, _ := json.Marshal([]string{thread, turn})
+	return string(b)
 }

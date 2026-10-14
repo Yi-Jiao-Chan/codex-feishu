@@ -24,14 +24,17 @@ type NativeHistory interface {
 // and never publish token deltas directly. Optional image preparation journals
 // resource uploads before the pure renderer stages message delivery.
 type Engine struct {
-	Store            *store.Store
-	Native           NativeHistory
-	HostID           string
-	TimeZone         string
-	MaxCardBytes     int
-	MentionTargets   []string // Reserve the complete structured reminder before splitting final text.
-	PrepareHuman     func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
-	humanAttachments map[string][]cards.AttachmentView
+	Store                  *store.Store
+	Native                 NativeHistory
+	HostID                 string
+	SuppressAsyncQuestions bool
+	AsyncQuestionsSinceMS  int64
+	asyncItems             map[string]bool
+	TimeZone               string
+	MaxCardBytes           int
+	MentionTargets         []string // Reserve the complete structured reminder before splitting final text.
+	PrepareHuman           func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
+	humanAttachments       map[string][]cards.AttachmentView
 	// ProgressRender is pure; the actor prepares its durable control state first.
 	// An empty interrupted render suppresses a new historical progress card.
 	ProgressRender func(thread, turn, nativeStatus string, progress cards.ProgressView) string
@@ -67,6 +70,26 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 	old, err := e.Store.Mirrors(ctx, e.HostID, thread)
 	if err != nil {
 		return err
+	}
+	if e.SuppressAsyncQuestions {
+		e.asyncItems = map[string]bool{}
+		rows, readErr := e.Store.DB.QueryContext(ctx, `SELECT turn_id,item_id FROM interaction_requests WHERE host_id=? AND thread_id=? AND mode='async'`, e.HostID, thread)
+		if readErr != nil {
+			return readErr
+		}
+		for rows.Next() {
+			var turn, item string
+			if err := rows.Scan(&turn, &item); err != nil {
+				rows.Close()
+				return err
+			}
+			e.asyncItems[turn+":"+item] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
 	}
 	plan, err := e.renderSnapshot(thread, turns, receipts, old, replay, observedAtMS)
 	if err != nil {
@@ -121,6 +144,27 @@ type snapshotPlan struct {
 // renderSnapshot shares the live renderer with reviewed legacy adoption. It does
 // no database or native work and preserves the caller's existing reply anchors.
 func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts []store.Receipt, old []store.Mirror, replay bool, observedAtMS int64) (snapshotPlan, error) {
+	asyncOnly := map[string]bool{}
+	if e.SuppressAsyncQuestions {
+		copyTurns := make([]codexclient.Turn, len(turns))
+		for i, t := range turns {
+			copyTurns[i] = t
+			copyTurns[i].Items = nil
+			items, err := uniqueItems(t.Items)
+			if err != nil {
+				return snapshotPlan{}, err
+			}
+			for _, item := range items {
+				if item.Type == "agentMessage" && item.Delivery != nil && *item.Delivery == "async" && len(item.Questions) > 0 && (e.asyncItems[t.ID+":"+item.ID] || t.StartedAt != nil && *t.StartedAt >= e.AsyncQuestionsSinceMS/1000) {
+					asyncOnly[t.ID] = true
+					continue
+				}
+				copyTurns[i].Items = append(copyTurns[i].Items, item)
+			}
+		}
+		turns = copyTurns
+	}
+
 	byClient := make(map[string]store.Receipt, len(receipts))
 	for _, r := range receipts {
 		byClient[r.ClientID] = r
@@ -244,7 +288,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, ProgressObservedAt: clocks, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
 			}
 		}
-		if turn.Status != "inProgress" {
+		if turn.Status != "inProgress" && !(turn.Status == "completed" && asyncOnly[turn.ID] && strings.TrimSpace(finalBody(turn)) == "") {
 			body := finalBody(turn)
 			if strings.TrimSpace(body) == "" {
 				body = emptyResult(turn.Status)

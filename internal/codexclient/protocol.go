@@ -9,6 +9,7 @@ import (
 
 type Thread struct {
 	ID             string          `json:"id"`
+	Path           *string         `json:"path"`
 	CWD            string          `json:"cwd"`
 	Name           *string         `json:"name"`
 	Preview        string          `json:"preview"`
@@ -34,14 +35,28 @@ type Turn struct {
 	StartedAt   *int64 `json:"startedAt"`
 	CompletedAt *int64 `json:"completedAt"`
 }
+type AsyncQuestion struct {
+	Title   string   `json:"title"`
+	Options []string `json:"options"`
+}
+type FileChange struct {
+	Path string          `json:"path"`
+	Kind json.RawMessage `json:"kind"`
+	Diff string          `json:"diff"`
+}
 type Item struct {
-	Type     string            `json:"type"`
-	ID       string            `json:"id"`
-	Text     string            `json:"text"`
-	Phase    *string           `json:"phase"`
-	Content  []json.RawMessage `json:"content"`
-	ClientID *string           `json:"clientId"`
-	Status   string            `json:"status"`
+	Delivery  *string           `json:"delivery"`
+	Questions []AsyncQuestion   `json:"questions"`
+	Command   string            `json:"command"`
+	CWD       string            `json:"cwd"`
+	Changes   []FileChange      `json:"changes"`
+	Type      string            `json:"type"`
+	ID        string            `json:"id"`
+	Text      string            `json:"text"`
+	Phase     *string           `json:"phase"`
+	Content   []json.RawMessage `json:"content"`
+	ClientID  *string           `json:"clientId"`
+	Status    string            `json:"status"`
 }
 
 func (i Item) PublicText() string {

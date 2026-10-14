@@ -60,6 +60,11 @@ func (s *Store) StageDisconnectedCards(ctx context.Context, scope SubmissionScop
 			rows.Close()
 			return err
 		}
+		// Interaction requests have their own offline projection, retaining
+		// the original scope/question and disabling only the reply controls.
+		if strings.HasPrefix(m.Key, "ui:interaction:") {
+			continue
+		}
 		if !m.Terminal || cardHasCallback(m.Card) {
 			selected = append(selected, m)
 		}

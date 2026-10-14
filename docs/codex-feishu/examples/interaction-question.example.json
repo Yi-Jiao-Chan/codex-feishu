@@ -1,0 +1,160 @@
+{
+  "body": {
+    "elements": [
+      {
+        "content": "等待你回答 · 2 项",
+        "margin": "0px",
+        "tag": "markdown",
+        "text_size": "notation"
+      },
+      {
+        "elements": [
+          {
+            "content": "1 / 2 · 布局",
+            "margin": "0px",
+            "tag": "markdown",
+            "text_size": "notation"
+          },
+          {
+            "content": "**采用哪种布局？**",
+            "margin": "0px",
+            "tag": "markdown",
+            "text_size": "normal"
+          },
+          {
+            "content": "保留布局：保留现有布局",
+            "margin": "0px",
+            "tag": "markdown",
+            "text_size": "notation"
+          },
+          {
+            "content": "调整布局：同时调整正文",
+            "margin": "0px",
+            "tag": "markdown",
+            "text_size": "notation"
+          },
+          {
+            "name": "q_0",
+            "options": [
+              {
+                "text": {
+                  "content": "保留布局",
+                  "tag": "plain_text"
+                },
+                "value": "choice_0"
+              },
+              {
+                "text": {
+                  "content": "调整布局",
+                  "tag": "plain_text"
+                },
+                "value": "choice_1"
+              }
+            ],
+            "placeholder": {
+              "content": "请选择一个答案",
+              "tag": "plain_text"
+            },
+            "tag": "select_static",
+            "width": "fill"
+          },
+          {
+            "auto_resize": true,
+            "input_type": "multiline_text",
+            "max_length": 1000,
+            "max_rows": 4,
+            "name": "q_0_notes",
+            "placeholder": {
+              "content": "补充说明或其他答案（选填）",
+              "tag": "plain_text"
+            },
+            "rows": 1,
+            "tag": "input",
+            "width": "fill"
+          },
+          {
+            "margin": "0px",
+            "tag": "hr"
+          },
+          {
+            "content": "2 / 2 · 说明",
+            "margin": "0px",
+            "tag": "markdown",
+            "text_size": "notation"
+          },
+          {
+            "content": "**请提供补充说明**",
+            "margin": "0px",
+            "tag": "markdown",
+            "text_size": "normal"
+          },
+          {
+            "auto_resize": true,
+            "input_type": "multiline_text",
+            "max_length": 1000,
+            "max_rows": 4,
+            "name": "q_1_notes",
+            "placeholder": {
+              "content": "填写回答",
+              "tag": "plain_text"
+            },
+            "required": true,
+            "rows": 1,
+            "tag": "input",
+            "width": "fill"
+          },
+          {
+            "columns": [
+              {
+                "elements": [
+                  {
+                    "behaviors": [
+                      {
+                        "type": "callback",
+                        "value": {
+                          "action": "interaction_submit",
+                          "revision": 1,
+                          "token": "invalid_example_token"
+                        }
+                      }
+                    ],
+                    "form_action_type": "submit",
+                    "name": "submit_answers",
+                    "size": "small",
+                    "tag": "button",
+                    "text": {
+                      "content": "提交回答",
+                      "tag": "plain_text"
+                    },
+                    "type": "primary"
+                  }
+                ],
+                "tag": "column",
+                "width": "auto"
+              }
+            ],
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "tag": "column_set"
+          }
+        ],
+        "name": "interaction_answers",
+        "tag": "form"
+      },
+      {
+        "content": "\u003e 用户问答 · Codex",
+        "tag": "markdown",
+        "text_size": "notation"
+      }
+    ],
+    "padding": "12px 12px",
+    "vertical_spacing": "8px"
+  },
+  "config": {
+    "enable_forward": false,
+    "enable_forward_interaction": false,
+    "update_multi": true,
+    "width_mode": "compact"
+  },
+  "schema": "2.0"
+}

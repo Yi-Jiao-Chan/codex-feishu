@@ -20,6 +20,7 @@ type TaskControls struct {
 	Store         *store.Store
 	HostID, AppID string
 	Waiting       func(thread, turn string) bool
+	InFeishu      bool
 	Queue         func(context.Context, string) ([]codexclient.Queued, error)
 	cache         map[taskRenderKey]store.TaskControl
 }
@@ -161,7 +162,7 @@ func (t *TaskControls) Render(thread, turn, status string, progress cards.Progre
 	if v.NativeStatus != status {
 		v.Kind, v.State, v.Reason = "", "unknown", "verifying"
 	}
-	return cards.Task(cards.TaskView{Status: status, Progress: progress, Token: v.Token, Kind: v.Kind, State: v.State, Reason: v.Reason, Revision: v.Revision, QueueCount: v.QueueCount, Waiting: v.Waiting})
+	return cards.Task(cards.TaskView{Status: status, Progress: progress, Token: v.Token, Kind: v.Kind, State: v.State, Reason: v.Reason, Revision: v.Revision, QueueCount: v.QueueCount, Waiting: v.Waiting, WaitingInFeishu: t.InFeishu})
 }
 
 // Claim is local-only. The Receiver authenticates the operator first; the store

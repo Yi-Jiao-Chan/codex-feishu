@@ -40,6 +40,8 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 
 隔离原生问答已证明同一请求/replay、桥静默与断开、另一端回答后继续及 resolved；这仍不能代替真实 App 问答 UI。命令审批探针在本机 `permissionRequest` hook 等待阶段超时，尚未到达原生审批，保留 pending。生产沿用原线程的 hooks 和策略；不得为消除测试阻塞关闭 managed hooks。Default 模式同步问答有 feature gate，工具出现在 schema 中不代表该模式可调用；仅自有 fixture 配置开启该 gate，桥不改真实线程配置。
 
+2026-10-14 扩展：新增 `RespondServerRequest`，在原 ID 上发送 `result`，保留整数/字符串类型、验证完整 DTO，统一写入 gate 最终检查 generation/请求/轮次终态。reader 先记闭合 tombstone，迟到 replay 不能恢复回调；不持 reader 锁等待网络。原生响应没有 ack，written 仅记 submitted，`resolved` 仅证明闭合。0.162.1 隔离桥端同步问答已验证；其他类型按[13 审批与问答](13-feishu-approvals-and-questions.md)逐项验证后开启。
+
 事件携带 connection_generation。重连产生新 generation，旧连接的晚响应不能确认新尝试。事件缓存有界；溢出时标记需要补齐并暂停依赖实时轮次的操作，不能静默丢失后继续宣称状态准确。
 
 ## 兼容清单
@@ -72,3 +74,9 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 验收专用 `AttachLocalVerification` 仍只发送 `thread/resume` 的 threadId 和 excludeTurns，不覆盖原配置；同时检查完整返回中的固定模拟模型、provider、原 cwd、never 与只读无网络策略，以及验收标签和原线程身份。出生时要求空历史，附着时允许已有 preview / turns。它仅是本地协议 fixture 已通过的内部适配器，尚未接入正式运行时，真实 daemon / UI 不由此推导，见[绑定基础进展](../research/m3-verification-binding-foundation-2026-10-12.md)。
 
 `NativeSessions` 已组合私有目录、固定 loopback 模型和上述创建步骤；资源到期、关闭和进程重启不更换原请求端点或重建线程。模型 Release 只是本地时序控制，不是原生 steer / start。开发管理通道 / CLI 已接入创建组件，绑定、输入、远端清理与真实重验仍待完成，见[本地资源进展](../research/m3-native-verification-resources-2026-10-12.md)和[管理创建组件](../research/m3-managed-thread-creation-2026-10-12.md)。
+
+### 原生问答结果的只读收据
+
+0.162.1 的 `serverRequest/resolved` 不携带答案，typed 历史也没有原生问答 output。`QuestionResultReader` 仅读取 daemon 提供的 rollout 路径：验证所属用户、可信 sessions 根目录、session ID、明确 turn 边界、唯一 call/output 和规范化后的原问题；结果独立保存为收据。重复 JSON key、身份歧义、目标 turn 内的历史重写、部分答案和中断后的迟到输出均返回 unavailable。文件和单行有界，不修改原生记录或全局配置。
+
+实际工具结果优先于飞书提交意图。读取成功只证明工具返回了这些回答，不说明哪端赢得竞态。该结果用于飞书已处理卡；App 的外部选择态回显保持已知限制，不使用会改变模型历史的 `thread/inject_items` 伪造 UI 状态。

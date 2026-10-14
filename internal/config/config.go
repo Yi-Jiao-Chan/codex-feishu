@@ -49,6 +49,10 @@ type Config struct {
 	Sync struct {
 		CardUpdateMinIntervalMS int `toml:"card_update_min_interval_ms"`
 	} `toml:"sync"`
+	Interactions struct {
+		Enabled      bool     `toml:"enabled"`
+		EnabledTypes []string `toml:"enabled_types"`
+	} `toml:"interactions"`
 	Creation struct {
 		Enabled           bool     `toml:"enabled"`
 		DefaultFollowMode string   `toml:"default_follow_mode"`
@@ -82,6 +86,16 @@ func Load(path string) (Config, error) {
 func (c Config) Validate() error {
 	if c.SchemaVersion != 1 {
 		return errors.New("unsupported config schema")
+	}
+	seenTypes := map[string]bool{}
+	for _, kind := range c.Interactions.EnabledTypes {
+		if seenTypes[kind] || kind != "command" && kind != "file" && kind != "network" && kind != "permissions" && kind != "question" && kind != "async_question" {
+			return errors.New("invalid or duplicate interactions.enabled_types")
+		}
+		seenTypes[kind] = true
+	}
+	if c.Interactions.Enabled && len(seenTypes) == 0 {
+		return errors.New("enabled interactions require explicit verified request types")
 	}
 	if c.Host.ID == "" || strings.Contains(c.Host.ID, "replace") {
 		return errors.New("persistent host.id required")

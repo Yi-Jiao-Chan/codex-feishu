@@ -45,6 +45,8 @@ type Runtime struct {
 	DirectoryRules             func(context.Context) ([]rules.DirectoryRule, error)
 	ScanInterval, PollInterval time.Duration
 	MinProgressIntervalMS      int64
+	SuppressAsyncQuestions     bool
+	AsyncQuestionsSinceMS      int64
 	ProgressTimeZone           string
 	PrepareHuman               func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
 	SyncGroupName              func(context.Context, store.Binding, string) error
@@ -381,6 +383,8 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
 	engine.PrepareHuman = r.PrepareHuman
 	engine.ProgressRender = r.RenderProgress
+	engine.SuppressAsyncQuestions = r.SuppressAsyncQuestions
+	engine.AsyncQuestionsSinceMS = r.AsyncQuestionsSinceMS
 	if r.Mentions.Enabled {
 		engine.MentionTargets = r.Mentions.Targets
 	}
