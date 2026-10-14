@@ -29,7 +29,7 @@ creating_group 响应未知 → reconciling_group
 目录 mute / 非主会话 / 不在范围 → excluded
 ```
 
-创建前在 SQLite 领取 `(host_id, thread_id)`，保存 stable intent 与预期成员，并先附着原生线程接收公开事件；建群在独立步骤执行，不阻塞事件存储。群名优先直接采用原生 `Thread.Name`，与 Codex App 的显示标题对齐，不加项目目录前缀、不截短有效 Name。Name 未提供时依次使用 preview、首条已清理附件包装的实际用户正文，附件单独输入使用简短任务名称；回退预览可缩短。工作目录放群描述。默认加入 owner 与机器人；其他用户只有列在 groups.additional_member_open_ids、且确认平台允许时才加入。notification target 不隐式扩大成员或操作权限。
+创建前在 SQLite 领取 `(host_id, thread_id)`，保存 stable intent 与预期成员，并先附着原生线程接收公开事件；建群在独立步骤执行，不阻塞事件存储。2026-10-14 按用户要求，任务群名统一为 `🤖 <会话标题>`，已有标识只保留一次，App 改名后仍保留此前缀。标题优先采用原生 `Thread.Name`，与 Codex App 的显示标题对齐，不加项目目录前缀、不截短有效 Name。Name 未提供时依次使用 preview、首条已清理附件包装的实际用户正文，附件单独输入使用简短任务名称；回退预览可缩短。工作目录放群描述。默认加入 owner 与机器人；其他用户只有列在 groups.additional_member_open_ids、且确认平台允许时才加入。notification target 不隐式扩大成员或操作权限。
 
 新建群描述写 `工作目录：<首次附着的实际 CWD>`，完整保留 worktree 路径，不用项目根替代、不截断。schema 23 在首次 dispatch 前冻结描述，限流重试与重启保持原描述和 UUID；已有 attempt 保留旧版原描述，既有群由单独 GET / PUT / GET 核验更新，不随发现隐式修改。接口与长度建议见[群工作目录研究](../research/chat-working-directory-2026-10-13.md)。
 

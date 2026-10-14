@@ -13,6 +13,19 @@ import (
 	"codex-feishu/internal/store"
 )
 
+// WithRobotPrefix marks task groups consistently, including titles that
+// already carry the marker from an earlier sync or an App rename.
+func WithRobotPrefix(title string) string {
+	title = strings.TrimSpace(title)
+	for strings.HasPrefix(title, "🤖") {
+		title = strings.TrimSpace(strings.TrimPrefix(title, "🤖"))
+	}
+	if title == "" {
+		title = "Codex"
+	}
+	return "🤖 " + title
+}
+
 var (
 	ErrGroupNameUnknown  = errors.New("group name update awaits readback; redispatch disabled")
 	ErrGroupNameRejected = errors.New("group name update was rejected")
