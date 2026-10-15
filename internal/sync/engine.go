@@ -145,25 +145,32 @@ type snapshotPlan struct {
 // no database or native work and preserves the caller's existing reply anchors.
 func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts []store.Receipt, old []store.Mirror, replay bool, observedAtMS int64) (snapshotPlan, error) {
 	asyncOnly := map[string]bool{}
-	if e.SuppressAsyncQuestions {
-		copyTurns := make([]codexclient.Turn, len(turns))
-		for i, t := range turns {
-			copyTurns[i] = t
-			copyTurns[i].Items = nil
-			items, err := uniqueItems(t.Items)
-			if err != nil {
-				return snapshotPlan{}, err
-			}
-			for _, item := range items {
-				if item.Type == "agentMessage" && item.Delivery != nil && *item.Delivery == "async" && len(item.Questions) > 0 && (e.asyncItems[t.ID+":"+item.ID] || t.StartedAt != nil && *t.StartedAt >= e.AsyncQuestionsSinceMS/1000) {
-					asyncOnly[t.ID] = true
-					continue
-				}
-				copyTurns[i].Items = append(copyTurns[i].Items, item)
+	copyTurns := make([]codexclient.Turn, len(turns))
+	for i, t := range turns {
+		copyTurns[i] = t
+		copyTurns[i].Items = nil
+		items, err := uniqueItems(t.Items)
+		if err != nil {
+			return snapshotPlan{}, err
+		}
+		// Native async questions can also carry phase=final_answer. When a
+		// later answer exists, keep preceding questions out of its projection
+		// regardless of settings or when this turn was first observed.
+		lastAnswer := -1
+		for n, item := range items {
+			if item.Type == "agentMessage" && !isAsyncQuestion(item) && strings.TrimSpace(item.Text) != "" && (item.Phase == nil || *item.Phase == "final_answer") {
+				lastAnswer = n
 			}
 		}
-		turns = copyTurns
+		for n, item := range items {
+			if isAsyncQuestion(item) && (n < lastAnswer || e.SuppressAsyncQuestions && (e.asyncItems[t.ID+":"+item.ID] || t.StartedAt != nil && *t.StartedAt >= e.AsyncQuestionsSinceMS/1000)) {
+				asyncOnly[t.ID] = true
+				continue
+			}
+			copyTurns[i].Items = append(copyTurns[i].Items, item)
+		}
 	}
+	turns = copyTurns
 
 	byClient := make(map[string]store.Receipt, len(receipts))
 	for _, r := range receipts {
@@ -352,6 +359,10 @@ func uniqueItems(items []codexclient.Item) ([]codexclient.Item, error) {
 		result = append(result, i)
 	}
 	return result, nil
+}
+
+func isAsyncQuestion(item codexclient.Item) bool {
+	return item.Type == "agentMessage" && item.Delivery != nil && *item.Delivery == "async" && len(item.Questions) > 0
 }
 
 func finalBody(t codexclient.Turn) string {
