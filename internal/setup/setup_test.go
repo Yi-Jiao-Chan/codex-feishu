@@ -41,6 +41,31 @@ func fixture(t *testing.T) (Planner, Input, Paths) {
 	return p, in, Paths{ConfigFile: filepath.Join(root, "config", "config.toml"), DatabaseFile: filepath.Join(root, "data", "bridge.db")}
 }
 
+func TestPlanUsesVerifiedCodexVersionGate(t *testing.T) {
+	for _, test := range []struct {
+		version  string
+		accepted bool
+	}{
+		{version: "0.162.1", accepted: true},
+		{version: "0.162.2", accepted: false},
+		{version: "0.163.0", accepted: false},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			p, in, paths := fixture(t)
+			probe := p.Probe
+			p.Probe = func(ctx context.Context, binary string) (Environment, error) {
+				env, err := probe(ctx, binary)
+				env.Daemon.AppServerVersion = test.version
+				return env, err
+			}
+			_, err := p.Build(context.Background(), in, paths)
+			if test.accepted && err != nil || !test.accepted && err == nil {
+				t.Fatalf("setup plan version gate accepted=%v for %s: err=%v", test.accepted, test.version, err)
+			}
+		})
+	}
+}
+
 func TestPlanIsStableReadOnlyAndApplyIsAtomicAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	p, in, paths := fixture(t)

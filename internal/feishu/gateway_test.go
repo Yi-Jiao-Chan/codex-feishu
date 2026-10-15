@@ -101,6 +101,36 @@ func TestCreateGroupUUIDIsQueryParameter(t *testing.T) {
 	}
 }
 
+func TestCreateGroupDescriptionPreservesFullWorkingDirectory(t *testing.T) {
+	description := "工作目录：/home/operator/.codex/worktrees/" + strings.Repeat("目录", 60)
+	g := apiFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "tenant_access_token") {
+			w.Write([]byte(`{"code":0,"tenant_access_token":"fixture-token","expire":7200}`))
+			return
+		}
+		if r.Method != "POST" || r.URL.Path != "/open-apis/im/v1/chats" || r.URL.Query().Get("uuid") != "persistent-group-id" {
+			t.Error("unexpected group request")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["description"] != description || body["name"] != "test" || body["owner_id"] != "ou_owner" {
+			t.Errorf("description or existing group fields changed: %+v", body)
+		}
+		members, ok := body["user_id_list"].([]any)
+		if !ok || len(members) != 1 || members[0] != "ou_owner" {
+			t.Error("group membership changed")
+		}
+		w.Write([]byte(`{"code":0,"data":{"chat_id":"oc_test"}}`))
+	})
+	id, err := g.CreateGroupWithDescription(context.Background(), "test", "ou_owner", []string{"ou_owner"}, "persistent-group-id", description)
+	if err != nil || id != "oc_test" {
+		t.Fatal(err)
+	}
+}
+
 func TestReactionWireAndIdentity(t *testing.T) {
 	var deletes int
 	g := apiFixture(t, func(w http.ResponseWriter, r *http.Request) {

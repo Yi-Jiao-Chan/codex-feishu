@@ -63,7 +63,9 @@ func (c Commands) Handle(ctx context.Context, in InboundCommand) error {
 		return err
 	}
 	now := c.now()
-	req := store.CommandRequest{HostID: c.Config.Host.ID, AppID: c.Config.Feishu.AppID, MessageID: in.MessageID, ChatID: in.ChatID, ChatType: in.ChatType, UserID: in.UserID, ThreadID: in.ThreadID, Operators: c.Config.Access.OperatorOpenIDs, NotificationTargets: c.Config.Notifications.TargetOpenIDs, AllowedRoots: c.Config.Discovery.AllowedRoots}
+	req := store.CommandRequest{HostID: c.Config.Host.ID, AppID: c.Config.Feishu.AppID, MessageID: in.MessageID, ChatID: in.ChatID, ChatType: in.ChatType, UserID: in.UserID, ThreadID: in.ThreadID, SourceRootID: in.SourceRootID, SourceThreadID: in.SourceThreadID, Operators: c.Config.Access.OperatorOpenIDs, NotificationTargets: c.Config.Notifications.TargetOpenIDs, AllowedRoots: c.Config.Discovery.AllowedRoots}
+	req.CreationEnabled = c.Config.Creation.Enabled
+	req.OwnerOpenID, req.FilePreviewEnabled = c.Config.Access.OwnerOpenID, c.Config.FilePreview.Enabled
 	fields := strings.Fields(in.Text)
 	command := ""
 	if len(fields) > 0 {
@@ -71,6 +73,29 @@ func (c Commands) Handle(ctx context.Context, in InboundCommand) error {
 	}
 	feedback := func(text string) { req.Kind, req.Feedback = "feedback", text }
 	switch command {
+	case "/preview":
+		if len(fields) != 1 {
+			feedback("请使用 /preview 获取文件预览口令，不需要参数。")
+			break
+		}
+		if in.ChatType != "p2p" {
+			feedback("请私聊机器人发送 /preview 获取文件预览口令。")
+			break
+		}
+		if !operator || in.UserID != c.Config.Access.OwnerOpenID {
+			feedback("文件预览口令仅限部署所有者私聊获取。")
+			break
+		}
+		if !c.Config.FilePreview.Enabled {
+			feedback("本部署尚未启用文件网页预览。")
+			break
+		}
+		secret, err := c.Config.FilePreviewSecret()
+		if err != nil {
+			feedback("文件预览口令当前不可读取，请在服务器检查预览配置。")
+			break
+		}
+		req.Kind, req.PreviewAccessCode = "preview", secret
 	case "/mute-dir", "/unmute-dir":
 		if !operator {
 			feedback("目录设置仅限操作者修改。")
@@ -144,7 +169,14 @@ func (c Commands) Handle(ctx context.Context, in InboundCommand) error {
 		req.Kind = "help"
 	}
 	if in.Unsupported {
-		feedback("暂时仅支持文字和纯文字富文本，请将内容以文字发送。")
+		if c.Config.Attachments.Enabled {
+			feedback("本条未提交：附件类型或图文结构暂不支持。可发送静态 PNG/JPEG/WebP 图片、普通文件，或包含 @ 的文字图文；文件夹、音视频和合并转发暂不支持。")
+		} else {
+			feedback("暂时仅支持文字和纯文字富文本，请将内容以文字发送。")
+		}
+	}
+	if in.RouteFeedback != "" {
+		feedback(in.RouteFeedback)
 	}
 	r, _, err := c.Store.ApplyLocalCommand(ctx, req, now)
 	if err != nil {
@@ -218,7 +250,16 @@ func (c Commands) dispatchClaimedReply(ctx context.Context, gateway messages.Mes
 	if err := ctx.Err(); err != nil {
 		return true, err
 	}
-	remoteID, sendErr := gateway.ReplyCard(ctx, r.MessageID, r.Card, r.ID)
+	// A queued credential reply must remain private and authorized after a
+	// configuration reload, even if its original request was already accepted.
+	if r.Kind == "preview" && (!c.Config.FilePreview.Enabled || r.ChatType != "p2p" || r.ThreadID != "" ||
+		r.UserID != c.Config.Access.OwnerOpenID || !c.Config.Operator(r.UserID)) {
+		return true, c.Store.FinishCommandReply(ctx, r.ID, "rejected", "")
+	}
+	remoteID, sendErr := replyFollowAttempt(ctx, c.Store, gateway, r.ID, r.HostID, r.ThreadID, r.ChatID, r.MessageID, r.Card)
+	if errors.Is(sendErr, messages.ErrTopicRootIncomplete) {
+		return true, c.Store.DeferCommandReplyAttempt(ctx, r.ID, max(c.now().UnixMilli(), r.DispatchedAtMS), 1000)
+	}
 	var limited *feishu.RateLimited
 	if errors.As(sendErr, &limited) {
 		at := c.now().UnixMilli()
@@ -235,7 +276,7 @@ func (c Commands) dispatchClaimedReply(ctx context.Context, gateway messages.Mes
 	if sendErr != nil || remoteID == "" {
 		state, remoteID = "unknown", ""
 		var rejected *feishu.Rejected
-		if errors.As(sendErr, &rejected) {
+		if errors.As(sendErr, &rejected) || errors.Is(sendErr, messages.ErrTopicRootGone) {
 			state = "rejected"
 		}
 	}

@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 type Thread struct {
 	ID             string          `json:"id"`
+	Path           *string         `json:"path"`
 	CWD            string          `json:"cwd"`
 	Name           *string         `json:"name"`
 	Preview        string          `json:"preview"`
@@ -34,14 +37,28 @@ type Turn struct {
 	StartedAt   *int64 `json:"startedAt"`
 	CompletedAt *int64 `json:"completedAt"`
 }
+type AsyncQuestion struct {
+	Title   string   `json:"title"`
+	Options []string `json:"options"`
+}
+type FileChange struct {
+	Path string          `json:"path"`
+	Kind json.RawMessage `json:"kind"`
+	Diff string          `json:"diff"`
+}
 type Item struct {
-	Type     string            `json:"type"`
-	ID       string            `json:"id"`
-	Text     string            `json:"text"`
-	Phase    *string           `json:"phase"`
-	Content  []json.RawMessage `json:"content"`
-	ClientID *string           `json:"clientId"`
-	Status   string            `json:"status"`
+	Delivery  *string           `json:"delivery"`
+	Questions []AsyncQuestion   `json:"questions"`
+	Command   string            `json:"command"`
+	CWD       string            `json:"cwd"`
+	Changes   []FileChange      `json:"changes"`
+	Type      string            `json:"type"`
+	ID        string            `json:"id"`
+	Text      string            `json:"text"`
+	Phase     *string           `json:"phase"`
+	Content   []json.RawMessage `json:"content"`
+	ClientID  *string           `json:"clientId"`
+	Status    string            `json:"status"`
 }
 
 func (i Item) PublicText() string {
@@ -72,6 +89,66 @@ type Queued struct {
 
 func TextInput(s string) []map[string]any {
 	return []map[string]any{{"type": "text", "text": s, "text_elements": []any{}}}
+}
+
+// ErrInvalidInput is returned before an input mutation is sent when the
+// native input envelope does not contain a supported, non-empty input array.
+// Keep this error static: input contents can include user-provided paths and
+// must never be copied into ordinary diagnostics.
+var ErrInvalidInput = errors.New("invalid native input")
+
+// ValidateInput checks the subset of the native UserInput union used by the
+// bridge. Generic files are represented by text items by the caller; native
+// localImage items must point at an absolute path on the shared daemon host.
+func ValidateInput(input json.RawMessage) error {
+	var items []json.RawMessage
+	if len(input) == 0 || json.Unmarshal(input, &items) != nil || len(items) == 0 {
+		return ErrInvalidInput
+	}
+	for _, raw := range items {
+		var item map[string]json.RawMessage
+		if json.Unmarshal(raw, &item) != nil || item == nil {
+			return ErrInvalidInput
+		}
+		var typ string
+		typeRaw, ok := item["type"]
+		if !ok || json.Unmarshal(typeRaw, &typ) != nil {
+			return ErrInvalidInput
+		}
+		switch typ {
+		case "text":
+			for key := range item {
+				if key != "type" && key != "text" && key != "text_elements" {
+					return ErrInvalidInput
+				}
+			}
+			var text *string
+			textRaw, ok := item["text"]
+			if !ok || json.Unmarshal(textRaw, &text) != nil || text == nil {
+				return ErrInvalidInput
+			}
+			if elements, ok := item["text_elements"]; ok {
+				var values []json.RawMessage
+				if json.Unmarshal(elements, &values) != nil || values == nil {
+					return ErrInvalidInput
+				}
+			}
+		case "localImage":
+			for key := range item {
+				if key != "type" && key != "path" {
+					return ErrInvalidInput
+				}
+			}
+			var path *string
+			pathRaw, ok := item["path"]
+			if !ok || json.Unmarshal(pathRaw, &path) != nil || path == nil || *path == "" || !filepath.IsAbs(*path) || strings.IndexFunc(*path, unicode.IsControl) >= 0 {
+				return ErrInvalidInput
+			}
+		default:
+			return ErrInvalidInput
+		}
+	}
+	return nil
 }
 func (c *Client) Attach(ctx context.Context, id string) (Thread, error) {
 	var r struct {
@@ -165,13 +242,48 @@ func (c *Client) Turns(ctx context.Context, id string) ([]Turn, error) {
 	return turns, nil
 }
 func (c *Client) Queue(ctx context.Context, id string) ([]Queued, error) {
-	return page[Queued](ctx, c, "thread/queue/list", map[string]any{"threadId": id, "limit": 100})
+	// The daemon expands localImage to data URLs in queued inputs. A single
+	// bounded batch fits the transport budget; several batches in one page may not.
+	return page[Queued](ctx, c, "thread/queue/list", map[string]any{"threadId": id, "limit": 1})
+}
+
+// QueueStateReader avoids retaining image bytes when a caller needs only
+// queue identity, correlation and order. Legacy Native fixtures may use Queue.
+type QueueStateReader interface {
+	QueueState(context.Context, string) ([]Queued, error)
+}
+
+func (c *Client) QueueState(ctx context.Context, id string) ([]Queued, error) {
+	// Decode directly into a metadata DTO: do not accumulate RawMessage input
+	// arrays and clear them later, which still holds the entire image queue.
+	metadata, err := page[struct {
+		ID       string  `json:"id"`
+		ClientID *string `json:"clientUserMessageId"`
+	}](ctx, c, "thread/queue/list", map[string]any{"threadId": id, "limit": 1})
+	if err != nil {
+		return nil, err
+	}
+	queue := make([]Queued, 0, len(metadata))
+	for _, item := range metadata {
+		queue = append(queue, Queued{ID: item.ID, ClientUserMessageID: item.ClientID})
+	}
+	return queue, nil
 }
 func (c *Client) Add(ctx context.Context, id, text, clientID string) (Queued, error) {
+	input, err := json.Marshal(TextInput(text))
+	if err != nil {
+		return Queued{}, ErrInvalidInput
+	}
+	return c.AddInput(ctx, id, input, clientID)
+}
+func (c *Client) AddInput(ctx context.Context, id string, input json.RawMessage, clientID string) (Queued, error) {
+	if err := ValidateInput(input); err != nil {
+		return Queued{}, err
+	}
 	var r struct {
 		Queued Queued `json:"queuedSubmission"`
 	}
-	err := c.Call(ctx, "thread/queue/add", map[string]any{"threadId": id, "input": TextInput(text), "clientUserMessageId": clientID}, &r)
+	err := c.Call(ctx, "thread/queue/add", map[string]any{"threadId": id, "input": input, "clientUserMessageId": clientID}, &r)
 	return r.Queued, err
 }
 func (c *Client) Delete(ctx context.Context, id, qid string) (bool, error) {
@@ -182,7 +294,17 @@ func (c *Client) Delete(ctx context.Context, id, qid string) (bool, error) {
 	return r.Deleted, err
 }
 func (c *Client) Steer(ctx context.Context, id, turn, text, clientID string) error {
-	return c.Call(ctx, "turn/steer", map[string]any{"threadId": id, "expectedTurnId": turn, "input": TextInput(text), "clientUserMessageId": clientID}, nil)
+	input, err := json.Marshal(TextInput(text))
+	if err != nil {
+		return ErrInvalidInput
+	}
+	return c.SteerInput(ctx, id, turn, input, clientID)
+}
+func (c *Client) SteerInput(ctx context.Context, id, turn string, input json.RawMessage, clientID string) error {
+	if err := ValidateInput(input); err != nil {
+		return err
+	}
+	return c.Call(ctx, "turn/steer", map[string]any{"threadId": id, "expectedTurnId": turn, "input": input, "clientUserMessageId": clientID}, nil)
 }
 func (c *Client) Interrupt(ctx context.Context, id, turn string) error {
 	return c.Call(ctx, "turn/interrupt", map[string]any{"threadId": id, "turnId": turn}, nil)

@@ -355,6 +355,9 @@ func (s *Store) ClaimRequestReminder(ctx context.Context, host, app, thread stri
 	a.ID, a.HostID, a.AppID, a.ThreadID, a.CreatedAtMS, a.State = ID(), host, app, thread, nowMS, "dispatching"
 	err = reminderWriteOne(ctx, tx, `INSERT INTO request_reminder_attempts(attempt_id,host_id,app_id,thread_id,request_key,chat_id,parent_message_id,card_json,created_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,'dispatching')`, a.ID, host, app, thread, a.Key, a.ChatID, a.ParentMessageID, a.Card, nowMS)
 	if err == nil {
+		err = freezeFollowAttemptTx(ctx, tx, a.ID, host, thread, a.ChatID, a.ParentMessageID)
+	}
+	if err == nil {
 		a.Card, _, err = freezeCardRequestMarker(ctx, tx, "reminder", a.ID, a.Card)
 	}
 	if err == nil {

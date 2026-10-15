@@ -46,6 +46,10 @@ type bindingServiceGateway struct {
 	rosterReads atomic.Int32
 }
 
+func (g *bindingServiceGateway) CreateGroupWithDescription(ctx context.Context, name, owner string, members []string, uuid, _ string) (string, error) {
+	return g.CreateGroup(ctx, name, owner, members, uuid)
+}
+
 func (g *bindingServiceGateway) CreateGroup(context.Context, string, string, []string, string) (string, error) {
 	return "chat", nil
 }

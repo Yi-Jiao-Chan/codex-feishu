@@ -61,11 +61,15 @@ func main() {
 }
 func run(ctx context.Context, args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: codex-feishu version | doctor | verify | setup | service | status | serve | m0-listen (development, not phase1 release)")
+		fmt.Fprintln(os.Stderr, "usage: codex-feishu version | doctor | verify | setup | service | status | attachments | file-preview | serve | m0-listen (development, not phase1 release)")
 		return 2
 	}
 	command := args[0]
 	switch command {
+	case "file-preview":
+		return runFilePreview(ctx, args[1:])
+	case "attachments":
+		return runAttachments(ctx, args[1:])
 	case "serve":
 		return runServe(ctx, args[1:])
 	case "setup":
@@ -88,7 +92,7 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	if command == "version" {
-		emit(output{Command: command, OK: true, State: "phase1-development", Data: map[string]any{"version": bridgeVersion, "commit": commit, "config_schema": 1, "commands": []string{"version", "doctor", "verify", "m0-listen", "serve", "setup", "service", "status"}, "phase1_released": phase1Released, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "protocol_schema_digest": compat.ProtocolSchemaDigest, "feishu_permissions_manifest": compat.FeishuManifest(), "m0_app_ui_verified": true, "m0_feishu_verified": true, "phase1_service_ui_verified": false, "setup_pair_ui_verified": false, "capabilities": map[string]any{"candidate_deployment": true, "setup_plan": true, "setup_apply": true, "setup_policy_updates": true, "setup_pair": true, "setup_migrate": true, "migration_ui_verified": false, "status_live_instance": true, "status_readonly_snapshot": true, "doctor_managed_instance": true, "doctor_permission_metadata": true, "feishu_mirror_rate_retry": true, "feishu_mirror_readback": true, "feishu_feedback_card_readback": true, "feishu_mirror_readback_ui_verified": false, "feishu_reaction_rate_retry": true, "feishu_group_rate_retry": true, "feishu_command_rate_retry": true, "feishu_request_reminder_rate_retry": true, "verify_acceptance_report": true, "verify_readonly": true, "verify_managed_tests": false, "verify_managed_card": true, "verify_managed_group": true, "verify_managed_thread_creation": true, "verify_managed_binding": true, "verify_managed_turn_release": true, "verify_managed_input_evidence": true, "verify_managed_delivery_evidence": true, "verify_managed_thread_ui_verified": false}}})
+		emit(output{Command: command, OK: true, State: "phase1-development", Data: map[string]any{"version": bridgeVersion, "commit": commit, "config_schema": 1, "database_schema": store.SchemaVersion, "commands": []string{"version", "doctor", "verify", "m0-listen", "serve", "setup", "service", "status", "attachments", "file-preview"}, "phase1_released": phase1Released, "sdk": "github.com/larksuite/oapi-sdk-go/v3@v3.12.0", "codex_protocol": "0.162.0", "codex_protocol_compatible_versions": compat.VerifiedCodexVersions(), "creation_codex_protocol_compatible_versions": []string{"0.162.1"}, "protocol_schema_digest": compat.ProtocolSchemaDigest, "feishu_permissions_manifest": compat.FeishuManifest(), "m0_app_ui_verified": true, "m0_feishu_verified": true, "phase1_service_ui_verified": false, "setup_pair_ui_verified": false, "interaction_request_types": []string{"command", "file", "network", "permissions", "question", "async_question"}, "capabilities": map[string]any{"native_server_request_reply": true, "feishu_interaction_cards": true, "feishu_interaction_ui_verified": false, "local_file_preview": true, "local_file_preview_ui_verified": false, "feishu_inbound_attachments": true, "feishu_inbound_attachments_ui_verified": false, "feishu_task_creation": true, "feishu_task_creation_ui_verified": false, "feishu_topic_targets": true, "feishu_topic_targets_ui_verified": false, "candidate_deployment": true, "setup_plan": true, "setup_apply": true, "setup_policy_updates": true, "setup_pair": true, "setup_migrate": true, "migration_ui_verified": false, "status_live_instance": true, "status_readonly_snapshot": true, "doctor_managed_instance": true, "doctor_permission_metadata": true, "feishu_mirror_rate_retry": true, "feishu_mirror_readback": true, "feishu_feedback_card_readback": true, "feishu_mirror_readback_ui_verified": false, "feishu_reaction_rate_retry": true, "feishu_group_rate_retry": true, "feishu_command_rate_retry": true, "feishu_request_reminder_rate_retry": true, "verify_acceptance_report": true, "verify_readonly": true, "verify_managed_tests": false, "verify_managed_card": true, "verify_managed_group": true, "verify_managed_thread_creation": true, "verify_managed_binding": true, "verify_managed_turn_release": true, "verify_managed_input_evidence": true, "verify_managed_delivery_evidence": true, "verify_managed_thread_ui_verified": false}}})
 		return 0
 	}
 	if command != "m0-listen" {
@@ -105,7 +109,7 @@ func run(ctx context.Context, args []string) int {
 		return 3
 	}
 	o.Checks = append(o.Checks, check{"codex.daemon", "pass", true, d})
-	if d.AppServerVersion != "0.162.0" {
+	if !compat.VerifiedCodexVersion(d.AppServerVersion) {
 		o.Checks = append(o.Checks, check{"codex.compatibility", "fail", true, "unverified server version; writes disabled"})
 		emit(o)
 		return 3

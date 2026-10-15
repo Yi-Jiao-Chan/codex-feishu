@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"math"
+	"strings"
 	"time"
 
 	"codex-feishu/internal/cards"
@@ -170,7 +171,7 @@ func mentionEventReason(m Mirror, options MentionOptions) string {
 	switch {
 	case !options.Enabled:
 		return "disabled"
-	case m.Kind != "final" || !m.Terminal || m.EventType != "completed" && m.EventType != "failed":
+	case !(m.Kind == "final" && m.Terminal && (m.EventType == "completed" || m.EventType == "failed")) && !(m.Kind == "progress" && !m.Terminal && m.EventType == "needs_user" && strings.HasPrefix(m.Key, "ui:interaction:")):
 		return "unsupported"
 	case m.Replay:
 		return "replay"

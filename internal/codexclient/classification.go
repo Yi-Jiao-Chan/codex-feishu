@@ -1,12 +1,20 @@
 package codexclient
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
+
+func (t Thread) BridgeCreated() bool {
+	var source string
+	return json.Unmarshal(t.ThreadSource, &source) == nil && (source == "feishu.bridge.creation" || strings.HasPrefix(source, CreationSourcePrefix))
+}
 
 // InteractiveMain identifies known interactive source candidates, not App UI
 // provenance or activation. Callers must separately verify cwd and user input.
 // A human fork is independent; forkedFromId does not make it a subagent.
 func (t Thread) InteractiveMain() bool {
-	if t.Ephemeral || t.ParentThreadID != nil {
+	if t.Ephemeral || t.ParentThreadID != nil || t.BridgeCreated() {
 		return false
 	}
 	var label string

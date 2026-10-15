@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"codex-feishu/internal/config"
 )
 
 type Input struct {
@@ -35,7 +37,15 @@ type Input struct {
 		Timezone   string  `json:"timezone"`
 		QuietHours *string `json:"quiet_hours"`
 	} `json:"notifications"`
-	Features struct {
+	// Attachments is optional so an input that does not mention the feature
+	// preserves the existing configuration when setup is rerun.
+	Attachments *config.AttachmentConfig `json:"attachments,omitempty"`
+	// Creation is optional so omitting it preserves an existing creation policy.
+	// Enabling features.creation without this object is rejected because the
+	// creation scope must be explicit.
+	Creation    *config.CreationConfig    `json:"creation,omitempty"`
+	FilePreview *config.FilePreviewConfig `json:"file_preview,omitempty"`
+	Features    struct {
 		Phase    string `json:"phase"`
 		Creation bool   `json:"creation"`
 	} `json:"features"`

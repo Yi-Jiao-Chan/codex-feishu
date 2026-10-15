@@ -53,7 +53,7 @@ func (s *Store) InputLinks(ctx context.Context, host, thread string) ([]InputLin
 }
 
 func (s *Store) ReceiptsForDeployment(ctx context.Context, host, thread string) ([]Receipt, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.app_id,r.message_id,r.thread_id,r.chat_id,r.body,r.client_id,r.queue_id,r.state,r.card_id,r.action_token FROM m0_receipts r JOIN deployment d ON d.app_id=r.app_id WHERE d.host_id=? AND r.thread_id=?`, host, thread)
+	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.app_id,r.message_id,r.thread_id,r.chat_id,r.body,r.client_id,r.queue_id,r.state,r.card_id,r.action_token,r.reply_message_id FROM m0_receipts r JOIN deployment d ON d.app_id=r.app_id WHERE d.host_id=? AND r.thread_id=?`, host, thread)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func (s *Store) ReceiptsForDeployment(ctx context.Context, host, thread string) 
 	var result []Receipt
 	for rows.Next() {
 		var r Receipt
-		if err := rows.Scan(&r.ID, &r.AppID, &r.MessageID, &r.ThreadID, &r.ChatID, &r.Body, &r.ClientID, &r.QueueID, &r.State, &r.CardID, &r.ActionToken); err != nil {
+		if err := rows.Scan(&r.ID, &r.AppID, &r.MessageID, &r.ThreadID, &r.ChatID, &r.Body, &r.ClientID, &r.QueueID, &r.State, &r.CardID, &r.ActionToken, &r.ReplyMessageID); err != nil {
 			return nil, err
 		}
 		result = append(result, r)

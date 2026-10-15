@@ -29,9 +29,17 @@
 
 保留原始 message_id、sender.open_id、chat_id、chat_type、mentions、root_id、thread_id、message_type、正文和时间。Channel 归一化没有保留的字段从 RawEvent 提取。
 
-先排除机器人自己、其他应用消息、已知镜像投递，再按用途核验身份：任务输入/目录管理需 operator；已配置通知接收者可用 /notify 管自己的规则；临时配对只接受有效私聊口令。不能用统一的 operator 拦截误禁接收者关闭自己的 @。群消息要求结构化 mentions 含本机器人 open_id，不能靠正文字符串“@机器人”判断。只移除实际 @ 本机器人的 mention，保留用户正文、换行和代码。首版文本及可提取文字的富文本必需；其他附件提示暂未支持，不把文件名当完整输入。
+先排除机器人自己、其他应用消息、已知镜像投递，再按用途核验身份：任务输入/目录管理需 operator；已配置通知接收者可用 /notify 管自己的规则；临时配对只接受有效私聊口令。不能用统一的 operator 拦截误禁接收者关闭自己的 @。群消息要求结构化 mentions 含本机器人 open_id，不能靠正文字符串“@机器人”判断。只移除实际 @ 本机器人的 mention，保留用户正文、换行和代码。文本及可提取文字的富文本按原规则处理；图片、文件和多附件走下方资源入口，不把文件名当完整输入。
 
 普通消息默认路由到当前有效绑定；命令由命令解析器处理。Channel allowlist 随有效绑定更新；二期入口群/工作群来自 creation.workgroup_chat_ids。未绑定入口群的普通 @ 仅在二期 creation.enabled 时进入草稿。未启用二期时回一条明确的使用说明，不创建会话。
+
+## 图片、文件与权限入口
+
+附件能力默认关闭。已绑定任务群中，operator 的带 @ 消息可包含多个静态 PNG/JPEG/WebP 资源；图片保存为受限本地资源并以 `localImage` 进入原生输入。通用文件不伪装成原生 file part，使用带文件名和绝对路径的文本引用；桥不做 OCR、解压或自动执行。post 消息必须 @ 机器人；独立图片/文件消息可不 @，但只接受已绑定任务群和 operator，并需要 `im:message.group_msg` 接收范围。
+
+post 的正文只选 `content` 或回退 `content_v2` 一份表示；同条消息的文件另在顶层 `files` 数组中，以 `file_key`、`file_name`、`is_folder` 表达。必须将文件按数组顺序追加到正文资源之后，不能把只含正文节点的消息当成纯文本成功提交。无效文件项或文件夹使整条消息明确失败，不静默丢资源。
+
+入站资源保留原消息 ID、resource key、顺序和发送者，按 `(host, app, thread, chat, sender)` 隔离草稿；附件说明和资源在封存时原子成批，管理命令不消费草稿。`enabled=false` 时不接收新附件，已封存批次仍按本地状态完成。新增附件能力的权限检查只在对应开关启用时提升 required；关闭安装保持原 required/recommended 基线不变。当前本机候选已升级并开启附件，两项新增权限检查已通过；真实飞书/App UI 验收仍待完成，见[附件实施记录](../research/feishu-inbound-attachments-implementation-2026-10-15.md)。
 
 ## 出站接口与幂等
 

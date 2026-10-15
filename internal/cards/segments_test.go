@@ -29,21 +29,29 @@ func checkSegments(t *testing.T, role, source, body string, limit int) []Segment
 		}
 		var card struct {
 			Body struct {
-				Elements []struct{ Content string }
+				Elements []struct{ Tag, Content string }
 			}
 		}
 		if err := json.Unmarshal([]byte(part.Card), &card); err != nil {
 			t.Fatal(err)
 		}
-		if len(card.Body.Elements) != 2 || card.Body.Elements[0].Content != Safe(part.Body) {
-			t.Fatalf("segment %d body does not use existing safe rendering", i)
+		if len(card.Body.Elements) < 2 || card.Body.Elements[0].Tag != "markdown" {
+			t.Fatalf("segment %d has no leading Markdown body", i)
 		}
 		footer := "> " + Safe(role+" · "+source)
 		if len(parts) > 1 {
 			footer += fmt.Sprintf(" · 第 %d / 共 %d 段", i+1, len(parts))
 		}
-		if card.Body.Elements[1].Content != footer {
-			t.Fatalf("segment %d incorrect footer: %q", i, card.Body.Elements[1].Content)
+		last := card.Body.Elements[len(card.Body.Elements)-1]
+		if last.Tag != "markdown" || last.Content != footer {
+			t.Fatalf("segment %d incorrect footer: %q", i, last.Content)
+		}
+		segmentSource := source
+		if len(parts) > 1 {
+			segmentSource += fmt.Sprintf(" · 第 %d / 共 %d 段", i+1, len(parts))
+		}
+		if part.Card != Message(role, segmentSource, part.Body) {
+			t.Fatalf("segment %d does not use public message rendering", i)
 		}
 	}
 	if raw.String() != body {
@@ -66,6 +74,19 @@ func TestSplitMessageSingleAndDefault(t *testing.T) {
 	parts := checkSegments(t, "AI 回复", "Codex", strings.Repeat("中文😀", 10000), 0)
 	if len(parts) < 2 {
 		t.Fatal("default limit did not split long message")
+	}
+}
+
+func TestSplitMessageCompactQuotedBreaksKeepRawAndActualBudget(t *testing.T) {
+	body := strings.Repeat("> **引用标题**\n>\n> 内容中文 😀 <at id=\"all\"></at>\n> [对应代码](/not-read/file.go:23)\n\n", 150)
+	parts := checkSegments(t, "AI 回复", "Codex", body, 900)
+	if len(parts) < 2 {
+		t.Fatal("quoted fixture did not exercise actual wire segmentation")
+	}
+	for _, part := range parts {
+		if strings.Contains(part.Card, "\\u003cat ") {
+			t.Fatal("quoted text activated an unconfigured mention")
+		}
 	}
 }
 
@@ -190,7 +211,7 @@ func TestSplitMessageRejectsImpossibleLimitsAndInvalidUTF8(t *testing.T) {
 	}
 }
 
-func TestMarkdownJSONBudgetMatchesRenderer(t *testing.T) {
+func TestMarkdownJSONBudgetMatchesSafeStringEncoding(t *testing.T) {
 	// Exercise all ASCII controls, HTML safety expansion and JSON's special
 	// Unicode escapes against the real serializer, rather than a size estimate.
 	var text strings.Builder
@@ -199,8 +220,130 @@ func TestMarkdownJSONBudgetMatchesRenderer(t *testing.T) {
 	}
 	text.WriteString("中文😀\u2028\u2029")
 	body := text.String()
-	got := len(Message("AI", "Codex", body)) - len(Message("AI", "Codex", ""))
+	encoded, err := json.Marshal(Safe(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := len(encoded) - 2
 	if want := markdownJSONBytes(body); got != want {
 		t.Fatalf("encoded byte budget %d does not match serializer %d", want, got)
+	}
+}
+
+func TestSplitMessageNativeParagraphByteBudget(t *testing.T) {
+	paragraph := "A distinct paragraph 😀\n\n"
+	limit := len(Message("AI", "Codex · 第 9 / 共 9 段", paragraph+paragraph))
+	parts := checkSegments(t, "AI", "Codex", strings.Repeat(paragraph, 8), limit)
+	if len(parts) != 4 {
+		t.Fatalf("two rendered paragraphs should fit each card, got %d cards", len(parts))
+	}
+	for _, part := range parts {
+		if part.Raw != paragraph+paragraph {
+			t.Fatal("native block overhead disturbed whole-paragraph boundaries")
+		}
+	}
+}
+
+func TestSplitMessageMixedNativeBlocksPreserveVisibleText(t *testing.T) {
+	var body strings.Builder
+	for n := 0; n < 100; n++ {
+		fmt.Fprintf(&body, "paragraph-%03d 😀\n\n- list-%03d-a\n- list-%03d-b\n\n> quote-%03d\n> continued\n\n```go\nfmt.Println(\"code-%03d\\\\\\\"中文\u2028\u2029\")\n```\n\n", n, n, n, n, n)
+	}
+	parts := checkSegments(t, "AI", "Codex", body.String(), 1100)
+	var visible strings.Builder
+	for _, part := range parts {
+		for _, entry := range humanSegmentElements(t, part.Card) {
+			markdown, ok := entry.(map[string]any)
+			if ok && markdown["tag"] == "markdown" {
+				content, _ := markdown["content"].(string)
+				visible.WriteString(content)
+			}
+		}
+	}
+	for n := 0; n < 100; n++ {
+		for _, kind := range []string{"paragraph", "list", "quote", "code"} {
+			marker := fmt.Sprintf("%s-%03d", kind, n)
+			want := 1
+			if kind == "list" {
+				want = 2
+			}
+			if count := strings.Count(visible.String(), marker); count != want {
+				t.Fatalf("visible body lost or duplicated %s: got %d want %d", marker, count, want)
+			}
+		}
+	}
+}
+
+func TestSplitMessageMinimumRuneBudgetAcrossCounterWidth(t *testing.T) {
+	body := strings.Repeat("😀", 30)
+	limit := len(Message("AI", "Codex · 第 99 / 共 99 段", "😀"))
+	parts := checkSegments(t, "AI", "Codex", body, limit)
+	if len(parts) != 30 {
+		t.Fatalf("minimum two-digit card budget should fit one rune, got %d cards", len(parts))
+	}
+	for _, part := range parts {
+		if part.Raw != "😀" {
+			t.Fatal("minimum card budget split or omitted a Unicode rune")
+		}
+	}
+	if _, err := SplitMessage("AI", "Codex", body, limit-1); err == nil {
+		t.Fatal("a budget unable to hold one rune with final counters must fail")
+	}
+}
+
+func TestSplitMessageMinimumQuoteBudgetUsesActualRenderer(t *testing.T) {
+	body := strings.Repeat("> line\n\n", 10)
+	limit := len(Message("AI", "Codex · 第 99 / 共 99 段", ">"))
+	parts := checkSegments(t, "AI", "Codex", body, limit)
+	if parts[0].Raw != ">" {
+		t.Fatal("minimum quote card should retain its first rune")
+	}
+}
+
+func TestSplitMessageCompletedFileLinksFitActualByteBudget(t *testing.T) {
+	var body strings.Builder
+	for n := 0; n < 100; n++ {
+		fmt.Fprintf(&body, "[file-%03d](/workspace/long/path/main.go:%d)\n\n", n, 1000+n)
+	}
+	parts := checkSegments(t, "AI", "Codex", body.String(), 800)
+	if len(parts) < 2 {
+		t.Fatal("many complete file links must split into bounded cards")
+	}
+}
+
+func TestSplitMessageManyBlocksRetainMergedTail(t *testing.T) {
+	var body strings.Builder
+	for n := 0; n < 90; n++ {
+		fmt.Fprintf(&body, "tail-marker-%03d\n\n", n)
+	}
+	parts := checkSegments(t, "AI", "Codex", body.String(), 0)
+	if len(parts) != 1 {
+		t.Fatal("short block collection should remain in one bounded card")
+	}
+	elements := humanSegmentElements(t, parts[0].Card)
+	if len(elements) > 65 {
+		t.Fatalf("native body exceeded 64 blocks plus footer: %d", len(elements))
+	}
+	var visible strings.Builder
+	for _, entry := range elements[:len(elements)-1] {
+		markdown, ok := entry.(map[string]any)
+		if !ok || markdown["tag"] != "markdown" {
+			t.Fatal("public body contains a non-Markdown element")
+		}
+		content, _ := markdown["content"].(string)
+		visible.WriteString(content)
+	}
+	for n := 0; n < 90; n++ {
+		if marker := fmt.Sprintf("tail-marker-%03d", n); strings.Count(visible.String(), marker) != 1 {
+			t.Fatalf("merged tail lost or duplicated %s", marker)
+		}
+	}
+}
+
+func TestSplitMessageEightHundredCodeLines(t *testing.T) {
+	body := "```go\n" + strings.Repeat("fmt.Println(\"中文😀\\\\\\\"\u2028\u2029\")\n", 850) + "```\n\nvisible final sentence"
+	parts := checkSegments(t, "AI", "Codex", body, 900)
+	if len(parts) < 10 || !strings.HasSuffix(parts[len(parts)-1].Body, "visible final sentence") {
+		t.Fatal("long escaped code lost its final paragraph or failed to split")
 	}
 }

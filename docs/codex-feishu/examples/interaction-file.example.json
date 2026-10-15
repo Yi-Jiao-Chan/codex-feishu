@@ -1,0 +1,127 @@
+{
+  "body": {
+    "elements": [
+      {
+        "content": "**允许修改这些文件？**",
+        "margin": "0px",
+        "tag": "markdown",
+        "text_size": "normal"
+      },
+      {
+        "content": "等待你确认",
+        "margin": "0px",
+        "tag": "markdown",
+        "text_size": "notation"
+      },
+      {
+        "content": "准备修改工作树中的文件",
+        "margin": "0px",
+        "tag": "markdown",
+        "text_size": "normal"
+      },
+      {
+        "elements": [
+          {
+            "content": "将新增纯渲染卡片与测试",
+            "margin": "0px",
+            "tag": "markdown",
+            "text_size": "normal"
+          }
+        ],
+        "expanded": false,
+        "header": {
+          "icon": {
+            "size": "16px 16px",
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined"
+          },
+          "icon_position": "right",
+          "padding": "0px",
+          "title": {
+            "content": "internal/cards/interaction.go",
+            "tag": "plain_text",
+            "text_color": "grey",
+            "text_size": "notation"
+          }
+        },
+        "margin": "0px",
+        "padding": "0px",
+        "tag": "collapsible_panel",
+        "vertical_spacing": "4px"
+      },
+      {
+        "columns": [
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "action": "interaction_submit",
+                      "decision": "accept",
+                      "revision": 1,
+                      "token": "invalid_example_token"
+                    }
+                  }
+                ],
+                "size": "small",
+                "tag": "button",
+                "text": {
+                  "content": "允许本次",
+                  "tag": "plain_text"
+                },
+                "type": "primary"
+              }
+            ],
+            "tag": "column",
+            "width": "auto"
+          },
+          {
+            "elements": [
+              {
+                "behaviors": [
+                  {
+                    "type": "callback",
+                    "value": {
+                      "action": "interaction_submit",
+                      "decision": "decline",
+                      "revision": 1,
+                      "token": "invalid_example_token"
+                    }
+                  }
+                ],
+                "size": "small",
+                "tag": "button",
+                "text": {
+                  "content": "拒绝",
+                  "tag": "plain_text"
+                },
+                "type": "default"
+              }
+            ],
+            "tag": "column",
+            "width": "auto"
+          }
+        ],
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "tag": "column_set"
+      },
+      {
+        "content": "\u003e 审批请求 · Codex",
+        "tag": "markdown",
+        "text_size": "notation"
+      }
+    ],
+    "padding": "12px 12px",
+    "vertical_spacing": "8px"
+  },
+  "config": {
+    "enable_forward": false,
+    "enable_forward_interaction": false,
+    "update_multi": true,
+    "width_mode": "compact"
+  },
+  "schema": "2.0"
+}

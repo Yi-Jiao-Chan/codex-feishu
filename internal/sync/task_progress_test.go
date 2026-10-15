@@ -14,7 +14,7 @@ import (
 func TestTaskProgressRenderUpdatesSameRealProgressMessageAndParent(t *testing.T) {
 	e, _ := engineFixture(t)
 	bindEngine(t, e)
-	e.ProgressRender = func(thread, turn, status, body string) string {
+	e.ProgressRender = func(thread, turn, status string, progress cards.ProgressView) string {
 		if thread != "thread" || turn != "turn" {
 			t.Fatal("progress renderer received foreign scope")
 		}
@@ -22,7 +22,7 @@ func TestTaskProgressRenderUpdatesSameRealProgressMessageAndParent(t *testing.T)
 		if status == "interrupted" {
 			kind, count = "continue", 2
 		}
-		return cards.Task(cards.TaskView{Status: status, Body: body, Kind: kind, State: "available", Token: "opaque", Revision: 3, QueueCount: count})
+		return cards.Task(cards.TaskView{Status: status, Progress: progress, Kind: kind, State: "available", Token: "opaque", Revision: 3, QueueCount: count})
 	}
 	turn := codexclient.Turn{ID: "turn", Status: "inProgress", ItemsView: "full", Items: []codexclient.Item{input("actual-user", "original request"), agent("public", "working", "commentary")}}
 	apply(t, e, 200, false, turn)
@@ -64,11 +64,11 @@ func TestTaskProgressRenderUpdatesSameRealProgressMessageAndParent(t *testing.T)
 func TestInterruptedTaskWithoutExistingProgressCreatesOnlySelectedControl(t *testing.T) {
 	e, _ := engineFixture(t)
 	bindEngine(t, e)
-	e.ProgressRender = func(_, turn, status, body string) string {
+	e.ProgressRender = func(_, turn, status string, progress cards.ProgressView) string {
 		if turn != "latest" {
 			return ""
 		}
-		return cards.Task(cards.TaskView{Status: status, Body: body, Kind: "continue", State: "available", Token: "opaque", Revision: 1, QueueCount: 1})
+		return cards.Task(cards.TaskView{Status: status, Progress: progress, Kind: "continue", State: "available", Token: "opaque", Revision: 1, QueueCount: 1})
 	}
 	turns := []codexclient.Turn{
 		{ID: "older", Status: "interrupted", ItemsView: "full", Items: []codexclient.Item{input("old-user", "old request")}},
@@ -103,18 +103,18 @@ func TestInterruptedTaskWithoutExistingProgressCreatesOnlySelectedControl(t *tes
 
 func TestProgressRenderBoundsActualControlCardAndRejectsInvalidJSONAtomically(t *testing.T) {
 	e, _ := engineFixture(t)
-	e.MaxCardBytes = 850
-	e.ProgressRender = func(_, _, status, body string) string {
-		return cards.Task(cards.TaskView{Status: status, Body: body, Kind: "stop", State: "available", Token: "opaque", Revision: 1, QueueCount: -1})
+	e.MaxCardBytes = len(cards.Task(cards.TaskView{Status: "inProgress", Progress: cards.ProgressView{Body: "…（内容已截短）", OmittedRecords: 1, ElapsedSeconds: -1}, Kind: "stop", State: "available", Token: "opaque", Revision: 1, QueueCount: -1})) + cards.MaxRequestMarkerBytes + 30
+	e.ProgressRender = func(_, _, status string, progress cards.ProgressView) string {
+		return cards.Task(cards.TaskView{Status: status, Progress: progress, Kind: "stop", State: "available", Token: "opaque", Revision: 1, QueueCount: -1})
 	}
 	turn := codexclient.Turn{ID: "turn", Status: "inProgress", Items: []codexclient.Item{input("user", "request"), agent("public", strings.Repeat("中文😀<>", 500), "commentary")}}
 	apply(t, e, 200, false, turn)
 	m, err := e.Store.Mirror(context.Background(), "host", "thread", mirrorKey("progress", "turn"))
-	if err != nil || len(m.Card) > e.MaxCardBytes || !strings.Contains(m.Card, `"token":"opaque"`) || !strings.Contains(m.Card, "…") {
+	if err != nil || len(m.Card) > e.MaxCardBytes-cards.MaxRequestMarkerBytes || !strings.Contains(m.Card, `"token":"opaque"`) || !strings.Contains(m.Card, "…") {
 		t.Fatal("progress size bound removed controls or exceeded the actual JSON limit", err)
 	}
 	bad, _ := engineFixture(t)
-	bad.ProgressRender = func(_, _, _, _ string) string { return "invalid" }
+	bad.ProgressRender = func(_, _, _ string, _ cards.ProgressView) string { return "invalid" }
 	if err := bad.Apply(context.Background(), "thread", []codexclient.Turn{turn}, false, 200); err == nil {
 		t.Fatal("invalid custom card advanced history")
 	}

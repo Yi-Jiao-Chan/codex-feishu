@@ -28,8 +28,13 @@ CREATE TABLE command_replies (
 // CommandRequest contains trusted configuration and parsed values, never raw
 // inbound text. DirectoryScope must come from ResolveScope before this call.
 type CommandRequest struct {
+	SourceRootID, SourceThreadID                                 string
 	HostID, AppID, MessageID, ChatID, ChatType, UserID, ThreadID string
 	Kind, Feedback, NotificationTimezone                         string
+	CreationEnabled                                              bool
+	OwnerOpenID                                                  string
+	FilePreviewEnabled                                           bool
+	PreviewAccessCode                                            string `json:"-"`
 	Operators, NotificationTargets, AllowedRoots                 []string
 	ScopeRoots                                                   []string // Canonical roots used by ResolveScope.
 	Directory                                                    rules.DirectoryCommand
@@ -96,13 +101,23 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 			return CommandReply{}, false, ErrConflict
 		}
 	}
-	var body string
+	var body, settingsCard string
 	switch req.Kind {
+	case "preview":
+		if !operator || req.OwnerOpenID == "" || req.UserID != req.OwnerOpenID || req.ChatType != "p2p" ||
+			req.ThreadID != "" || !req.FilePreviewEnabled || req.PreviewAccessCode == "" {
+			return CommandReply{}, false, ErrConflict
+		}
+		fence := "```"
+		for strings.Contains(req.PreviewAccessCode, fence) {
+			fence += "`"
+		}
+		settingsCard = cards.Message("文件预览", "仅本人私聊", "浏览器访问口令：\n"+fence+"\n"+req.PreviewAccessCode+"\n"+fence+"\n打开文件预览链接后，在登录页输入此口令。")
 	case "directory":
 		if !operator {
 			return CommandReply{}, false, ErrConflict
 		}
-		body, err = applyCommandDirectory(ctx, tx, req)
+		settingsCard, err = applyCommandDirectory(ctx, tx, req)
 	case "notify":
 		if !recipient {
 			return CommandReply{}, false, ErrConflict
@@ -122,7 +137,7 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 			err = setNotificationPolicyTx(ctx, tx, req.AppID, req.UserID, p.Revision, next, now)
 		}
 		if err == nil {
-			body = commandNotificationStatus(next, now)
+			settingsCard = commandNotificationCard(next, now)
 		}
 	case "stop", "continue":
 		if !operator || req.ThreadID == "" {
@@ -147,6 +162,12 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 		}
 	case "help", "status":
 		body = "一期从 Codex App 发起任务，第一条实际输入后自动建专属群；在已绑定群中普通消息进入同一会话的队列。\n这里暂不创建新任务。支持 /mute-dir、/unmute-dir、/notify at；已绑定群的操作者可用 /stop 和 /continue。"
+		if req.CreationEnabled {
+			body = "私聊机器人发送任务描述或 /new，即可选择目录并创建 Codex 会话。授权入口群可 @机器人发起；已绑定任务群用 /new 新建，普通 @ 消息继续原会话。\n支持 /mute-dir、/unmute-dir、/notify at；任务群或对应话题可用 /stop 和 /continue。"
+		}
+		if req.FilePreviewEnabled {
+			body += "\n部署所有者可私聊发送 /preview 获取文件预览口令。"
+		}
 	case "feedback":
 		body = req.Feedback
 		if body == "" {
@@ -158,12 +179,19 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 	if err != nil {
 		return CommandReply{}, false, err
 	}
-	r := CommandReply{ID: ID(), HostID: req.HostID, AppID: req.AppID, MessageID: req.MessageID, ChatID: req.ChatID, ChatType: req.ChatType, UserID: req.UserID, ThreadID: req.ThreadID, Kind: req.Kind, Card: cards.Message("机器人设置", "本部署", body), State: "ready", CreatedAtMS: now.UnixMilli()}
+	card := settingsCard
+	if card == "" {
+		card = cards.Message("机器人设置", "本部署", body)
+	}
+	r := CommandReply{ID: ID(), HostID: req.HostID, AppID: req.AppID, MessageID: req.MessageID, ChatID: req.ChatID, ChatType: req.ChatType, UserID: req.UserID, ThreadID: req.ThreadID, Kind: req.Kind, Card: card, State: "ready", CreatedAtMS: now.UnixMilli()}
 	if len(r.Card) > cards.DefaultMaxCardBytes {
 		return CommandReply{}, false, errors.New("command result exceeds card limit")
 	}
 	err = commandWriteOne(ctx, tx, `INSERT INTO command_replies(app_id,message_id,host_id,chat_id,chat_type,user_id,thread_id,kind,attempt_id,card_json,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,'ready',?)`, r.AppID, r.MessageID, r.HostID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.ID, r.Card, r.CreatedAtMS)
 	if err != nil {
+		return CommandReply{}, false, err
+	}
+	if err := recordCommandSourceTargetTx(ctx, tx, req); err != nil {
 		return CommandReply{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -174,6 +202,7 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 
 func applyCommandDirectory(ctx context.Context, tx *sql.Tx, req CommandRequest) (string, error) {
 	c := req.Directory
+	removed := false
 	if c.Action != rules.DirectoryList {
 		if c.Action != rules.DirectoryMute && c.Action != rules.DirectoryUnmute || !req.DirectoryScope.Allowed || req.DirectoryScope.CWD != c.Rule.Path {
 			return "", ErrConflict
@@ -200,7 +229,13 @@ func applyCommandDirectory(ctx context.Context, tx *sql.Tx, req CommandRequest) 
 		if c.Action == rules.DirectoryMute {
 			_, err = tx.ExecContext(ctx, `INSERT INTO directory_rules(host_id,app_id,canonical_path,recursive) VALUES(?,?,?,?) ON CONFLICT(host_id,app_id,canonical_path,recursive) DO NOTHING`, req.HostID, req.AppID, c.Rule.Path, c.Rule.Recursive)
 		} else {
-			_, err = tx.ExecContext(ctx, `DELETE FROM directory_rules WHERE host_id=? AND app_id=? AND canonical_path=? AND recursive=?`, req.HostID, req.AppID, c.Rule.Path, c.Rule.Recursive)
+			var result sql.Result
+			result, err = tx.ExecContext(ctx, `DELETE FROM directory_rules WHERE host_id=? AND app_id=? AND canonical_path=? AND recursive=?`, req.HostID, req.AppID, c.Rule.Path, c.Rule.Recursive)
+			if err == nil {
+				var affected int64
+				affected, err = result.RowsAffected()
+				removed = affected > 0
+			}
 		}
 		if err != nil {
 			return "", err
@@ -228,25 +263,40 @@ func applyCommandDirectory(ctx context.Context, tx *sql.Tx, req CommandRequest) 
 	if err := rows.Err(); err != nil {
 		return "", err
 	}
-	body := "远程主机：" + req.HostID + "\n只影响未来自动建群；已绑定任务继续同步，解除后不补建历史任务群。\n"
+	summary := "仅影响未来自动建群；已绑定任务继续同步，解除后不补建历史任务群。"
+	body := "远程主机：" + req.HostID + "\n" + summary + "\n"
+	view := cards.SettingsView{Summary: summary, DetailsTitle: "目录规则详情", Source: "机器人设置 · 本部署"}
 	if c.Action == rules.DirectoryList {
 		if len(lines) == 0 {
-			return body + "当前没有目录 mute 规则。", nil
+			view.Conclusion, view.Details = "当前没有目录 mute 规则。", body+"目录规则：无"
+		} else {
+			view.Conclusion, view.Details = fmt.Sprintf("当前有 %d 条目录 mute 规则。", len(lines)), body+"目录规则：\n"+strings.Join(lines, "\n")
 		}
-		return body + "目录规则：\n" + strings.Join(lines, "\n"), nil
+		return cards.Settings(view), nil
 	}
 	if c.Action == rules.DirectoryMute {
+		view.Conclusion = "此目录的新会话不再自动建群。"
 		body += "已保存 mute："
 	} else {
-		body += "已移除对应规则："
+		if removed {
+			view.Conclusion = "对应目录规则已移除。"
+			body += "已移除对应规则："
+		} else {
+			view.Conclusion = "对应目录规则不存在，无需移除。"
+			body += "未找到对应规则："
+		}
 	}
 	body += commandDirectoryLabel(c.Rule)
 	if len(lines) == 0 {
 		body += "\n该目录当前未命中其他 mute 规则。"
 	} else {
 		body += "\n当前仍命中：\n" + strings.Join(lines, "\n")
+		if c.Action == rules.DirectoryUnmute {
+			view.Summary = "此目录仍命中其他 mute 规则，新会话不会自动建群。\n" + summary
+		}
 	}
-	return body, nil
+	view.Details = body
+	return cards.Settings(view), nil
 }
 
 func commandDirectoryLabel(rule rules.DirectoryRule) string {
@@ -257,7 +307,7 @@ func commandDirectoryLabel(rule rules.DirectoryRule) string {
 	return rule.Path + "（" + mode + "）"
 }
 
-func commandNotificationStatus(p rules.Policy, now time.Time) string {
+func commandNotificationCard(p rules.Policy, now time.Time) string {
 	state := "开启"
 	if !p.Enabled {
 		state = "长期关闭"
@@ -265,18 +315,29 @@ func commandNotificationStatus(p rules.Policy, now time.Time) string {
 	snooze, quiet := "无", "关闭"
 	loc, _ := time.LoadLocation(p.Timezone)
 	if !p.SnoozeUntil.IsZero() {
-		snooze = p.SnoozeUntil.In(loc).Format("2006-01-02 15:04:05 MST")
+		snooze = p.SnoozeUntil.In(loc).Format("2006年1月2日 15:04") + "（" + p.Timezone + "）"
 	}
 	if p.QuietStart != "" {
 		quiet = p.QuietStart + "–" + p.QuietEnd
 	}
 	reason, _ := p.Suppression(now)
 	reasons := map[rules.SuppressionReason]string{rules.NotificationAllowed: "允许提醒", rules.SuppressedOff: "长期关闭", rules.SuppressedSnooze: "临时暂停", rules.SuppressedQuiet: "每日免打扰"}
+	conclusions := map[rules.SuppressionReason]string{
+		rules.NotificationAllowed: "@ 提醒已开启，当前允许提醒你。",
+		rules.SuppressedOff:       "@ 提醒已长期关闭，当前不会提醒你。",
+		rules.SuppressedSnooze:    "@ 提醒已临时暂停，当前不会提醒你。",
+		rules.SuppressedQuiet:     "当前处于每日免打扰时段，不会 @ 提醒你。",
+	}
+	summary := "正文继续同步。"
+	if reason == rules.SuppressedSnooze {
+		summary = "暂停至 " + snooze + "；正文继续同步。"
+	}
 	text := fmt.Sprintf("@ 提醒：%s\n临时暂停至：%s\n每日免打扰：%s\n时区：%s\n当前：%s\n范围：本部署全部任务群，仅修改你自己的设置。正文继续同步；飞书普通群消息提醒仍由客户端设置控制。", state, snooze, quiet, p.Timezone, reasons[reason])
+	text += "\n恢复后仍遵守每日免打扰；休息期间被抑制的 @ 不会积压补发。"
 	if !p.Enabled && !p.SnoozeUntil.IsZero() {
 		text += "\n仍长期关闭，临时暂停结束后不会自动恢复。"
 	}
-	return text
+	return cards.Settings(cards.SettingsView{Conclusion: conclusions[reason], Summary: summary, DetailsTitle: "完整通知设置", Details: text, Source: "机器人设置 · 本部署"})
 }
 
 const commandReplyReady = `host_id=? AND state='ready' AND NOT EXISTS(SELECT 1 FROM command_reply_throttles t WHERE t.app_id=command_replies.app_id AND t.message_id=command_replies.message_id AND t.next_retry_at_ms>?) AND NOT EXISTS(SELECT 1 FROM command_reply_attempts a WHERE a.app_id=command_replies.app_id AND a.message_id=command_replies.message_id AND a.state IN ('dispatching','unknown'))`
@@ -356,6 +417,9 @@ func claimCommandReplyTx(ctx context.Context, tx *sql.Tx, r CommandReply, nowMS 
 		return CommandReply{}, false, err
 	}
 	if err := commandWriteOne(ctx, tx, `INSERT INTO command_reply_attempts(attempt_id,host_id,app_id,message_id,chat_id,chat_type,user_id,thread_id,kind,card_json,created_at_ms,dispatched_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'dispatching')`, r.ID, r.HostID, r.AppID, r.MessageID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.Card, r.CreatedAtMS, nowMS); err != nil {
+		return CommandReply{}, false, err
+	}
+	if err := freezeFollowAttemptTx(ctx, tx, r.ID, r.HostID, r.ThreadID, r.ChatID, r.MessageID); err != nil {
 		return CommandReply{}, false, err
 	}
 	wire, _, err := freezeCardRequestMarker(ctx, tx, "command", r.ID, r.Card)

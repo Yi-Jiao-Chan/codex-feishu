@@ -48,7 +48,8 @@ func (s *Store) commandReplyAttempt(ctx context.Context, tx *sql.Tx, id string) 
 	return scanCommandReply(tx.QueryRowContext(ctx, `SELECT `+commandColumns+` FROM command_reply_attempts WHERE attempt_id=?`, id))
 }
 
-// DeferCommandReplyAttempt requires a typed, definite rate-limit rejection.
+// DeferCommandReplyAttempt requires a typed, definite rate-limit rejection or
+// local preflight evidence that the write API was never called.
 // It reopens only delivery, keeping local command effects and the original card
 // intact. Rejected payload/UUID evidence is never reused or overwritten.
 func (s *Store) DeferCommandReplyAttempt(ctx context.Context, id string, nowMS, minimumDelayMS int64) error {

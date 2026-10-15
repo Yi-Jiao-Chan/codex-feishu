@@ -152,3 +152,21 @@ func TestLiveStatusRequiresBaselineOnlyWhenAutomaticDiscoveryEnabled(t *testing.
 		t.Fatal("disabled automatic discovery required its baseline", o, code)
 	}
 }
+
+func TestLiveStatusReportsPendingGroupNameWithoutBlockingMessageDelivery(t *testing.T) {
+	s := control.Snapshot{Running: true, NativeConnected: true, FeishuConnected: true,
+		Persistent: store.PersistentHealth{GroupNames: map[string]int64{"unknown": 1}}}
+	o, code := liveStatus(s)
+	if code != 0 || !o.OK {
+		t.Fatal("a group label write blocked otherwise healthy message delivery")
+	}
+	for _, c := range o.Checks {
+		if c.ID == "instance.group_name_sync" {
+			if c.Required || c.Status != "pending" {
+				t.Fatal("group name ambiguity was hidden or made a delivery requirement")
+			}
+			return
+		}
+	}
+	t.Fatal("group name diagnostic missing")
+}

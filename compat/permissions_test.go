@@ -18,8 +18,8 @@ func TestManifestEmbeddedAndBounded(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chdir(old) })
 	m := FeishuManifest()
-	want := []string{"im:message.p2p_msg:readonly", "im:message.group_at_msg:readonly", "im:chat:create", "im:chat:read", "im:chat.members:read", "im:message:send_as_bot", "im:message.reactions:write_only"}
-	if !reflect.DeepEqual(m.RecommendedTenantScopes, want) || m.SDKVersion != "v3.12.0" || len(m.Capabilities) != 14 {
+	want := []string{"im:message.p2p_msg:readonly", "im:message.group_at_msg:readonly", "im:chat:create", "im:chat:read", "im:chat:update", "im:chat.members:read", "im:message:send_as_bot", "im:message.reactions:write_only", "im:resource:upload"}
+	if !reflect.DeepEqual(m.RecommendedTenantScopes, want) || m.SDKVersion != "v3.12.0" || len(m.Capabilities) != 18 {
 		t.Fatalf("unexpected manifest boundary: %+v", m)
 	}
 	for _, c := range m.Capabilities {
@@ -27,7 +27,7 @@ func TestManifestEmbeddedAndBounded(t *testing.T) {
 			t.Fatalf("incomplete capability: %+v", c)
 		}
 		for _, s := range c.AnyOfPermissions {
-			if strings.HasPrefix(s, "im:message.group_msg") || strings.HasPrefix(s, "contact:") || strings.HasPrefix(s, "cardkit:") || s == "application:bot.basic_info:read" {
+			if c.ID != "receive_standalone_attachments" && (strings.HasPrefix(s, "im:message.group_msg") || strings.HasPrefix(s, "contact:") || strings.HasPrefix(s, "cardkit:") || s == "application:bot.basic_info:read") {
 				t.Fatalf("unrequested scope: %s", s)
 			}
 		}

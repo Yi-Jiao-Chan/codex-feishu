@@ -21,16 +21,26 @@ type NativeHistory interface {
 
 // Engine converts complete public history into durable deliveries. A per-thread
 // actor serializes Reconcile calls; events only trigger a new full reconciliation
-// and never publish token deltas directly. No remote writes happen here.
+// and never publish token deltas directly. Optional image preparation journals
+// resource uploads before the pure renderer stages message delivery.
 type Engine struct {
-	Store          *store.Store
-	Native         NativeHistory
-	HostID         string
-	MaxCardBytes   int
-	MentionTargets []string // Reserve the complete structured reminder before splitting final text.
+	Store                  *store.Store
+	Native                 NativeHistory
+	HostID                 string
+	SuppressAsyncQuestions bool
+	AsyncQuestionsSinceMS  int64
+	asyncItems             map[string]bool
+	TimeZone               string
+	MaxCardBytes           int
+	MentionTargets         []string // Reserve the complete structured reminder before splitting final text.
+	PrepareHuman           func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
+	// PreparePublic registers local file references before they enter durable
+	// cards. It changes only a display copy, never native history or input.
+	PreparePublic    func(context.Context, string, string) (string, error)
+	humanAttachments map[string][]cards.AttachmentView
 	// ProgressRender is pure; the actor prepares its durable control state first.
 	// An empty interrupted render suppresses a new historical progress card.
-	ProgressRender func(thread, turn, nativeStatus, body string) string
+	ProgressRender func(thread, turn, nativeStatus string, progress cards.ProgressView) string
 }
 
 // HistoryError keeps native payloads out of ordinary error text.
@@ -64,9 +74,85 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 	if err != nil {
 		return err
 	}
+	if e.SuppressAsyncQuestions {
+		e.asyncItems = map[string]bool{}
+		rows, readErr := e.Store.DB.QueryContext(ctx, `SELECT turn_id,item_id FROM interaction_requests WHERE host_id=? AND thread_id=? AND mode='async'`, e.HostID, thread)
+		if readErr != nil {
+			return readErr
+		}
+		for rows.Next() {
+			var turn, item string
+			if err := rows.Scan(&turn, &item); err != nil {
+				rows.Close()
+				return err
+			}
+			e.asyncItems[turn+":"+item] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+	}
 	plan, err := e.renderSnapshot(thread, turns, receipts, old, replay, observedAtMS)
 	if err != nil {
 		return err
+	}
+	// Validate the complete snapshot before any resource upload. The renderer
+	// remains pure for recovery and reviewed legacy adoption.
+	if e.PrepareHuman != nil {
+		e.humanAttachments = make(map[string][]cards.AttachmentView)
+		for _, turn := range turns {
+			for _, item := range turn.Items {
+				if item.Type != "userMessage" {
+					continue
+				}
+				external := false
+				if item.ClientID != nil {
+					for _, receipt := range receipts {
+						if receipt.ClientID == *item.ClientID {
+							external = true
+							break
+						}
+					}
+				}
+				if external {
+					continue
+				}
+				refs := item.UserPresentation().Attachments
+				if len(refs) == 0 {
+					continue
+				}
+				views, err := e.PrepareHuman(ctx, thread, refs)
+				if err != nil {
+					return err
+				}
+				e.humanAttachments[mirrorKey("attachments", turn.ID, item.ID)] = views
+			}
+		}
+	}
+	if e.PreparePublic != nil {
+		display := append([]codexclient.Turn(nil), turns...)
+		for n, turn := range turns {
+			display[n].Items = append([]codexclient.Item(nil), turn.Items...)
+			for j, item := range turn.Items {
+				if item.Type != "agentMessage" || item.Text == "" {
+					continue
+				}
+				text, prepareErr := e.PreparePublic(ctx, thread, item.Text)
+				if prepareErr != nil {
+					return errors.New("public file preview preparation unavailable")
+				}
+				display[n].Items[j].Text = text
+			}
+		}
+		turns = display
+	}
+	if e.PrepareHuman != nil || e.PreparePublic != nil {
+		plan, err = e.renderSnapshot(thread, turns, receipts, old, replay, observedAtMS)
+		if err != nil {
+			return err
+		}
 	}
 	return e.Store.StageSnapshot(ctx, e.HostID, thread, plan.Docs, plan.Links, plan.Mark)
 }
@@ -80,6 +166,34 @@ type snapshotPlan struct {
 // renderSnapshot shares the live renderer with reviewed legacy adoption. It does
 // no database or native work and preserves the caller's existing reply anchors.
 func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts []store.Receipt, old []store.Mirror, replay bool, observedAtMS int64) (snapshotPlan, error) {
+	asyncOnly := map[string]bool{}
+	copyTurns := make([]codexclient.Turn, len(turns))
+	for i, t := range turns {
+		copyTurns[i] = t
+		copyTurns[i].Items = nil
+		items, err := uniqueItems(t.Items)
+		if err != nil {
+			return snapshotPlan{}, err
+		}
+		// Native async questions can also carry phase=final_answer. When a
+		// later answer exists, keep preceding questions out of its projection
+		// regardless of settings or when this turn was first observed.
+		lastAnswer := -1
+		for n, item := range items {
+			if item.Type == "agentMessage" && !isAsyncQuestion(item) && strings.TrimSpace(item.Text) != "" && (item.Phase == nil || *item.Phase == "final_answer") {
+				lastAnswer = n
+			}
+		}
+		for n, item := range items {
+			if isAsyncQuestion(item) && (n < lastAnswer || e.SuppressAsyncQuestions && (e.asyncItems[t.ID+":"+item.ID] || t.StartedAt != nil && *t.StartedAt >= e.AsyncQuestionsSinceMS/1000)) {
+				asyncOnly[t.ID] = true
+				continue
+			}
+			copyTurns[i].Items = append(copyTurns[i].Items, item)
+		}
+	}
+	turns = copyTurns
+
 	byClient := make(map[string]store.Receipt, len(receipts))
 	for _, r := range receipts {
 		byClient[r.ClientID] = r
@@ -122,16 +236,21 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 				if r, ok := byClient[*i.ClientID]; ok {
 					links = append(links, store.InputLink{ReceiptID: r.ID, TurnID: turn.ID, ItemID: i.ID})
 					if firstInput {
-						parentID, firstInput = r.MessageID, false
+						parentID, firstInput = r.ReplyID(), false
 					}
 					continue // Feishu's original message is already human context.
 				}
 			}
-			text := i.PublicText()
-			if strings.TrimSpace(text) == "" {
+			presentation := i.UserPresentation()
+			text := presentation.Text
+			views, prepared := e.humanAttachments[mirrorKey("attachments", turn.ID, i.ID)]
+			if !prepared {
+				views = attachmentPlaceholders(presentation.Attachments)
+			}
+			if strings.TrimSpace(text) == "" && len(views) == 0 {
 				text = "此条输入没有可同步的文本，请在 Codex 中查看。"
 			}
-			parts, err := cards.SplitMessage("人类发送", "Codex 端", text, markerCardBudget(e.MaxCardBytes))
+			parts, err := cards.SplitHuman("Codex 端", text, views, markerCardBudget(e.MaxCardBytes))
 			if err != nil {
 				return snapshotPlan{}, err
 			}
@@ -161,21 +280,43 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			continue
 		}
 		key := mirrorKey("progress", turn.ID)
-		_, hadProgress := existing[key]
+		previousProgress, hadProgress := existing[key]
 		if turn.Status == "inProgress" || hadProgress || turn.Status == "interrupted" && e.ProgressRender != nil {
-			render := func(body string) string { return cards.Progress(turnLabel(turn.Status), body) }
-			if e.ProgressRender != nil {
-				render = func(body string) string { return e.ProgressRender(thread, turn.ID, turn.Status, body) }
+			render := func(progress cards.ProgressView) string {
+				return cards.Task(cards.TaskView{Status: turn.Status, Progress: progress})
 			}
-			card, err := boundedRenderedProgress(progressBody(turn), markerCardBudget(e.MaxCardBytes), render)
+			if e.ProgressRender != nil {
+				render = func(progress cards.ProgressView) string {
+					return e.ProgressRender(thread, turn.ID, turn.Status, progress)
+				}
+			}
+			view := progressView(turn, observedAtMS)
+			view.TimeZone = e.TimeZone
+			clocks := make(map[string]int64, len(previousProgress.ProgressObservedAt)+len(view.Records))
+			for id, at := range previousProgress.ProgressObservedAt {
+				clocks[id] = at
+			}
+			for n := range view.Records {
+				record := &view.Records[n]
+				at := clocks[record.ItemID]
+				if at <= 0 {
+					// This is the first complete snapshot that records a local
+					// reception time, including replay and legacy unknown clocks.
+					// Persist it once; it is not the native generation time.
+					at = observedAtMS
+					clocks[record.ItemID] = at
+				}
+				record.ReceivedAtMS = at
+			}
+			card, err := boundedRenderedProgress(view, markerCardBudget(e.MaxCardBytes), render)
 			if err != nil {
 				return snapshotPlan{}, err
 			}
 			if card != "" {
-				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
+				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, ProgressObservedAt: clocks, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
 			}
 		}
-		if turn.Status != "inProgress" {
+		if turn.Status != "inProgress" && !(turn.Status == "completed" && asyncOnly[turn.ID] && strings.TrimSpace(finalBody(turn)) == "") {
 			body := finalBody(turn)
 			if strings.TrimSpace(body) == "" {
 				body = emptyResult(turn.Status)
@@ -242,6 +383,10 @@ func uniqueItems(items []codexclient.Item) ([]codexclient.Item, error) {
 	return result, nil
 }
 
+func isAsyncQuestion(item codexclient.Item) bool {
+	return item.Type == "agentMessage" && item.Delivery != nil && *item.Delivery == "async" && len(item.Questions) > 0
+}
+
 func finalBody(t codexclient.Turn) string {
 	var texts []string
 	legacy := ""
@@ -261,47 +406,82 @@ func finalBody(t codexclient.Turn) string {
 	return strings.Join(texts, "\n\n")
 }
 
-func progressBody(t codexclient.Turn) string {
-	latest := ""
-	running, finished := 0, 0
-	for _, i := range t.Items {
-		if i.Type == "agentMessage" && (i.Phase == nil || *i.Phase == "commentary" || *i.Phase == "partial_answer") {
-			latest = i.Text
-		}
-		switch i.Type {
-		case "commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange":
-			if i.Status == "inProgress" {
-				running++
-			} else if i.Status == "completed" || i.Status == "failed" || i.Status == "declined" {
-				finished++
+// progressView projects public assistant commentary in native item order and
+// counts tool status metadata without retaining tool payloads.
+// The complete snapshot replaces the previous projection rather than appending
+// deltas. A legacy terminal's selected final item is not also a process record.
+func progressView(t codexclient.Turn, observedAtMS int64) cards.ProgressView {
+	v := cards.ProgressView{ElapsedSeconds: -1}
+	legacyFinal, explicitFinal := -1, false
+	if t.Status != "inProgress" {
+		for n, i := range t.Items {
+			if i.Type != "agentMessage" || strings.TrimSpace(i.Text) == "" {
+				continue
+			}
+			if i.Phase == nil {
+				legacyFinal = n
+			} else if *i.Phase == "final_answer" {
+				explicitFinal = true
 			}
 		}
 	}
-	if t.Status != "inProgress" {
-		return ""
-	}
-	runes := []rune(latest)
-	if len(runes) > 800 {
-		latest = string(runes[:800]) + "…"
-	}
-	if running+finished != 0 {
-		if latest != "" {
-			latest += "\n\n"
+	for n, i := range t.Items {
+		switch i.Type {
+		case "commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange":
+			if i.Status == "inProgress" {
+				v.RunningTools++
+			} else if i.Status == "completed" || i.Status == "failed" || i.Status == "declined" {
+				v.FinishedTools++
+			}
 		}
-		latest += fmt.Sprintf("工具：%d 项执行中 · %d 项已结束", running, finished)
+		if i.Type != "agentMessage" || strings.TrimSpace(i.Text) == "" ||
+			(i.Phase != nil && *i.Phase != "commentary" && *i.Phase != "partial_answer") ||
+			(n == legacyFinal && !explicitFinal) {
+			continue
+		}
+		v.Records = append(v.Records, cards.ProgressRecord{ItemID: i.ID, Text: i.Text})
+		v.Body = i.Text
+		if t.Status == "inProgress" {
+			v.CurrentItemID = i.ID
+		}
 	}
-	return latest
+	runes := []rune(v.Body)
+	if len(runes) > 800 {
+		v.Body = string(runes[:800]) + "…（内容已截短）"
+	}
+	if t.Status != "inProgress" {
+		v.Body = "" // Keep completed process details in the collapsed records.
+		v.CurrentItemID = ""
+	}
+	// Native turn timestamps are seconds. Terminal duration never advances on
+	// replay, and missing/invalid timestamps never become an invented duration.
+	observed := observedAtMS / 1000
+	if t.StartedAt != nil && *t.StartedAt > 0 && observed >= *t.StartedAt {
+		end := observed
+		if t.Status != "inProgress" {
+			if t.CompletedAt == nil {
+				return v
+			}
+			end = *t.CompletedAt
+		}
+		if end >= *t.StartedAt && end <= observed {
+			v.ElapsedSeconds = end - *t.StartedAt
+		}
+	}
+	return v
 }
 
-func boundedProgress(label, body string, limit int) (string, error) {
-	return boundedRenderedProgress(body, limit, func(body string) string { return cards.Progress(label, body) })
-}
-
-func boundedRenderedProgress(body string, limit int, render func(string) string) (string, error) {
+func boundedRenderedProgress(v cards.ProgressView, limit int, render func(cards.ProgressView) string) (string, error) {
 	if limit == 0 {
 		limit = cards.DefaultMaxCardBytes
 	}
-	card := render(body)
+	// Copy the slice before replacing its final element during truncation.
+	v.Records = append([]cards.ProgressRecord(nil), v.Records...)
+	if omitted := len(v.Records) - cards.MaxProgressRecords; omitted > 0 {
+		v.Records = v.Records[omitted:]
+		v.OmittedRecords += omitted
+	}
+	card := render(v)
 	if card == "" {
 		return "", nil
 	}
@@ -311,38 +491,67 @@ func boundedRenderedProgress(body string, limit int, render func(string) string)
 	if len(card) <= limit {
 		return card, nil
 	}
-	if limit < len(render("")) {
-		return "", errors.New("card limit cannot hold progress status")
-	}
-	// Progress is a compact latest-action summary. Only this summary may be
-	// shortened; public human text and the final answer always use full splits.
-	runes := []rune(body)
-	lo, hi := 0, len(runes)
-	for lo < hi {
-		mid := (lo + hi + 1) / 2
-		if len(render(string(runes[:mid])+"…")) <= limit {
-			lo = mid
-		} else {
-			hi = mid - 1
+	// Prefer the newest complete records. The omission count remains explicit
+	// even if none of the process records fit this card's budget.
+	if len(v.Records) > 1 {
+		// The pure renderer's fixed state and controls do not change while
+		// evicting records. Search the oldest prefix instead of serializing
+		// every remaining suffix of a long native history.
+		records, omitted := v.Records, v.OmittedRecords
+		lo, hi := 1, len(records)-1
+		for lo < hi {
+			mid := (lo + hi) / 2
+			v.Records, v.OmittedRecords = records[mid:], omitted+mid
+			if len(render(v)) <= limit {
+				hi = mid
+			} else {
+				lo = mid + 1
+			}
 		}
+		v.Records, v.OmittedRecords = records[lo:], omitted+lo
+		card = render(v)
 	}
-	if lo == 0 {
-		return render(""), nil
+	shorten := func(text string, set func(string)) bool {
+		runes := []rune(text)
+		set("…（内容已截短）")
+		if len(render(v)) > limit {
+			return false
+		}
+		lo, hi := 0, len(runes)
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			set(string(runes[:mid]) + "…（内容已截短）")
+			if len(render(v)) <= limit {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		set(string(runes[:lo]) + "…（内容已截短）")
+		return true
 	}
-	return render(string(runes[:lo]) + "…"), nil
-}
-
-func turnLabel(status string) string {
-	switch status {
-	case "completed":
-		return "已完成"
-	case "failed":
-		return "执行失败 · 请查看 Codex"
-	case "interrupted":
-		return "已停止"
-	default:
-		return "执行中"
+	if len(card) > limit && len(v.Records) == 1 {
+		if !shorten(v.Records[0].Text, func(s string) { v.Records[0].Text = s }) {
+			v.Records = nil
+			v.OmittedRecords++
+		}
+		card = render(v)
 	}
+	if len(card) > limit {
+		body := v.Body
+		v.Body = ""
+		if len(render(v)) > limit {
+			return "", errors.New("card limit cannot hold progress status and omission notice")
+		}
+		if !shorten(body, func(s string) { v.Body = s }) {
+			v.Body = ""
+		}
+		card = render(v)
+	}
+	if !json.Valid([]byte(card)) || len(card) > limit {
+		return "", errors.New("progress renderer returned invalid or oversized card")
+	}
+	return card, nil
 }
 
 func emptyResult(status string) string {
@@ -415,7 +624,7 @@ func finalCardBudget(limit int, targets []string) (int, error) {
 	if err != nil {
 		return 0, errors.New("notification targets exceed card budget")
 	}
-	budget -= len(mentioned) - len(base)
+	budget -= len(mentioned) - len(base) + cards.MaxMentionBlockExtraBytes
 	if budget <= 0 {
 		return 0, errors.New("card budget cannot hold notification targets")
 	}

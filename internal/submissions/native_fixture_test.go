@@ -21,7 +21,49 @@ import (
 )
 
 const nativeControllerOptIn = "CODEX_FEISHU_NATIVE_CONTROLLER_TEST"
+const nativeExpectedVersionEnv = "CODEX_FEISHU_REAL_NATIVE_EXPECTED_VERSION"
 const nativeCrashExit = 86
+
+func nativeExpectedVersion(value string) (string, error) {
+	if value == "" {
+		return "0.162.0", nil
+	}
+	if value != "0.162.0" && value != "0.162.1" {
+		return "", errors.New("native fixture expected version must be exactly 0.162.0 or 0.162.1")
+	}
+	return value, nil
+}
+
+func requireNativeExpectedVersion(t *testing.T) string {
+	t.Helper()
+	version, err := nativeExpectedVersion(os.Getenv(nativeExpectedVersionEnv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return version
+}
+
+func nativeDaemonVersionMatches(d codexclient.Daemon, expected string) bool {
+	return d.Status == "running" && d.CLIVersion == expected && d.AppServerVersion == expected
+}
+
+// Read only metadata for this harness's checked birth; never list user threads
+// or resume again to obtain the CLI version absent from the production DTO.
+func nativeOwnedBirthVersion(ctx context.Context, client *codexclient.Client, id, expected string) error {
+	var reply struct {
+		Thread struct {
+			ID         string `json:"id"`
+			CLIVersion string `json:"cliVersion"`
+		} `json:"thread"`
+	}
+	if err := client.Call(ctx, "thread/read", map[string]any{"threadId": id, "includeTurns": false}, &reply); err != nil {
+		return errors.New("owned native birth version metadata unavailable")
+	}
+	if reply.Thread.ID != id || reply.Thread.CLIVersion != expected {
+		return errors.New("owned native birth CLI version does not match expected daemon version")
+	}
+	return nil
+}
 
 // Every request is held independently. This is a local fixed-text model, not
 // a proxy or fake native queue: the actual shared daemon executes every RPC.
@@ -145,9 +187,10 @@ func (m *nativeQueueModel) close() {
 // are accepted only from the checked start response and an exclusive second
 // marker. Child processes cannot select a user thread or arbitrary workspace.
 type nativeQueueOwnership struct {
-	Spec     codexclient.LocalVerificationSpec `json:"spec"`
-	ThreadID string                            `json:"thread_id"`
-	Version  string                            `json:"daemon_version"`
+	Spec       codexclient.LocalVerificationSpec `json:"spec"`
+	ThreadID   string                            `json:"thread_id"`
+	Version    string                            `json:"daemon_version"`
+	CLIVersion string                            `json:"cli_version"`
 }
 
 func writeNativePrivateJSON(path string, value any) error {
@@ -272,6 +315,7 @@ type nativeQueueHarness struct {
 	model                              *nativeQueueModel
 	spec                               codexclient.LocalVerificationSpec
 	root, path, socket, thread, active string
+	version                            string
 	db                                 *store.Store
 	boundary                           *nativeQueueBoundary
 	controller                         *Controller
@@ -287,11 +331,12 @@ func requireNativeQueueOptIn(t *testing.T) {
 func newNativeQueueHarness(t *testing.T, busy bool) *nativeQueueHarness {
 	t.Helper()
 	requireNativeQueueOptIn(t)
+	expected := requireNativeExpectedVersion(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 	t.Cleanup(cancel)
 	daemon, err := codexclient.Discover(ctx, "auto")
-	if err != nil || daemon.AppServerVersion != "0.162.0" {
-		t.Fatal("existing verified native daemon 0.162.0 required")
+	if err != nil || !nativeDaemonVersionMatches(daemon, expected) {
+		t.Fatal("existing native daemon CLI and app-server versions must match the strict fixture expectation")
 	}
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -308,10 +353,10 @@ func newNativeQueueHarness(t *testing.T, busy bool) *nativeQueueHarness {
 		t.Fatal("scratch directory must be outside the current candidate project")
 	}
 	model := newNativeQueueModel()
-	h := &nativeQueueHarness{ctx: ctx, root: root, path: filepath.Join(root, "controller.db"), socket: daemon.SocketPath, model: model}
+	h := &nativeQueueHarness{ctx: ctx, root: root, path: filepath.Join(root, "controller.db"), socket: daemon.SocketPath, model: model, version: expected}
 	t.Cleanup(func() { h.cleanup(t) })
 	h.spec = codexclient.LocalVerificationSpec{RunID: store.ID(), CWD: cwd, ModelURL: model.server.URL + "/v1"}
-	if err := writeNativePrivateJSON(filepath.Join(root, "intent.json"), nativeQueueOwnership{Spec: h.spec, Version: daemon.AppServerVersion}); err != nil {
+	if err := writeNativePrivateJSON(filepath.Join(root, "intent.json"), nativeQueueOwnership{Spec: h.spec, Version: expected, CLIVersion: daemon.CLIVersion}); err != nil {
 		t.Fatal("cannot persist exclusive fixture intent")
 	}
 	h.client, err = codexclient.Connect(ctx, daemon.SocketPath)
@@ -323,8 +368,11 @@ func newNativeQueueHarness(t *testing.T, busy bool) *nativeQueueHarness {
 		t.Fatal("typed fixture thread creation failed; no creation retry")
 	}
 	h.thread = created.ID
-	if err := writeNativePrivateJSON(filepath.Join(root, "owned-thread.json"), nativeQueueOwnership{Spec: h.spec, ThreadID: h.thread, Version: daemon.AppServerVersion}); err != nil {
+	if err := writeNativePrivateJSON(filepath.Join(root, "owned-thread.json"), nativeQueueOwnership{Spec: h.spec, ThreadID: h.thread, Version: expected, CLIVersion: daemon.CLIVersion}); err != nil {
 		t.Fatal("cannot persist exclusive owned-thread marker")
+	}
+	if err := nativeOwnedBirthVersion(ctx, h.client, h.thread, expected); err != nil {
+		t.Fatal(err)
 	}
 	if busy {
 		// A new cold thread has no rollout to resume on 0.162. The creator
@@ -389,27 +437,44 @@ func nativeQueueSeedBinding(ctx context.Context, db *store.Store, thread, cwd st
 
 func (h *nativeQueueHarness) cleanup(t *testing.T) {
 	t.Helper()
+	defer func() {
+		if h.other != nil {
+			h.other.Close()
+		}
+		if h.client != nil {
+			h.client.Close()
+		}
+		if h.db != nil {
+			_ = h.db.Close()
+		}
+	}()
 	// Close held Responses streams even if a native primitive failed. Only the
 	// exact ID returned by this test's checked birth can be archived.
 	h.model.close()
 	if h.thread != "" && h.client != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
+		daemon, err := codexclient.Discover(ctx, "auto")
+		if err != nil || !nativeDaemonVersionMatches(daemon, h.version) || daemon.SocketPath != h.socket {
+			t.Error("cleanup daemon no longer matches the owned fixture version/socket; refusing native cleanup")
+			return
+		}
 		client := h.client
 		select {
 		case <-client.Done():
-			daemon, err := codexclient.Discover(ctx, "auto")
-			if err == nil && daemon.AppServerVersion == "0.162.0" && daemon.SocketPath == h.socket {
-				if connected, err := codexclient.Connect(ctx, h.socket); err == nil {
-					client = connected
-					defer client.Close()
-				}
+			if connected, err := codexclient.Connect(ctx, h.socket); err == nil {
+				client = connected
+				defer client.Close()
 			}
 		default:
 		}
 		meta, err := client.Metadata(ctx, h.thread)
 		var label string
 		if err == nil && meta.ID == h.thread && meta.CWD == h.spec.CWD && json.Unmarshal(meta.ThreadSource, &label) == nil && label == "feishu.bridge.validation" {
+			if err := nativeOwnedBirthVersion(ctx, client, h.thread, h.version); err != nil {
+				t.Error("cleanup birth CLI version could not be verified; refusing native cleanup")
+				return
+			}
 			queue, err := client.Queue(ctx, h.thread)
 			if err == nil {
 				for _, q := range queue {
@@ -445,14 +510,39 @@ func (h *nativeQueueHarness) cleanup(t *testing.T) {
 			t.Error("owned fixture cleanup identity could not be verified; refusing archive")
 		}
 	}
-	if h.other != nil {
-		h.other.Close()
+}
+
+func TestNativeExpectedVersionIsStrictAndRequiresBothActualVersions(t *testing.T) {
+	for _, value := range []string{"", "0.162.0", "0.162.1"} {
+		version, err := nativeExpectedVersion(value)
+		want := value
+		if want == "" {
+			want = "0.162.0"
+		}
+		if err != nil || version != want {
+			t.Fatal("supported exact fixture version was not preserved")
+		}
+		daemon := codexclient.Daemon{Status: "running", CLIVersion: want, AppServerVersion: want}
+		if !nativeDaemonVersionMatches(daemon, want) {
+			t.Fatal("matching actual CLI/server pair was rejected")
+		}
+		daemon.CLIVersion = "0.163.0"
+		if nativeDaemonVersionMatches(daemon, want) {
+			t.Fatal("matching server hid a different CLI version")
+		}
+		daemon.CLIVersion, daemon.AppServerVersion = want, "0.163.0"
+		if nativeDaemonVersionMatches(daemon, want) {
+			t.Fatal("matching CLI hid a different server version")
+		}
+		daemon.AppServerVersion, daemon.Status = want, "stopped"
+		if nativeDaemonVersionMatches(daemon, want) {
+			t.Fatal("stopped daemon passed the fixture boundary")
+		}
 	}
-	if h.client != nil {
-		h.client.Close()
-	}
-	if h.db != nil {
-		_ = h.db.Close()
+	for _, value := range []string{"0.163.0", "0.162", "0.162.*", " 0.162.1", "0.162.1 "} {
+		if _, err := nativeExpectedVersion(value); err == nil {
+			t.Fatal("unverified or inexact fixture version was accepted")
+		}
 	}
 }
 

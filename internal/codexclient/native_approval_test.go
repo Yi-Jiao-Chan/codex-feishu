@@ -3,6 +3,7 @@ package codexclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,27 +25,43 @@ func TestNativeApprovalSurvivesSilentBridgeDisconnect(t *testing.T) {
 	if os.Getenv("CODEX_FEISHU_APPROVAL_TEST") != "1" {
 		t.Skip("set CODEX_FEISHU_APPROVAL_TEST=1 to validate native approval after host hooks")
 	}
-	testNativeRequestSurvivesSilentBridgeDisconnect(t, false)
+	testNativeRequestSurvivesSilentBridgeDisconnect(t, false, false)
 }
 
 func TestNativeUserInputSurvivesSilentBridgeDisconnect(t *testing.T) {
 	if os.Getenv("CODEX_FEISHU_NATIVE_TEST") != "1" {
 		t.Skip("set CODEX_FEISHU_NATIVE_TEST=1 to create an isolated native test thread")
 	}
-	testNativeRequestSurvivesSilentBridgeDisconnect(t, true)
+	testNativeRequestSurvivesSilentBridgeDisconnect(t, true, false)
+}
+
+// A bridge response on a disposable thread must resolve the same pending
+// request in the independent owner, without a second model call/response.
+func TestNativeInteractiveQuestionResponseFromBridge(t *testing.T) {
+	if os.Getenv("CODEX_FEISHU_NATIVE_TEST") != "1" {
+		t.Skip("explicit isolated native fixture opt-in required")
+	}
+	testNativeRequestSurvivesSilentBridgeDisconnect(t, true, true)
+}
+
+func TestNativeInteractiveCommandResponseFromBridge(t *testing.T) {
+	if os.Getenv("CODEX_FEISHU_APPROVAL_TEST") != "1" {
+		t.Skip("explicit isolated approval fixture opt-in required")
+	}
+	testNativeRequestSurvivesSilentBridgeDisconnect(t, false, true)
 }
 
 // Only the independent fixture owner answers, never the observing bridge.
-func testNativeRequestSurvivesSilentBridgeDisconnect(t *testing.T, question bool) {
+func testNativeRequestSurvivesSilentBridgeDisconnect(t *testing.T, question, bridgeAnswers bool) {
 	t.Helper()
-	method, tool, approval := "item/commandExecution/requestApproval", "exec_command", "untrusted"
+	method, tool, approval := "item/commandExecution/requestApproval", "exec_command", "on-request"
 	if question {
 		method, tool, approval = "item/tool/requestUserInput", "request_user_input", "never"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	daemon, err := Discover(ctx, "auto")
-	if err != nil || daemon.AppServerVersion != "0.162.0" {
+	if err != nil || (daemon.AppServerVersion != "0.162.0" && daemon.AppServerVersion != "0.162.1") {
 		t.Fatal("verified running daemon required")
 	}
 	cwd := t.TempDir()
@@ -96,7 +113,7 @@ func testNativeRequestSurvivesSilentBridgeDisconnect(t *testing.T, question bool
 		var item map[string]any
 		if n == 1 {
 			command := "'" + strings.ReplaceAll(script, "'", "'\"'\"'") + "'"
-			args, _ := json.Marshal(map[string]any{"cmd": command, "workdir": nil, "yield_time_ms": 1000, "max_output_tokens": 1000})
+			args, _ := json.Marshal(map[string]any{"cmd": command, "workdir": nil, "yield_time_ms": 1000, "max_output_tokens": 1000, "sandbox_permissions": "require_escalated", "justification": "Run the owned harmless bridge approval fixture."})
 			if question {
 				args, _ = json.Marshal(map[string]any{"questions": []map[string]any{{"id": "fixture-choice", "header": "Fixture", "question": "Choose an isolated test result.", "options": []map[string]string{{"label": "Continue", "description": "Finish the isolated test."}, {"label": "Stop", "description": "An unused test option."}}}}})
 			}
@@ -210,14 +227,37 @@ func testNativeRequestSurvivesSilentBridgeDisconnect(t *testing.T, question bool
 	if string(ownerRequest.RequestID) != string(bridgeRequest.RequestID) || requests.Load() != 1 {
 		t.Fatal("request not shared or silent bridge auto-resolved it")
 	}
-	bridge.Close()
+	if !bridgeAnswers {
+		bridge.Close()
+	}
 	var result any = map[string]string{"decision": "accept"}
 	if question {
 		result = map[string]any{"answers": map[string]any{"fixture-choice": map[string]any{"answers": []string{"Continue"}}}}
 	}
-	answer, _ := json.Marshal(map[string]any{"id": ownerRequest.RequestID, "result": result})
-	if err = owner.conn.Write(ctx, websocket.MessageText, answer); err != nil {
-		t.Fatal(err)
+	if bridgeAnswers {
+		req, e := ParseInteractiveRequest(bridgeRequest)
+		if e != nil {
+			t.Fatal(e)
+		}
+		decision, form := "", map[string]any{"q_0": "0"}
+		if !question {
+			decision, form = "accept", nil
+		}
+		b, e := BuildInteractiveResult(req, decision, form)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = bridge.RespondServerRequest(ctx, req, b); e != nil {
+			t.Fatal(e)
+		}
+		if e = bridge.RespondServerRequest(ctx, req, b); !errors.Is(e, ErrRequestStale) {
+			t.Fatal("native bridge allowed a duplicate response", e)
+		}
+	} else {
+		answer, _ := json.Marshal(map[string]any{"id": ownerRequest.RequestID, "result": result})
+		if err = owner.conn.Write(ctx, websocket.MessageText, answer); err != nil {
+			t.Fatal(err)
+		}
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()

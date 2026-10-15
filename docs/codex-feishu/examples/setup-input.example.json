@@ -5,6 +5,30 @@
   "identity": {"owner_open_id": null, "pair_owner": true, "operator_open_ids": [], "notification_open_ids": [], "group_member_open_ids": []},
   "discovery": {"allowed_roots": ["/absolute/path/to/projects"], "auto_group": true},
   "notifications": {"timezone": "Asia/Shanghai", "quiet_hours": ""},
+  "attachments": {
+    "enabled": false,
+    "receive_standalone": false,
+    "directory": "/absolute/path/to/codex-feishu/attachments",
+    "max_resources": 10,
+    "max_images": 5,
+    "max_image_bytes": 10485760,
+    "max_images_bytes": 20971520,
+    "max_file_bytes": 20971520,
+    "max_batch_bytes": 52428800,
+    "max_image_pixels": 40000000,
+    "disk_quota_bytes": 1073741824,
+    "download_workers": 2
+  },
+  "creation": {
+    "enabled": false,
+    "default_follow_mode": "group",
+    "entry_chat_ids": [],
+    "workgroup_chat_ids": [],
+    "allowed_roots": [],
+    "common_directories": [],
+    "topics_enabled": false,
+    "draft_ttl_seconds": 0
+  },
   "features": {"phase": "phase1", "creation": false},
   "service": {"mode": "systemd-user"},
   "verification": {"send_test_card_to_owner": false, "create_private_test_group": false, "create_codex_test_thread": false, "bind_test_group_and_thread": false}

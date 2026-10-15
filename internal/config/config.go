@@ -49,12 +49,14 @@ type Config struct {
 	Sync struct {
 		CardUpdateMinIntervalMS int `toml:"card_update_min_interval_ms"`
 	} `toml:"sync"`
-	Creation struct {
-		Enabled           bool     `toml:"enabled"`
-		DefaultFollowMode string   `toml:"default_follow_mode"`
-		WorkgroupChatIDs  []string `toml:"workgroup_chat_ids"`
-	} `toml:"creation"`
-	Storage struct {
+	Interactions struct {
+		Enabled      bool     `toml:"enabled"`
+		EnabledTypes []string `toml:"enabled_types"`
+	} `toml:"interactions"`
+	Attachments AttachmentConfig  `toml:"attachments" json:",omitzero"`
+	Creation    CreationConfig    `toml:"creation" json:"creation,omitzero"`
+	FilePreview FilePreviewConfig `toml:"file_preview" json:"file_preview,omitzero"`
+	Storage     struct {
 		DatabaseFile string `toml:"database_file"`
 	} `toml:"storage"`
 }
@@ -83,6 +85,25 @@ func (c Config) Validate() error {
 	if c.SchemaVersion != 1 {
 		return errors.New("unsupported config schema")
 	}
+	if err := c.ValidateAttachments(); err != nil {
+		return err
+	}
+	if err := c.ValidateCreation(); err != nil {
+		return err
+	}
+	if err := c.ValidateFilePreview(); err != nil {
+		return err
+	}
+	seenTypes := map[string]bool{}
+	for _, kind := range c.Interactions.EnabledTypes {
+		if seenTypes[kind] || kind != "command" && kind != "file" && kind != "network" && kind != "permissions" && kind != "question" && kind != "async_question" {
+			return errors.New("invalid or duplicate interactions.enabled_types")
+		}
+		seenTypes[kind] = true
+	}
+	if c.Interactions.Enabled && len(seenTypes) == 0 {
+		return errors.New("enabled interactions require explicit verified request types")
+	}
 	if c.Host.ID == "" || strings.Contains(c.Host.ID, "replace") {
 		return errors.New("persistent host.id required")
 	}
@@ -106,9 +127,6 @@ func (c Config) Validate() error {
 		if !ValidOpenID(id) {
 			return errors.New("invalid open_id or placeholder")
 		}
-	}
-	if c.Creation.Enabled {
-		return errors.New("phase2 creation is not implemented")
 	}
 	if c.Discovery.FirstRun != "baseline" {
 		return errors.New("first_run must be baseline")

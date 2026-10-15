@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "verified_at": "2026-10-10",
+  "verified_at": "2026-10-13",
   "source_research": "docs/research/feishu-m0-permissions-2026-10-10.md",
   "sdk": "github.com/larksuite/oapi-sdk-go/v3",
   "sdk_version": "v3.12.0",
@@ -9,9 +9,11 @@
     "im:message.group_at_msg:readonly",
     "im:chat:create",
     "im:chat:read",
+    "im:chat:update",
     "im:chat.members:read",
     "im:message:send_as_bot",
-    "im:message.reactions:write_only"
+    "im:message.reactions:write_only",
+    "im:resource:upload"
   ],
   "capabilities": [
     {
@@ -330,6 +332,99 @@
         "interactive_card_component"
       ],
       "verification_method": "Click an actual card action and observe its callback and response within three seconds."
+    },
+    {
+      "id": "upload_message_images",
+      "required": false,
+      "api": [
+        "POST /open-apis/im/v1/images"
+      ],
+      "any_of_permissions": [
+        "im:resource:upload",
+        "im:resource"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/server-docs/im-v1/image/create"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "valid_tenant_access_token",
+        "image_nonempty_and_within_limits"
+      ],
+      "verification_method": "Upload a supplied test image once and render its confirmed image_key in a human card; verify actual client preview separately."
+    },
+    {
+      "id": "sync_group_name",
+      "required": false,
+      "api": [
+        "GET /open-apis/im/v1/chats/:chat_id",
+        "PUT /open-apis/im/v1/chats/:chat_id"
+      ],
+      "any_of_permissions": [
+        "im:chat",
+        "im:chat:update"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/chat/update"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "bot_is_in_chat",
+        "bound_group_owner_verified",
+        "group_edit_permission"
+      ],
+      "verification_method": "Freeze a bound group name update before PUT; GET confirms the exact title without modifying description, owner or membership. Unknown responses are read back without blindly resending."
+    },
+    {
+      "id": "download_message_resources",
+      "required": false,
+      "api": [
+        "GET /open-apis/im/v1/messages/:message_id/resources/:resource_key"
+      ],
+      "any_of_permissions": [
+        "im:message",
+        "im:message:readonly",
+        "im:message.history:readonly"
+      ],
+      "source": [
+        "docs/research/feishu-inbound-resources-2026-10-15.md",
+        "https://open.feishu.cn/document/server-docs/im-v1/message/get-2.md"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "valid_tenant_access_token",
+        "message_and_resource_are_visible_to_bot"
+      ],
+      "verification_method": "Download a known message resource with the message resource endpoint."
+    },
+    {
+      "id": "receive_standalone_attachments",
+      "required": false,
+      "api": [
+        "im.message.receive_v1"
+      ],
+      "any_of_permissions": [
+        "im:message.group_msg"
+      ],
+      "source": [
+        "docs/research/feishu-inbound-resources-2026-10-15.md",
+        "https://open.feishu.cn/document/server-docs/im-v1/message/events/receive.md"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "event_subscribed",
+        "bound_task_group",
+        "operator_filter"
+      ],
+      "verification_method": "Receive an actual standalone image or file event in a bound task group and verify its operator and message identity."
     }
   ]
 }

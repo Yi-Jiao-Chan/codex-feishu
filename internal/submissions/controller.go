@@ -4,6 +4,7 @@ package submissions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 
@@ -21,7 +22,17 @@ type Native interface {
 	Turns(context.Context, string) ([]codexclient.Turn, error)
 }
 
+// InputNative is optional so existing Native fixtures and integrations can
+// keep the legacy text methods while deployments add native multipart input.
+type InputNative interface {
+	AddInput(context.Context, string, json.RawMessage, string) (codexclient.Queued, error)
+	SteerInput(context.Context, string, string, json.RawMessage, string) error
+}
+
 var _ Native = (*codexclient.Client)(nil)
+var _ InputNative = (*codexclient.Client)(nil)
+
+var errInputNativeUnsupported = errors.New("native multipart input unsupported")
 
 // Error deliberately omits native error messages and input content. Cause is
 // retained for programmatic classification, never concatenated into log text.
@@ -54,6 +65,9 @@ func (c *Controller) valid() error {
 // write lease, so a later stage cannot reuse a grant that covered an earlier
 // native call. The lease stays held until dispatch has persisted its outcome.
 func (c *Controller) claimAndDispatch(ctx context.Context, n store.Submission, actionID, stage string) (bool, error) {
+	if err := c.validateInput(n, stage); err != nil {
+		return false, err
+	}
 	leaseCtx := ctx
 	release := func() {}
 	if c.BeginWrite != nil {
@@ -198,6 +212,9 @@ func (c *Controller) Tick(ctx context.Context) error {
 		return &Error{err}
 	}
 	for _, n := range inputs {
+		if n.State == "collecting" {
+			break
+		}
 		if n.State != "received" {
 			continue
 		}
@@ -224,6 +241,51 @@ func (c *Controller) Tick(ctx context.Context) error {
 	return nil
 }
 
+// SubmitInitial is used only by the durable creation workflow, before another
+// client can resume/read a not-yet-persisted rollout. It sends queue/add on the
+// creating connection, with the ordinary receipt/attempt machinery. Once an
+// attempt exists, only native queue/history evidence can resolve an unknown.
+func (c *Controller) SubmitInitial(ctx context.Context, receipt string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.valid(); err != nil {
+		return err
+	}
+	if c.Native == nil {
+		return &Error{errors.New("native connection unavailable")}
+	}
+	i, err := c.Store.BridgeCreationThread(ctx, c.HostID, c.AppID, c.ThreadID)
+	if err != nil || i.ReceiptID != receipt {
+		return store.ErrConflict
+	}
+	if err = c.Store.StageSubmissions(ctx, c.scope()); err != nil {
+		return err
+	}
+	if !c.recovered {
+		if err = c.Store.RecoverSubmissionDispatches(ctx, c.scope()); err != nil {
+			return err
+		}
+		c.recovered = true
+	}
+	n, err := c.Store.Submission(ctx, c.scope(), receipt)
+	if err != nil {
+		return err
+	}
+	if n.State == "received" {
+		stage, err := c.Store.InitialCreationAddStage(ctx, c.HostID, c.AppID, c.ThreadID, receipt)
+		if err != nil {
+			return err
+		}
+		_, err = c.claimAndDispatch(ctx, n, "", stage)
+		return err
+	}
+	snap, err := c.snapshot(ctx)
+	if err != nil {
+		return &Error{err}
+	}
+	return c.reconcile(ctx, snap)
+}
+
 type historyInput struct{ TurnID, ItemID string }
 
 type snapshot struct {
@@ -240,7 +302,11 @@ func (c *Controller) snapshot(ctx context.Context) (snapshot, error) {
 	if _, err := c.Store.SubmissionBinding(ctx, c.scope()); err != nil {
 		return snapshot{}, err
 	}
-	queue, err := c.Native.Queue(ctx, c.ThreadID)
+	readQueue := c.Native.Queue
+	if metadata, ok := c.Native.(codexclient.QueueStateReader); ok {
+		readQueue = metadata.QueueState
+	}
+	queue, err := readQueue(ctx, c.ThreadID)
 	if err != nil {
 		return snapshot{}, err
 	}
@@ -348,7 +414,7 @@ func (c *Controller) reconcile(ctx context.Context, snap snapshot) error {
 		if a.State != "unknown" {
 			continue
 		}
-		if a.ActionID == "" && a.Stage == "add" {
+		if a.ActionID == "" && store.IsQueueAddStage(a.Stage) {
 			unknownAdds[a.ReceiptID] = a
 		} else if a.ActionID != "" {
 			unknownActions[a.ActionID] = a
@@ -598,10 +664,22 @@ func (c *Controller) dispatch(ctx context.Context, a store.SubmissionAttempt, n 
 	}
 	var err error
 	remoteID, deleted := "", -1
-	switch a.Stage {
+	stage := a.Stage
+	if store.IsQueueAddStage(stage) {
+		stage = "add"
+	}
+	switch stage {
 	case "add", "restore":
 		var q codexclient.Queued
-		q, err = c.Native.Add(ctx, c.ThreadID, n.Body, a.ClientID)
+		if n.InputJSON != "" {
+			inputNative, ok := c.Native.(InputNative)
+			if !ok {
+				return errInputNativeUnsupported
+			}
+			q, err = inputNative.AddInput(ctx, c.ThreadID, json.RawMessage(n.InputJSON), a.ClientID)
+		} else {
+			q, err = c.Native.Add(ctx, c.ThreadID, n.Body, a.ClientID)
+		}
 		remoteID = q.ID
 		if err == nil && remoteID == "" {
 			err = errors.New("native add response lacks queue identity")
@@ -616,7 +694,15 @@ func (c *Controller) dispatch(ctx context.Context, a store.SubmissionAttempt, n 
 			}
 		}
 	case "steer":
-		err = c.Native.Steer(ctx, c.ThreadID, a.ExpectedTurnID, n.Body, a.ClientID)
+		if n.InputJSON != "" {
+			inputNative, ok := c.Native.(InputNative)
+			if !ok {
+				return errInputNativeUnsupported
+			}
+			err = inputNative.SteerInput(ctx, c.ThreadID, a.ExpectedTurnID, json.RawMessage(n.InputJSON), a.ClientID)
+		} else {
+			err = c.Native.Steer(ctx, c.ThreadID, a.ExpectedTurnID, n.Body, a.ClientID)
+		}
 	case "interrupt":
 		err = c.Native.Interrupt(ctx, c.ThreadID, a.ExpectedTurnID)
 	case "start":
@@ -640,4 +726,17 @@ func (c *Controller) dispatch(ctx context.Context, a store.SubmissionAttempt, n 
 		return err
 	}
 	return nil
+}
+
+// validateInput runs before ClaimSubmissionAttempt so malformed or unsupported
+// stored multipart inputs do not create a durable dispatch journal or reach the
+// native connection. Legacy receipts with no InputJSON retain the old path.
+func (c *Controller) validateInput(n store.Submission, stage string) error {
+	if n.InputJSON == "" || !store.IsQueueAddStage(stage) && stage != "restore" && stage != "steer" {
+		return nil
+	}
+	if _, ok := c.Native.(InputNative); !ok {
+		return errInputNativeUnsupported
+	}
+	return codexclient.ValidateInput(json.RawMessage(n.InputJSON))
 }

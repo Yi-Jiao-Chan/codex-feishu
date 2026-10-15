@@ -14,6 +14,68 @@ import (
 // IDs are UUIDs, so this reserved UI namespace cannot identify a native turn.
 func QueueCardKey(receiptID string) string { return "ui:queue:" + receiptID }
 
+type submissionCardIdentity struct{ key, parent string }
+
+// Keep existing queue journals authoritative, including ambiguous deliveries.
+// New attachment submissions retain their original card and immutable reply
+// parent; a later instruction receipt must not change that physical relation.
+func submissionCardIdentityTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, n Submission) (submissionCardIdentity, error) {
+	identity := submissionCardIdentity{QueueCardKey(n.ID), n.ReplyID()}
+	if _, err := readMirror(ctx, tx, scope.HostID, scope.ThreadID, identity.key); err == nil {
+		return identity, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return identity, err
+	}
+	var count int
+	var batch, parent string
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(MIN(batch_id),''),COALESCE(MIN(first_message_id),'') FROM attachment_batches
+ WHERE host_id=? AND app_id=? AND thread_id=? AND chat_id=? AND receipt_id=? AND state<>'cleared'`, scope.HostID, scope.AppID, scope.ThreadID, n.ChatID, n.ID).Scan(&count, &batch, &parent)
+	if err != nil {
+		return identity, err
+	}
+	if count > 1 || count == 1 && parent == "" {
+		return identity, ErrConflict
+	}
+	if count == 1 {
+		identity = submissionCardIdentity{AttachmentCardKey(batch), parent}
+	}
+	return identity, nil
+}
+
+func validSubmissionCard(m Mirror, identity submissionCardIdentity) bool {
+	return m.Key == identity.key && m.Kind == "progress" && m.TurnID == identity.key && m.ParentMessageID == identity.parent && m.ParentKey == "" && !m.Retired
+}
+
+// SubmissionCard resolves and validates the one authoritative UI document in
+// the same snapshot as its confirmed binding and receipt. Callers additionally
+// compare its nonempty RemoteID to the authenticated callback's message ID.
+func (s *Store) SubmissionCard(ctx context.Context, scope SubmissionScope, receiptID string) (Mirror, error) {
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Mirror{}, err
+	}
+	defer tx.Rollback()
+	if _, err := submissionBinding(ctx, tx, scope); err != nil {
+		return Mirror{}, err
+	}
+	n, err := readSubmission(ctx, tx, scope, receiptID)
+	if err != nil {
+		return Mirror{}, err
+	}
+	identity, err := submissionCardIdentityTx(ctx, tx, scope, n)
+	if err != nil {
+		return Mirror{}, err
+	}
+	m, err := readMirror(ctx, tx, scope.HostID, scope.ThreadID, identity.key)
+	if err != nil {
+		return Mirror{}, err
+	}
+	if !validSubmissionCard(m, identity) {
+		return Mirror{}, ErrConflict
+	}
+	return m, tx.Commit()
+}
+
 // StageQueueCard reads current receipt state inside the same short transaction
 // as its card mutation. A racing callback cannot publish obsolete buttons. Idle
 // inputs need only reactions; create a card when queued, uncertain or failed,
@@ -47,7 +109,20 @@ func stageQueueCardTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, re
 	if err != nil {
 		return err
 	}
-	key := QueueCardKey(n.ID)
+	if n.State == "failed" || n.State == "collecting" {
+		var localBatch int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM attachment_batches WHERE receipt_id=? AND state IN ('sealed','failed') AND NOT EXISTS(SELECT 1 FROM submission_attempts WHERE receipt_id=?)`, receiptID, receiptID).Scan(&localBatch); err != nil {
+			return err
+		}
+		if localBatch != 0 {
+			return nil
+		} // The mutable attachment card owns pre-submit failures/retries.
+	}
+	identity, err := submissionCardIdentityTx(ctx, tx, scope, n)
+	if err != nil {
+		return err
+	}
+	key := identity.key
 	old, err := readMirror(ctx, tx, scope.HostID, scope.ThreadID, key)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -87,12 +162,12 @@ func stageQueueCardTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, re
 	}
 	terminal := n.State == "consumed" || n.State == "steered" || n.State == "removed" || n.State == "failed"
 	if mirrorMissing {
-		_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,parent_message_id) VALUES(?,?,?,?,'progress',?,?,?)`, scope.HostID, scope.ThreadID, key, key, card, terminal, n.MessageID)
+		_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,parent_message_id) VALUES(?,?,?,?,'progress',?,?,?)`, scope.HostID, scope.ThreadID, key, key, card, terminal, identity.parent)
 		if err == nil {
 			_, err = tx.ExecContext(ctx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, scope.HostID, scope.ThreadID, key)
 		}
 	} else {
-		if old.Kind != "progress" || old.TurnID != key || old.ParentMessageID != n.MessageID || old.ParentKey != "" {
+		if !validSubmissionCard(old, identity) {
 			return ErrConflict
 		}
 		if old.Terminal && !terminal {

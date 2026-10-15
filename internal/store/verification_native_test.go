@@ -55,7 +55,7 @@ func TestVerificationNativeMigrationFromNineteenPreservesJournals(t *testing.T) 
 	if err := s.Finish(ctx, "m0-retained", "confirmed", "om_m0"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`DROP TABLE verification_native; PRAGMA user_version=19`); err != nil {
+	if _, err := s.DB.Exec(`DROP TABLE verification_native; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; ALTER TABLE create_intents DROP COLUMN description; PRAGMA user_version=19`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {

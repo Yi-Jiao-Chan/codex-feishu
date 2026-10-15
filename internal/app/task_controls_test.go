@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/store"
 	"codex-feishu/internal/submissions"
@@ -355,9 +356,9 @@ func TestTaskContinueWithoutProcessPreparesUnboundAndReadsActualQueue(t *testing
 	if m.ParentKey == "" || m.ParentMessageID != "" || m.TurnID != "original-turn" || !strings.Contains(m.Card, `"action":"continue"`) || f.view(t).QueueCount != 1 {
 		t.Fatal("eligible unbound stopped turn did not stage its original-parent control")
 	}
-	reads, card := f.native.reads, f.controls.Render("thread", "original-turn", "interrupted", "working")
+	reads, card := f.native.reads, f.controls.Render("thread", "original-turn", "interrupted", cards.ProgressView{Body: "working", ElapsedSeconds: -1})
 	for i := 0; i < 5; i++ {
-		if got := f.controls.Render("thread", "original-turn", "interrupted", "working"); got != card {
+		if got := f.controls.Render("thread", "original-turn", "interrupted", cards.ProgressView{Body: "working", ElapsedSeconds: -1}); got != card {
 			t.Fatal("pure render changed without preparation")
 		}
 	}
@@ -371,7 +372,7 @@ func TestTaskContinueWithoutProcessPreparesUnboundAndReadsActualQueue(t *testing
 	for _, queue := range [][]codexclient.Queued{nil, {{ID: "duplicate"}, {ID: "duplicate"}}, {{}}} {
 		f.native.queue = queue
 		f.prepare(t, 201)
-		if strings.Contains(f.controls.Render("thread", "original-turn", "interrupted", ""), `"tag":"button"`) {
+		if strings.Contains(f.controls.Render("thread", "original-turn", "interrupted", cards.ProgressView{ElapsedSeconds: -1}), `"tag":"button"`) {
 			t.Fatal("empty or incomplete App queue exposed Continue")
 		}
 	}
@@ -421,6 +422,17 @@ func TestTaskWaitingOnlyReturnsToAppAndConcurrentCallbackReusesAction(t *testing
 	f.tick(t)
 	if len(f.native.interrupts) != 1 {
 		t.Fatal("concurrent task replay dispatched native stop more than once")
+	}
+}
+
+func TestTaskTypedProgressPreservesRecordsWhileMismatchedStatusSuppressesControls(t *testing.T) {
+	f := newTaskFixture(t, true, "inProgress")
+	f.prepare(t, 200)
+	reads := f.native.reads
+	progress := cards.ProgressView{Records: []cards.ProgressRecord{{Text: "first public action"}, {Text: "second public action"}}, ElapsedSeconds: 3}
+	card := f.controls.Render("thread", "original-turn", "completed", progress)
+	if !strings.Contains(card, "正在核验任务状态") || strings.Contains(card, `"tag":"button"`) || !strings.Contains(card, "first public action") || !strings.Contains(card, "second public action") || f.native.reads != reads {
+		t.Fatal("typed process history bypassed stale-state controls or performed RPC")
 	}
 }
 

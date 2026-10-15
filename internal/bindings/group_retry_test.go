@@ -23,6 +23,9 @@ func TestGroupManagerDefersBeforeAttachThenKeepsOriginalRequest(t *testing.T) {
 		} else if uuid != id || name != "original" || owner != "owner" || len(members) != 1 {
 			t.Error("retry changed frozen request")
 		}
+		if g.description != "工作目录：/project" {
+			t.Error("retry changed frozen working-directory description")
+		}
 		if g.calls.Load() == 1 {
 			at = 4000
 			return "", &feishu.RateLimited{RetryAfter: 5 * time.Second}
@@ -42,6 +45,7 @@ func TestGroupManagerDefersBeforeAttachThenKeepsOriginalRequest(t *testing.T) {
 	}
 	defer reopened.Close()
 	m.Store = reopened
+	m.Native.(*nativeGroupFixture).cwd = "/different/worktree"
 	if err := m.Store.RecoverGroupDispatches(ctx, m.HostID); err != nil {
 		t.Fatal(err)
 	}

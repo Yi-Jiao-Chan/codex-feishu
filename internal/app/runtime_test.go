@@ -89,6 +89,10 @@ type runtimeGateway struct {
 	createStarted, releaseCreate chan struct{}
 }
 
+func (g *runtimeGateway) CreateGroupWithDescription(ctx context.Context, name, owner string, members []string, uuid, _ string) (string, error) {
+	return g.CreateGroup(ctx, name, owner, members, uuid)
+}
+
 func (g *runtimeGateway) CreateGroup(ctx context.Context, _, owner string, members []string, _ string) (string, error) {
 	ownerIncluded := false
 	for _, id := range members {

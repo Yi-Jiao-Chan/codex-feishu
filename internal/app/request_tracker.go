@@ -304,7 +304,10 @@ func (t *RequestTracker) DispatchOne(ctx context.Context, thread string) (bool, 
 	if err := ctx.Err(); err != nil {
 		return true, err
 	}
-	remote, sendErr := t.Gateway.ReplyCard(ctx, a.ParentMessageID, a.Card, a.ID)
+	remote, sendErr := replyFollowAttempt(ctx, t.Store, t.Gateway, a.ID, a.HostID, a.ThreadID, a.ChatID, a.ParentMessageID, a.Card)
+	if errors.Is(sendErr, messages.ErrTopicRootIncomplete) {
+		return true, t.Store.DeferRequestReminder(ctx, a.ID, max(t.now().UnixMilli(), a.CreatedAtMS), 1000)
+	}
 	var limited *feishu.RateLimited
 	if errors.As(sendErr, &limited) {
 		at := max(a.CreatedAtMS, t.now().UnixMilli())
@@ -316,7 +319,7 @@ func (t *RequestTracker) DispatchOne(ctx context.Context, thread string) (bool, 
 		state = "unknown"
 		remote = ""
 		var rejected *feishu.Rejected
-		if errors.As(sendErr, &rejected) {
+		if errors.As(sendErr, &rejected) || errors.Is(sendErr, messages.ErrTopicRootGone) {
 			state = "rejected"
 		}
 	}

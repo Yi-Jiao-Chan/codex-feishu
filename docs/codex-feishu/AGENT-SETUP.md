@@ -1,6 +1,6 @@
 # Agent 一键配置指南：Codex × 飞书
 
-版本：2026-10-13 / 配置 schema v1。对象：用户和负责配置的 Agent。
+版本：2026-10-15 / 配置 schema v1。对象：用户和负责配置的 Agent。
 
 本指南自包含，目标是在用户提供少量信息后，由 Agent 检测环境、生成配置、安装用户服务并验证。**一期候选服务已实际部署，独立配置 Agent 已验证首次安装、重跑和卸载保留数据；私聊配对也已通过，完整一期发布仍待验收。本文安装流程是正式发布契约。** Agent 必须检查实际 version 的 `phase1_released` 与具体 capabilities：开发版可做 plan，正式 apply / install / start 会拒绝。2026-10-13 的配对观察属于指定候选构建，当前包仍保留 `setup_pair_ui_verified=false`，不能凭本页把另一个包提升为已验收发布。status 实时健康只对提供管理通道的新版运行实例有效，旧 M0 返回只读快照和 pending。命令存在不代表可正式安装；缺少已验收版本时完成只读环境检查并报告前置条件，不能假装配置完成。开发任务另见开发手册，不在一次配置任务里默认编写整个产品。
 
@@ -65,7 +65,7 @@ development 包的 `phase1_released=false` 和 pending 验收模板不能改成 
 
 此路径用于发布前验证配置与用户服务命令，仍是未发布版本。缺候选能力的旧二进制不能使用它；不能改发布标志、伪造验收结果或绕过原配置事务。继续完成 B–E 的身份、应用、目录与通知收集；配对和测试消息分别按已有授权处理，候选安装不授权创建测试群或发送输入。
 
-先只读确认本应用是否有运行中的桥。候选模式不接管接收器、不自动停止旧桥；同一应用不能并行运行两个实例。用户尚未授权服务切换时保留现有桥，仅准备计划，真实安装联调稍后进行。指定受限的候选配置和数据库绝对路径（目录 0700）；数据库只能不存在或为私有的准确 schema 21。已有配置的数据库必须与显式路径一致，不能复用或迁移旧 M0/schema 1，也不能使用其他旧 schema。
+先只读确认本应用是否有运行中的桥。候选模式不接管接收器、不自动停止旧桥；同一应用不能并行运行两个实例。用户尚未授权服务切换时保留现有桥，仅准备计划，真实安装联调稍后进行。指定受限的候选配置和数据库绝对路径（目录 0700）；数据库只能不存在或为私有且与所选二进制 `database_schema` 一致（当前 28）。已有配置的数据库必须与显式路径一致；候选 CLI 不自动迁移，旧候选需先按已审查方案备份迁移，不能手改 user_version 或复用旧 M0/schema 1。
 
 将 `cfb_database` 设为已经核验的数据库绝对路径，和后文的 `cfb_cli`、`cfb_intake`、`cfb_config` 一起使用。替换 E 的计划命令和 F 中对应三条写命令为：
 
@@ -102,11 +102,24 @@ development 包的 `phase1_released=false` 和 pending 验收模板不能改成 
 
 ## C. 飞书后台一次性准备
 
+### 可选：本地文件网页预览
+
+仅在用户要求时启用 `file_preview`；这是桥自身的只读 HTTP 服务，无需云盘上传权限。必须单独取得具体项目目录的授权，不从 discovery 的广泛范围推断。先用 `file-preview init-secret --output /absolute/private/file-preview.key --json` 在已有私有目录创建口令；不要在配置聊天、argv 或普通诊断中输出口令。用户可自行运行 `file-preview show-secret --config PATH` 显式打印口令，该命令拒绝 JSON 模式；也可由部署所有者私聊机器人发送 `/preview` 取得口令，群内只提示转私聊。该敏感回复保存在私有命令 outbox 和飞书私聊中。
+
+setup 输入可提供 `file_preview` 对象：`enabled=true`、`base_url`（用户设备可访问的 HTTP/HTTPS origin）、`listen_address`（IP 加端口）、`allowed_roots`、`secret_file`；`directory` 默认数据库旁 `file-preview`，单文件上限默认 1 MiB。IP 直连需显式监听可达网卡，默认 `127.0.0.1:8787` 只可本机访问。HTTP 由所用网络承载口令与内容，需要传输加密时接 HTTPS。
+
+沿用既有 stop→plan/apply→install/start 规则，不并行启动第二个桥。首次浏览器打开需输入私有口令；`file-preview link --config PATH --file /absolute/project/report.md --json` 可登记指定文件并返回 URL，不发送消息。doctor 的本地检查不能代替真实飞书点击、手机网络和浏览器登录验收。
+
 若应用已可用，按实际检查结果跳过已完成项。未完成时给用户一张具体操作清单：
 
 1. 在飞书开放平台创建企业自建应用，启用机器人，取得 App ID 和 Secret。
 2. 配置长连接接收事件，添加 `im.message.receive_v1` 和 `card.action.trigger`。
 3. 按发布包 `compat/feishu-permissions.json` 的精确权限 ID 申请：私聊收消息、群内 @ 收消息、发送/回复/更新、创建群和所需成员管理、读取核验所需群/成员/自身投递记录及原消息 reaction 写权限 `im:message.reactions:write_only`；二期另含话题能力。
+
+   图片预览需要 tenant 权限 `im:resource:upload`（或更宽的 `im:resource`）。缺失时正文和附件清单仍同步，图片提示回 App 查看；不将本地路径当下载 URL。新群在创建请求中写入工作目录，无需另加更新权限；给既有群补目录则需要 `im:chat:update`（或 `im:chat`），并需核验群编辑权限。只申请上述功能需要的权限，发布版本后用 doctor 检查当前已授予项。
+
+   群名与 App 标题同步需要 `im:chat:update`（或已授权的 `im:chat`），并受群内编辑权限限制。当前工具仅更新已绑定群的 name，工作目录描述、群主和成员保持原值；缺少该可选能力不会阻断消息同步。
+
 4. 发布版本，完成组织需要的审批，设置应用可见范围包含本人及计划使用的群成员。
 5. 在飞书找到机器人并打开单聊。需要群内收发时，机器人须在目标群中。
 
@@ -168,6 +181,36 @@ Agent 将以下变量设为验证过的绝对路径/计划 ID；它们是任务�
 计划应列明：安装版本与兼容性、实际共享端点、本人身份、允许目录、自动建群、提醒/quiet、配置/密钥引用/数据库位置、将管理的用户服务和允许的测试。
 
 向用户简短展示计划后，若任务已有上述配置授权继续执行；若用户只要求计划，到此交付。占位值、缺身份、未验收版本、权限 pending 不可被勾成通过。
+
+### 飞书内新建任务的配置增量
+
+创建功能已接入候选实现，默认关闭，真实飞书 / App 完整验收仍见 [09 创建任务](09-feishu-task-creation.md)；不能因 `features.phase="phase2"` 自动开启。用户已要求启用时，先核对二进制 `capabilities.feishu_task_creation=true`，当前原生创建只验证共享 daemon **0.162.1**。不启动另一套 daemon，不修改全局 Codex 模型、审批或沙箱配置。
+
+目录范围与 discovery 独立收集。询问允许在哪些远程目录新建任务；用户明确选择整台主机时可使用 `allowed_roots=["/"]`。范围根和浏览父级只需可读、可进入，最终执行目录仍须存在、可读写且可进入。省略可靠默认目录时，创建卡要求用户选择；不取服务进程 cwd。入口群与可承载话题的工作群分别配置，只在需要相应入口时收集 chat_id；专属群仍是默认跟进方式。
+
+在上述向导 JSON 中增补明确的 `creation` 对象，例如：
+
+```json
+{
+  "features": {"phase": "phase2", "creation": true},
+  "creation": {
+    "enabled": true,
+    "default_follow_mode": "group",
+    "entry_chat_ids": [],
+    "workgroup_chat_ids": [],
+    "allowed_roots": ["/absolute/allowed/project-root"],
+    "common_directories": [],
+    "topics_enabled": false,
+    "draft_ttl_seconds": 1800
+  }
+}
+```
+
+这是原输入的增量，保留其余身份、凭据引用、数据库和规则。省略整个 `creation` 对象会保留原配置；显式对象为完整替换。开启 topic 时必须有已授权 `workgroup_chat_ids`，并分别验证同群两个话题及根消息撤回后的停止投递。私聊 `/new 任务内容` 会产生预填草稿，选择目录后默认创建专属群；绑定任务群普通 @ 继续原线程，`/new` 才建新任务。
+
+创建卡组合最近 / 项目速选、项目名 / 绝对路径搜索与原生目录面板。所有入口复用既有飞书长连接，面板包含路径导航、当前层筛选与分页，不需要额外域名、HTTP 服务或 OAuth 配置。选择只回填原草稿；原创建者在主卡确认后才创建任务。搜索结果页先选用目录再回主卡，避免误用旧目录。
+
+候选升级到 schema 28 前，停止准确的桥进程并保存配置、原 unit、旧二进制及包含 WAL 的一致数据库备份；不停止共享 daemon，不运行两个同应用接收器。已有附件及绑定必须保留。升级与真实客户端验证都遵循既有候选授权和 F/G 流程，不能把开发能力标志当成正式发布或 UI 通过。
 
 ## F. 应用并启动
 

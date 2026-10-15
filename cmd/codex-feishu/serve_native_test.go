@@ -117,7 +117,7 @@ func (g *serveVersionGateway) Listen(ctx context.Context, _ func(context.Context
 	<-ctx.Done()
 	return ctx.Err()
 }
-func (g *serveVersionGateway) CreateGroup(context.Context, string, string, []string, string) (string, error) {
+func (g *serveVersionGateway) CreateGroupWithDescription(context.Context, string, string, []string, string, string) (string, error) {
 	g.groups.Add(1)
 	return "", errors.New("unexpected group mutation")
 }
@@ -169,6 +169,23 @@ func TestServeNativeFactoryRejectsInitialUnverifiedBeforeConnect(t *testing.T) {
 	if native != nil || err == nil || !strings.Contains(err.Error(), "verified compatibility list") || discovers.Load() != 1 || dials.Load() != 0 {
 		t.Fatal("initial incompatible daemon reached a native connection or lost rejection")
 	}
+}
+
+func TestServeNativeFactoryAcceptsVerifiedDotOneWithLocalUnixWebSocket(t *testing.T) {
+	root := t.TempDir()
+	socket := newServeVersionSocket(t, root)
+	var dials atomic.Int32
+	factory := serveNativeConnect("local-cli", func(context.Context, string) (codexclient.Daemon, error) {
+		return codexclient.Daemon{Status: "running", AppServerVersion: "0.162.1", SocketPath: socket.path}, nil
+	}, func(ctx context.Context, path string) (*codexclient.Client, error) {
+		dials.Add(1)
+		return codexclient.Connect(ctx, path)
+	})
+	native, err := factory(context.Background())
+	if err != nil || native == nil || dials.Load() != 1 || socket.accepted.Load() != 1 {
+		t.Fatalf("verified 0.162.1 was not accepted by the local Unix WebSocket gate: native=%v err=%v dials=%d accepted=%d", native != nil, err, dials.Load(), socket.accepted.Load())
+	}
+	native.Close()
 }
 
 func TestServeNativeFactoryRechecksVersionAfterDisconnectWithoutNativeWrites(t *testing.T) {

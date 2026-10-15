@@ -18,8 +18,9 @@ CREATE TABLE IF NOT EXISTS request_reminder_throttles (
 );
 `
 
-// DeferRequestReminder requires an explicit rate-limit rejection proving this
-// attempt was not accepted. Resolution arriving during its RPC suppresses the
+// DeferRequestReminder requires an explicit rate-limit rejection or local
+// preflight evidence proving the write API was never called. Resolution
+// arriving during its RPC suppresses the
 // reminder; rejected payloads remain frozen, and only originally selected
 // recipients reopen eligibility for a fresh policy/membership check.
 func (s *Store) DeferRequestReminder(ctx context.Context, id string, nowMS, minimumDelayMS int64) error {

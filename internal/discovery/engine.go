@@ -55,7 +55,13 @@ func (e *Engine) Begin(ctx context.Context) (bool, error) {
 // ObserveBirth is invoked for thread/started while snapshot requests are running.
 // It does not trust thin notification fields as eligibility metadata or input.
 func (e *Engine) ObserveBirth(ctx context.Context, t codexclient.Thread) error {
-	return e.Store.ObserveCandidate(ctx, e.HostID, t.ID, t.CWD, t.CreatedAt, "birth")
+	if err := e.Store.ObserveCandidate(ctx, e.HostID, t.ID, t.CWD, t.CreatedAt, "birth"); err != nil {
+		return err
+	}
+	if t.BridgeCreated() {
+		return e.Store.Exclude(ctx, e.HostID, t.ID, "bridge_creation")
+	}
+	return nil
 }
 
 // Snapshot is intentionally separate from Begin: the composition root must keep

@@ -40,7 +40,8 @@ func SplitMessage(role, source, body string, maxCardBytes int) ([]Segment, error
 	for digits := 1; ; digits++ {
 		counter := strings.Repeat("9", digits)
 		budgetSource := source + " · 第 " + counter + " / 共 " + counter + " 段"
-		parts, err := splitMessageParts(body, boundaries, len(Message(role, budgetSource, "")), maxCardBytes)
+		render := func(body string) string { return Message(role, budgetSource, body) }
+		parts, err := splitMessageParts(body, boundaries, render, maxCardBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -117,15 +118,16 @@ func messageBoundaries(body string) []messageBoundary {
 	return points
 }
 
-func splitMessageParts(body string, points []messageBoundary, overhead, limit int) ([]Segment, error) {
+func splitMessageParts(body string, points []messageBoundary, render func(string) string, limit int) ([]Segment, error) {
 	var parts []Segment
+	overhead := len(render(""))
 	for start := 0; start < len(points)-1; {
 		prefix := ""
 		if f := points[start].fence; f != nil {
 			prefix = f.opener + "\n"
 		}
 		base := overhead + markdownJSONBytes(prefix)
-		last, line, paragraph := start, start, start
+		last := start
 		for end := start + 1; end < len(points); end++ {
 			size := base + points[end].bytes - points[start].bytes
 			if size > limit {
@@ -138,26 +140,53 @@ func splitMessageParts(body string, points []messageBoundary, overhead, limit in
 				continue
 			}
 			last = end
-			if points[end].kind >= 1 {
-				line = end
+		}
+		// The single-Markdown estimate is only a search window. Native body
+		// blocks have their own JSON overhead, and safe quote syntax can cost
+		// less than the estimate. Always size the real renderer, including at
+		// least the next atomic boundary when the estimate finds no candidate.
+		if last == start {
+			last = start + 1
+		}
+		display := func(end int) string {
+			return prefix + body[points[start].offset:points[end].offset] + messageFenceSuffix(body, points[end])
+		}
+		fits := func(end int) bool { return len(render(display(end))) <= limit }
+		if !fits(last) {
+			// Refining a window uses logarithmically many complete renders,
+			// rather than serializing the card once per rune.
+			low, high, best := start+1, last-1, start
+			for low <= high {
+				mid := low + (high-low)/2
+				if fits(mid) {
+					best, low = mid, mid+1
+				} else {
+					high = mid - 1
+				}
 			}
-			if points[end].kind == 2 {
-				paragraph = end
-			}
+			last = best
 		}
 		if last == start {
 			return nil, fmt.Errorf("card byte limit %d cannot hold text or fence at byte %d", limit, points[start].offset)
 		}
 		end := last
 		if last != len(points)-1 {
-			if paragraph > start {
-				end = paragraph
-			} else if line > start {
-				end = line
+			// Keep paragraph/line preference, checking the selected boundary
+			// too: a display-only fence wrapper changes its serialized cost.
+			for _, kind := range []int{2, 1} {
+				for candidate := last; candidate > start; candidate-- {
+					if points[candidate].kind >= kind && fits(candidate) {
+						end = candidate
+						break
+					}
+				}
+				if end != last || points[end].kind >= kind {
+					break
+				}
 			}
 		}
 		raw := body[points[start].offset:points[end].offset]
-		parts = append(parts, Segment{Raw: raw, Body: prefix + raw + messageFenceSuffix(body, points[end])})
+		parts = append(parts, Segment{Raw: raw, Body: display(end)})
 		start = end
 	}
 	if len(parts) == 0 {

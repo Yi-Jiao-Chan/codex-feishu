@@ -10,6 +10,16 @@ queue/add 的本地验证行为是空闲自动执行、忙时排队。成功响�
 
 收据与原生执行队列分开：SQLite 保存操作和核验状态，执行顺序以 Codex 原生 queue 为准。queue/changed 到来后分页读完整队列，显示真实序号，不能把“当前桥第几条”当整体队列位置。
 
+## 多段原生输入与收取顺序
+
+附件封存后，submission 同时保存显示正文和冻结的 `input_json`。图片是安全缓存文件的 `localImage`，通用文件是包含名称和绝对路径的文本引用；完整数组原样用于 queue/add、steer 和 restore，不能在 steer 或 restore 时退化成正文。普通旧收据没有 `input_json` 时继续走原来的 Text API。
+
+sealed 但仍下载中的输入保持 `collecting`，同一线程后来的普通提交在 FIFO 迭代处停止，避免文字越过它；整批 ready 后才发原生写入，整批 failed 后释放后续提交。明确失败的本地下载可重新入队到队尾并保留 client ID，已经有 native attempt 的收据不能这样重发；unknown 只核验 queue/history，不再次发送。控制动作和停止仍可处理，不被 collecting 的普通输入阻塞。
+
+队列恢复优先使用只含 ID/client ID 的 `thread/queue/list` metadata DTO，避免把 canonical image data URL 写入本地快照；完整输入只在真正需要提交或历史语义核验时读取。单批最多 10 个资源、5 张图片；单图 10 MiB、图片合计 20 MiB、普通文件 20 MiB、批次 50 MiB，单图像素 40M，原生请求预算 32 MiB。
+
+附件的草稿/收取和原生排队共用同一张状态卡。整批收齐后，原附件卡切换为普通排队状态和操作，不另发一张附件摘要。草稿、collecting、明确的本地下载失败仍展示发送/重试等附件操作；排队、核验、执行或移除沿用既有 QueueView。已投递卡的真实 ID 和原引用保持稳定，按钮仍核验收据、原生队列 ID 和版本。断线时禁用原生操作，只有证明从未提交的输入可本地取消。
+
 ## 追加引导算法
 
 只允许有效队列项和可用活跃轮；状态过期时返回刷新提示。每个 ThreadKey 使用本桥 actor，但不能认为它锁住 App。

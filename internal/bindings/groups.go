@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"time"
 
 	"codex-feishu/internal/codexclient"
@@ -37,7 +38,7 @@ type Native interface {
 	Attach(context.Context, string) (codexclient.Thread, error)
 }
 type Groups interface {
-	CreateGroup(context.Context, string, string, []string, string) (string, error)
+	CreateGroupWithDescription(context.Context, string, string, []string, string, string) (string, error)
 }
 
 type Manager struct {
@@ -136,6 +137,13 @@ func (m *Manager) Ensure(ctx context.Context, thread, name string) (store.Bindin
 	if err = m.Authorize(ctx, attached); err != nil {
 		return store.Binding{}, err
 	}
+	if !filepath.IsAbs(attached.CWD) {
+		return store.Binding{}, store.ErrIneligible
+	}
+	description, err := m.Store.FreezeGroupDescription(ctx, i.ID, "工作目录："+attached.CWD)
+	if err != nil {
+		return store.Binding{}, err
+	}
 	attempt, claimed, err := m.Store.ClaimGroupAttempt(ctx, i.ID, clock().UnixMilli())
 	if err != nil {
 		return store.Binding{}, err
@@ -143,7 +151,7 @@ func (m *Manager) Ensure(ctx context.Context, thread, name string) (store.Bindin
 	if !claimed {
 		return store.Binding{}, ErrGroupBusy
 	}
-	chat, remoteErr := m.Groups.CreateGroup(ctx, i.Name, i.OwnerID, i.Members, i.ID)
+	chat, remoteErr := m.Groups.CreateGroupWithDescription(ctx, i.Name, i.OwnerID, i.Members, i.ID, description)
 	var limited *feishu.RateLimited
 	if errors.As(remoteErr, &limited) {
 		at := clock().UnixMilli()

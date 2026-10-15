@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 
+	"codex-feishu/compat"
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/rules"
 	"codex-feishu/internal/store"
@@ -137,10 +139,41 @@ func unique(values []string) []string {
 	return out
 }
 
+func normalizeCreation(creation config.CreationConfig) (config.CreationConfig, error) {
+	if creation.DefaultFollowMode == "" {
+		creation.DefaultFollowMode = "group"
+	}
+	canonicalRoots := make([]string, 0, len(creation.AllowedRoots))
+	for _, root := range creation.AllowedRoots {
+		canonical, err := rules.CanonicalDirectory(root)
+		if err != nil {
+			return config.CreationConfig{}, errors.New("creation allowed directory unavailable")
+		}
+		canonicalRoots = append(canonicalRoots, canonical)
+	}
+	creation.AllowedRoots = canonicalRoots
+	canonicalCommon := make([]string, 0, len(creation.CommonDirectories))
+	for _, directory := range creation.CommonDirectories {
+		canonical, err := rules.CanonicalDirectory(directory)
+		if err != nil {
+			return config.CreationConfig{}, errors.New("creation common directory unavailable")
+		}
+		canonicalCommon = append(canonicalCommon, canonical)
+	}
+	creation.CommonDirectories = canonicalCommon
+	return creation, nil
+}
+
 func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error) {
 	var plan Plan
-	if in.SchemaVersion != 1 || in.Features.Creation || in.Features.Phase != "" && in.Features.Phase != "phase1" {
-		return plan, errors.New("only phase1 setup is supported")
+	if in.SchemaVersion != 1 {
+		return plan, errors.New("unsupported setup input schema")
+	}
+	if in.Features.Creation && in.Creation == nil {
+		return plan, errors.New("features.creation requires an explicit creation configuration")
+	}
+	if in.Features.Phase != "" && in.Features.Phase != "phase1" && in.Features.Phase != "phase2" {
+		return plan, errors.New("unsupported setup input phase")
 	}
 	if in.Service.Mode != "" && in.Service.Mode != "systemd-user" && in.Service.Mode != "foreground" {
 		return plan, errors.New("unsupported service mode")
@@ -237,6 +270,34 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	if in.Notifications.QuietHours != nil {
 		c.Notifications.QuietHours = *in.Notifications.QuietHours
 	}
+	if in.Attachments != nil {
+		// An explicitly supplied attachment object is a reviewed replacement;
+		// an omitted object leaves an existing installation unchanged.
+		c.Attachments = *in.Attachments
+	}
+	if in.FilePreview != nil {
+		c.FilePreview = *in.FilePreview
+		c.FilePreview.AllowedRoots = nil
+		for _, root := range in.FilePreview.AllowedRoots {
+			canonical, err := rules.CanonicalDirectory(root)
+			if err != nil {
+				return plan, errors.New("file preview allowed directory unavailable")
+			}
+			if !has(c.FilePreview.AllowedRoots, canonical) {
+				c.FilePreview.AllowedRoots = append(c.FilePreview.AllowedRoots, canonical)
+			}
+		}
+	}
+	if in.Creation != nil {
+		creation, err := normalizeCreation(*in.Creation)
+		if err != nil {
+			return plan, err
+		}
+		c.Creation = creation
+		if err := c.ValidateCreation(); err != nil {
+			return plan, err
+		}
+	}
 	artifactPath, err := filepath.EvalSymlinks(in.Artifact.BinaryPath)
 	if err != nil || !filepath.IsAbs(artifactPath) {
 		return plan, errors.New("artifact path unavailable")
@@ -256,7 +317,7 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	if p.CandidateTest && !plan.Environment.Artifact.Capabilities.CandidateDeployment {
 		return plan, errors.New("artifact does not advertise candidate deployment support")
 	}
-	if plan.Environment.Daemon.Status != "running" || plan.Environment.Daemon.AppServerVersion != "0.162.0" || plan.Environment.Artifact.CodexProtocol != "0.162.0" || plan.Environment.Artifact.ConfigSchema != 1 || !filepath.IsAbs(plan.Environment.CLIPath) {
+	if plan.Environment.Daemon.Status != "running" || !compat.VerifiedCodexVersion(plan.Environment.Daemon.AppServerVersion) || plan.Environment.Artifact.CodexProtocol != "0.162.0" || plan.Environment.Artifact.ConfigSchema != 1 || !filepath.IsAbs(plan.Environment.CLIPath) {
 		return plan, errors.New("existing daemon or artifact compatibility is unverified")
 	}
 	for _, command := range []string{"version", "doctor", "setup", "serve", "service", "status", "verify"} {
@@ -296,6 +357,14 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	stableEnvironment.Daemon.SocketPath = ""
 	plan.sourceDigest = digest(encoded([]any{in, digest(artifactBytes), digest([]byte(secret)), stableEnvironment, plan.Paths}))
 	plan.legacySourceDigest = digest(encoded([]any{in, digest(artifactBytes), digest([]byte(secret)), plan.Environment, plan.Paths, plan.ExistingPolicies}))
+	if c.FilePreview.Enabled {
+		previewSecret, err := c.FilePreviewSecret()
+		if err != nil {
+			return plan, err
+		}
+		plan.sourceDigest = digest(encoded([]any{plan.sourceDigest, "file-preview-v1", digest([]byte(previewSecret))}))
+		plan.legacySourceDigest = digest(encoded([]any{plan.legacySourceDigest, "file-preview-v1", digest([]byte(previewSecret))}))
+	}
 	if p.CandidateTest {
 		// The existing journal stores this mode-bound source digest, so recovery
 		// cannot switch between normal and candidate authorization.
@@ -317,6 +386,26 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	}
 	if len(plan.PolicyChanges) > 0 {
 		plan.NextSteps = append(plan.NextSteps, "explicit existing policy changes apply with revision CAS and a recoverable configuration journal; off and snooze remain unchanged")
+	}
+	attachments := plan.Config.AttachmentLimits()
+	plan.NextSteps = append(plan.NextSteps, fmt.Sprintf("attachments: enabled=%t; private local storage root=%s; limits max_resources=%d max_images=%d max_image_bytes=%d max_images_bytes=%d max_file_bytes=%d max_batch_bytes=%d max_image_pixels=%d disk_quota_bytes=%d download_workers=%d", attachments.Enabled, attachments.Directory, attachments.MaxResources, attachments.MaxImages, attachments.MaxImageBytes, attachments.MaxImagesBytes, attachments.MaxFileBytes, attachments.MaxBatchBytes, attachments.MaxImagePixels, attachments.DiskQuotaBytes, attachments.DownloadWorkers))
+	if attachments.ReceiveStandalone {
+		plan.NextSteps = append(plan.NextSteps, "attachments.receive_standalone requires the sensitive Feishu scope im:message.group_msg and user permission publication")
+	} else {
+		plan.NextSteps = append(plan.NextSteps, "attachments.receive_standalone is false; when attachments are enabled, accept attachment inputs only from @post messages")
+	}
+	creation := plan.Config.Creation
+	preview := plan.Config.FilePreviewLimits()
+	if preview.Enabled {
+		plan.NextSteps = append(plan.NextSteps, fmt.Sprintf("file preview: authenticated read-only browser access at %s; explicitly allowed roots=%d; max_file_bytes=%d; real client/network acceptance pending", preview.BaseURL, len(preview.AllowedRoots), preview.MaxFileBytes))
+	}
+	followMode := creation.DefaultFollowMode
+	if followMode == "" {
+		followMode = "group"
+	}
+	plan.NextSteps = append(plan.NextSteps, fmt.Sprintf("creation: enabled=%t follow_mode=%s entry_chat_ids=%d workgroup_chat_ids=%d allowed_roots=%d common_directories=%d; creation scope is separate from discovery roots", creation.Enabled, followMode, len(creation.EntryChatIDs), len(creation.WorkgroupChatIDs), len(creation.AllowedRoots), len(creation.CommonDirectories)))
+	if creation.Enabled && creation.TopicsEnabled {
+		plan.NextSteps = append(plan.NextSteps, "creation topics require independent real Feishu/App UI acceptance; this plan does not mark them ready")
 	}
 	plan.NextSteps = append(plan.NextSteps, "apply configuration only; service installation/start and authorized verification are separate")
 	plan.Verification = in.Verification

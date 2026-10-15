@@ -130,7 +130,14 @@ func (s *Store) Bind(ctx context.Context, thread, chat string) error {
 	return err
 }
 
-type Receipt struct{ ID, AppID, MessageID, ThreadID, ChatID, Body, ClientID, QueueID, State, CardID, ActionToken string }
+type Receipt struct{ ID, AppID, MessageID, ThreadID, ChatID, Body, ClientID, QueueID, State, CardID, ActionToken, ReplyMessageID string }
+
+func (r Receipt) ReplyID() string {
+	if r.ReplyMessageID != "" {
+		return r.ReplyMessageID
+	}
+	return r.MessageID
+}
 
 func (s *Store) Claim(ctx context.Context, r Receipt) (Receipt, bool, error) {
 	r.ID = ID()

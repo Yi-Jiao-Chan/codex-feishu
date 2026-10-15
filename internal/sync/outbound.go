@@ -17,6 +17,14 @@ type MessageGateway interface {
 	UpdateCard(context.Context, string, string) error
 }
 
+type TopicMessageGateway interface {
+	ReplyTopicCard(context.Context, string, string, string) (string, error)
+}
+
+type TopicResultGateway interface {
+	ReplyTopicCardResult(context.Context, string, string, string) (feishu.TopicCardResult, error)
+}
+
 type MembershipGateway interface {
 	MemberIDs(context.Context, string) ([]string, error)
 }
@@ -100,6 +108,18 @@ func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS in
 // intentionally acquired per candidate so a later candidate cannot reuse a
 // grant that covered an earlier write.
 func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m store.Mirror, claimAt int64, options store.MentionOptions) (DeliveryResult, bool, error) {
+	binding, err := o.Store.Binding(ctx, host, thread)
+	if err != nil {
+		return DeliveryResult{}, false, err
+	}
+	if binding.RepairRequired {
+		return DeliveryResult{}, false, store.ErrTargetRepair
+	}
+	if binding.FollowMode == "topic" {
+		if _, ok := o.Gateway.(TopicMessageGateway); !ok {
+			return DeliveryResult{}, false, errors.New("topic reply gateway unavailable")
+		}
+	}
 	leaseCtx := ctx
 	release := func() {}
 	if o.BeginWrite != nil {
@@ -128,8 +148,22 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 	if err := leaseCtx.Err(); err != nil {
 		return DeliveryResult{}, false, err
 	}
-	// Verification authorization can perform network checks across a quiet
-	// boundary too. Recompute notification time after it, before freezing wire.
+	if binding.FollowMode == "topic" {
+		reader, _ := o.Gateway.(TopicRootReader)
+		if reader == nil {
+			reader = o.Readback
+		}
+		if err := VerifyTopicRoot(leaseCtx, reader, binding); err != nil {
+			if errors.Is(err, ErrTopicRootGone) {
+				if persistErr := o.Store.MarkBindingRepair(leaseCtx, host, thread, "topic_root_unavailable"); persistErr != nil {
+					return DeliveryResult{}, false, persistErr
+				}
+			}
+			return DeliveryResult{}, false, err
+		}
+	}
+	// Authorization and the topic-root GET can cross a quiet-hours boundary.
+	// Recompute notification time after both, before freezing the wire card.
 	if o.Now != nil {
 		claimAt = max(claimAt, o.Now().UnixMilli())
 	}
@@ -150,7 +184,27 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 	case "send":
 		remoteID, sendErr = o.Gateway.SendCard(leaseCtx, "chat_id", a.ChatID, a.Card, a.ID)
 	case "reply":
-		remoteID, sendErr = o.Gateway.ReplyCard(leaseCtx, a.ParentMessageID, a.Card, a.ID)
+		if a.FollowMode == "topic" {
+			if gateway, ok := o.Gateway.(TopicResultGateway); ok {
+				response, err := gateway.ReplyTopicCardResult(leaseCtx, a.ParentMessageID, a.Card, a.ID)
+				remoteID, sendErr = response.MessageID, err
+				if err == nil && response.MessageID != "" && response.ThreadID != "" {
+					if persistErr := o.Store.RecordBindingPlatformThread(leaseCtx, host, thread, response.ThreadID); persistErr != nil {
+						if errors.Is(persistErr, store.ErrConflict) {
+							if markErr := o.Store.MarkBindingRepair(leaseCtx, host, thread, "topic_identity_conflict"); markErr != nil {
+								return result, true, markErr
+							}
+						}
+						result.State = "unknown"
+						return result, true, persistErr
+					}
+				}
+			} else {
+				remoteID, sendErr = o.Gateway.(TopicMessageGateway).ReplyTopicCard(leaseCtx, a.ParentMessageID, a.Card, a.ID)
+			}
+		} else {
+			remoteID, sendErr = o.Gateway.ReplyCard(leaseCtx, a.ParentMessageID, a.Card, a.ID)
+		}
 	case "update":
 		sendErr = o.Gateway.UpdateCard(leaseCtx, a.TargetMessageID, a.Card)
 		remoteID = a.TargetMessageID
@@ -185,6 +239,11 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 		var rejected *feishu.Rejected
 		if errors.As(sendErr, &rejected) {
 			result.State = "rejected"
+		}
+	}
+	if a.FollowMode == "topic" && feishu.TopicTargetRejected(sendErr) {
+		if err := o.Store.MarkBindingRepair(leaseCtx, host, thread, "topic_target_rejected"); err != nil {
+			return result, true, err
 		}
 	}
 	if err := o.Store.FinishMirrorAttempt(leaseCtx, a.ID, result.State, remoteID); err != nil {

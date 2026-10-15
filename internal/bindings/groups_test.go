@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,20 +14,29 @@ import (
 	"codex-feishu/internal/store"
 )
 
-type nativeGroupFixture struct{ calls atomic.Int32 }
+type nativeGroupFixture struct {
+	calls atomic.Int32
+	cwd   string
+}
 
 func (n *nativeGroupFixture) Attach(_ context.Context, id string) (codexclient.Thread, error) {
 	n.calls.Add(1)
-	return codexclient.Thread{ID: id, CWD: "/project"}, nil
+	cwd := n.cwd
+	if cwd == "" {
+		cwd = "/project"
+	}
+	return codexclient.Thread{ID: id, CWD: cwd}, nil
 }
 
 type groupFixture struct {
-	calls  atomic.Int32
-	create func(string, string, []string, string) (string, error)
+	calls       atomic.Int32
+	create      func(string, string, []string, string) (string, error)
+	description string
 }
 
-func (g *groupFixture) CreateGroup(_ context.Context, name, owner string, members []string, uuid string) (string, error) {
+func (g *groupFixture) CreateGroupWithDescription(_ context.Context, name, owner string, members []string, uuid, description string) (string, error) {
 	g.calls.Add(1)
+	g.description = description
 	return g.create(name, owner, members, uuid)
 }
 
@@ -55,12 +65,37 @@ func groupManager(t *testing.T) (*Manager, *groupFixture, string) {
 	m := &Manager{Store: s, Native: &nativeGroupFixture{}, Groups: g, HostID: "host", OwnerID: "owner", Members: []string{"owner"}, Authorize: func(context.Context, codexclient.Thread) error { return nil }}
 	g.create = func(name, owner string, members []string, uuid string) (string, error) {
 		i, err := m.Store.GroupIntent(ctx, uuid)
-		if err != nil || i.State != "dispatching" || i.Name != name || i.OwnerID != owner {
+		if err != nil || i.State != "dispatching" || i.Name != name || i.OwnerID != owner || i.Description != g.description || i.Description == "" {
 			t.Errorf("remote write lacked journal: %+v %v", i, err)
 		}
 		return "chat", nil
 	}
 	return m, g, path
+}
+
+func TestGroupDescriptionUsesAttachedWorkingDirectory(t *testing.T) {
+	m, g, _ := groupManager(t)
+	// Discovery still records /project, while the actual attached session has
+	// moved into a worktree. Keep its full path, including non-ASCII characters.
+	cwd := "/home/operator/.codex/worktrees/worktree/" + strings.Repeat("目录", 60)
+	m.Native.(*nativeGroupFixture).cwd = cwd
+	if _, err := m.Ensure(context.Background(), "thread", "project · task"); err != nil {
+		t.Fatal(err)
+	}
+	if g.description != "工作目录："+cwd {
+		t.Fatalf("actual working directory lost: %q", g.description)
+	}
+}
+
+func TestMissingAbsoluteWorkingDirectoryDoesNotCreateGroup(t *testing.T) {
+	m, g, _ := groupManager(t)
+	m.Native.(*nativeGroupFixture).cwd = "relative/project"
+	if _, err := m.Ensure(context.Background(), "thread", "name"); !errors.Is(err, store.ErrIneligible) {
+		t.Fatal("unavailable actual cwd accepted", err)
+	}
+	if g.calls.Load() != 0 {
+		t.Fatal("group created without actual cwd")
+	}
 }
 
 func TestConcurrentEnsureCreatesExactlyOneGroup(t *testing.T) {

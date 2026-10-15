@@ -12,10 +12,12 @@ import (
 // Emoji types are from Feishu's official enumeration, not display Unicode.
 func reactionFor(r store.Receipt, t codexclient.Turn) string {
 	switch r.State {
-	case "received":
+	case "received", "draft":
 		return "Get"
-	case "queued":
+	case "collecting":
 		return "THINKING"
+	case "queued":
+		return "OneSecond"
 	case "failed":
 		return "CrossMark"
 	case "removed":

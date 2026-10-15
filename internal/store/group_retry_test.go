@@ -232,7 +232,7 @@ func TestGroupRetryBackoffServerFloorAndOverflow(t *testing.T) {
 func TestGroupRetryMigrationDoesNotInventLegacyDispatchProof(t *testing.T) {
 	s, path, i := groupRetryIntent(t)
 	ctx := context.Background()
-	if _, err := s.DB.Exec("UPDATE create_intents SET state='dispatching'; DROP TABLE group_throttles; DROP TABLE group_attempts; PRAGMA user_version=12"); err != nil {
+	if _, err := s.DB.Exec("UPDATE create_intents SET state='dispatching'; DROP TABLE group_throttles; DROP TABLE group_attempts; ALTER TABLE mirrors DROP COLUMN progress_observed_at_json; ALTER TABLE create_intents DROP COLUMN description; PRAGMA user_version=12"); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()

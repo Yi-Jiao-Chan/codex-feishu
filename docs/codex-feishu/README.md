@@ -1,6 +1,6 @@
 # Codex × 飞书开发手册
 
-更新：2026-10-13。本文是开发规格。M0 真实可行性联调已通过，M1–M3 已整合到候选服务并实际部署；核心交互、独立 Agent 配置与私聊配对已有真实验证，完整一期发布仍待剩余验收。当前构建和证据范围见[集中验收记录](12-live-acceptance-handoff.md)。
+更新：2026-10-15。本文是开发规格。M0 真实可行性联调已通过，M1–M3 已整合到候选服务并实际部署；核心交互、独立 Agent 配置与私聊配对已有真实验证，完整一期发布仍待剩余验收。当前构建和证据范围见[集中验收记录](12-live-acceptance-handoff.md)。
 
 第一期交付你的常用流程：在 Codex App 的远程机器上发起任务，自动建飞书群，两端持续对话。执行中补充消息默认进入 Codex 原生队列；点击卡片“追加引导”才进入当前轮。第二期交付飞书内新建任务、目录选择、专属群或话题跟进。CLI 界面的外部输入回显不在两期范围内。2026-10-12 用户调整：fork 跟进暂缓，代码留 TODO；普通 App 和注册工作树仍继续实现。
 
@@ -14,13 +14,16 @@
 | 飞书事件、API、权限、群和话题 | [03 飞书网关](03-feishu-gateway.md) |
 | App 会话发现、自动建群和绑定 | [04 发现与绑定](04-discovery-and-bindings.md) |
 | 人类/AI 双向同步 | [05 消息同步](05-message-sync.md) |
+| 本地文件浏览器链接 | [14 受控网页预览](14-file-preview.md) |
+| 飞书图片、文件与多附件输入 | [实施方案](../research/feishu-inbound-attachments-plan-2026-10-15.md)、[实施记录](../research/feishu-inbound-attachments-implementation-2026-10-15.md)、[接口调研](../research/feishu-inbound-resources-2026-10-15.md) |
 | 默认排队、追加引导、停止与恢复 | [06 输入队列与引导](06-queue-and-steering.md) |
 | 目录 mute、@ 与免打扰 | [07 规则与通知](07-rules-and-notifications.md) |
 | 原生卡片和操作回调 | [08 卡片与操作](08-cards-and-actions.md) |
-| 第二期飞书新建任务 | [09 任务创建](09-feishu-task-creation.md) |
+| 第二期飞书新建任务 | [09 任务创建](09-feishu-task-creation.md)、[详细技术方案](../research/feishu-create-codex-session-plan-2026-10-15.md)、[实施记录](../research/feishu-create-codex-session-implementation-2026-10-15.md) |
 | CLI、安装、配置与诊断 | [10 CLI 与配置](10-cli-and-setup.md) |
 | 实施顺序、联调和发布门槛 | [11 集成与验收](11-integration-and-acceptance.md) |
 | M0 后的新版集中联调 | [12 集中验收清单](12-live-acceptance-handoff.md) |
+| 飞书直接处理审批与问答（已实现，验收中） | [13 审批与问答](13-feishu-approvals-and-questions.md) |
 | 交给 Agent 自动配置 | [Agent 一键配置指南](AGENT-SETUP.md) |
 
 开发文档是功能与验收契约；当前实现以各模块说明、实际 CLI 输出和验证证据为准。真实可用的软件必须完成相应验收，不能因为文档中出现了命令就声称安装成功。配置指南为自包含执行说明；给配置 Agent 单独提供它即可，开发 Agent 则从本手册开始。
@@ -30,6 +33,7 @@
 | 能力 | 行为 | 阶段 / 模块 |
 | --- | --- | --- |
 | 自动建群 | 第一条实际输入后，一条主会话对应一个专属群；首次安装不扫历史批量建群 | 一期 / 04 |
+| 群名与目录 | 群名跟随 App 的会话显示标题及改名；实际工作目录写入群描述 | 一期 / 04 |
 | 双向上下文 | Codex 端人类输入、AI 公开回复镜像到飞书；飞书输入进入同一会话 | 一期 / 05、06 |
 | 执行中补充 | 普通输入统一调用原生 queue/add；引导必须点击按钮 | 一期 / 06、08 |
 | 过程与结果 | 每轮一张过程卡持续更新，完成后单独发最终回复；飞书输入不重复镜像 | 一期 / 05、08 |
@@ -39,7 +43,8 @@
 | @ 提醒 | 最终结果、失败、待用户处理时提醒配置用户；休息时继续同步正文 | 一期 / 07 |
 | 飞书创建 | /new、机器人单聊普通消息、入口群 @ 消息均可发起 | 二期 / 09 |
 | 跟进位置 | 默认专属群；可选择工作群中的话题；话题内容严格留在话题 | 二期 / 03、09 |
-| 权限与审批 | 沿用原 App 会话策略；本期审批与原生问答提示回 App 处理 | 一期 / 01、05、08 |
+| 权限与审批 | 沿用原 App 会话策略；未启用类型提示回 App，按类型开关启用飞书卡片处理 | 一期扩展 / 01、08、13 |
+| 附件输入 | 默认关闭；绑定任务群中的图片/文件可进入隔离草稿，封存后按完整原生输入排队、引导或恢复 | 一期扩展 / 02、03、05、06、10 |
 
 单机、单远程系统用户部署。开发为独立 Go CLI 项目，不把工具接进当前邮件网关，也不沿用该仓库的旧版飞书 SDK。参考 code-anywhere 的建群、mute、关闭 @ 语义；卡片和后端结构按本手册重新实现。
 
@@ -101,6 +106,7 @@ M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书
 - [准确版本审批与问答路由](../research/approval-routing-0.162.0.md)
 - [卡片组件研究](../research/codex-feishu-card-ux-2026-10-10.md)
 - [主链路验证](../research/codex-feishu-probes-2026-10-10/native-queue-probe-result.json)、[并发与边界](../research/codex-feishu-probes-2026-10-10/native-race-probe-result.json)、[空闲入口](../research/codex-feishu-probes-2026-10-10/native-idle-queue-probe-result.json)
+- [飞书附件输入实施记录](../research/feishu-inbound-attachments-implementation-2026-10-15.md)
 
 ## 给开发 Agent 的任务格式
 

@@ -24,7 +24,7 @@ func (s *Store) ClaimReactionTransitionAt(ctx context.Context, scope SubmissionS
 		return ReactionTransition{}, false, ErrConflict
 	}
 	switch desired {
-	case "", "Get", "THINKING", "OnIt", "CheckMark", "CrossMark":
+	case "", "Get", "THINKING", "OneSecond", "OnIt", "CheckMark", "CrossMark":
 	default:
 		return ReactionTransition{}, false, ErrConflict
 	}
@@ -133,7 +133,28 @@ func (s *Store) ReceivedFeedbackBindings(ctx context.Context, host, app string) 
 }
 
 func (s *Store) ReceivedFeedbackBindingsAt(ctx context.Context, host, app string, nowMS int64) ([]Binding, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT b.thread_id,b.intent_id,b.chat_id FROM bindings b JOIN deployment d USING(host_id) JOIN m0_receipts r ON r.thread_id=b.thread_id AND r.chat_id=b.chat_id AND r.app_id=d.app_id LEFT JOIN m0_reactions x ON x.receipt_id=r.id WHERE b.host_id=? AND d.app_id=? AND r.state='received' AND (x.receipt_id IS NULL OR x.state='confirmed' AND x.emoji<>'Get') AND NOT EXISTS(SELECT 1 FROM reaction_throttles t WHERE t.receipt_id=r.id AND t.next_retry_at_ms>?)`, host, app, nowMS)
+	// Original draft attachments follow their sealed native receipt. Its actor
+	// state comes from submission_inputs, just as AttachmentSourceSubmission
+	// reads it; completed/queued/unknown targets belong to the online feedback.
+	rows, err := s.DB.QueryContext(ctx, `WITH candidates AS (
+ SELECT b.thread_id,b.intent_id,b.chat_id,b.follow_mode,b.root_message_id,b.platform_thread_id,b.repair_required,b.repair_reason,r.id AS receipt_id,
+ CASE WHEN r.state='draft' THEN
+   CASE WHEN a.receipt_id IS NULL THEN 'received' ELSE target.state END
+ ELSE r.state END AS effective_state
+ FROM bindings b JOIN deployment d USING(host_id)
+ JOIN m0_receipts r ON r.thread_id=b.thread_id AND r.chat_id=b.chat_id AND r.app_id=d.app_id
+ LEFT JOIN attachment_events e ON r.state='draft' AND e.receipt_id=r.id AND e.app_id=r.app_id
+ LEFT JOIN attachment_batches a ON a.batch_id=e.batch_id AND a.host_id=b.host_id AND a.app_id=d.app_id
+   AND a.thread_id=b.thread_id AND a.chat_id=b.chat_id AND a.state<>'cleared' AND a.receipt_id<>''
+ LEFT JOIN m0_receipts tr ON tr.id=a.receipt_id AND tr.app_id=d.app_id AND tr.thread_id=b.thread_id AND tr.chat_id=b.chat_id
+ LEFT JOIN submission_inputs target ON target.receipt_id=tr.id AND target.host_id=b.host_id AND target.app_id=d.app_id AND target.thread_id=b.thread_id
+ WHERE b.host_id=? AND d.app_id=? AND r.state IN ('received','draft','collecting')
+)
+ SELECT DISTINCT c.thread_id,c.intent_id,c.chat_id,c.follow_mode,c.root_message_id,c.platform_thread_id,c.repair_required,c.repair_reason FROM candidates c
+ LEFT JOIN m0_reactions x ON x.receipt_id=c.receipt_id
+ WHERE c.effective_state IN ('received','collecting')
+ AND (x.receipt_id IS NULL OR x.state='confirmed' AND x.emoji<>CASE WHEN c.effective_state='collecting' THEN 'THINKING' ELSE 'Get' END)
+ AND NOT EXISTS(SELECT 1 FROM reaction_throttles t WHERE t.receipt_id=c.receipt_id AND t.next_retry_at_ms>?)`, host, app, nowMS)
 	if err != nil {
 		return nil, err
 	}
@@ -141,8 +162,11 @@ func (s *Store) ReceivedFeedbackBindingsAt(ctx context.Context, host, app string
 	var result []Binding
 	for rows.Next() {
 		b := Binding{HostID: host}
-		if err := rows.Scan(&b.ThreadID, &b.IntentID, &b.ChatID); err != nil {
+		if err := rows.Scan(&b.ThreadID, &b.IntentID, &b.ChatID, &b.FollowMode, &b.RootMessageID, &b.PlatformThreadID, &b.RepairRequired, &b.RepairReason); err != nil {
 			return nil, err
+		}
+		if b.FollowMode == "group" {
+			b.FollowMode = ""
 		}
 		result = append(result, b)
 	}

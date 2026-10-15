@@ -18,7 +18,7 @@ func reconcileFeedbackCard(ctx context.Context, s *store.Store, g messages.Messa
 	if err != nil || !claimed {
 		return false, err
 	}
-	remote, err := messages.FindMarkedCard(ctx, reader, messages.CardReadbackProof{AppID: r.AppID, ChatID: r.ChatID, ParentMessageID: r.ParentMessageID, Card: r.Card, Marker: r.Marker})
+	remote, err := messages.FindMarkedCard(ctx, reader, messages.CardReadbackProof{FollowMode: r.Target.FollowMode, RootMessageID: r.Target.RootMessageID, PlatformThreadID: r.Target.PlatformThreadID, AppID: r.AppID, ChatID: r.ChatID, ParentMessageID: r.ParentMessageID, Card: r.Card, Marker: r.Marker})
 	if err != nil || remote == "" {
 		return false, err
 	}

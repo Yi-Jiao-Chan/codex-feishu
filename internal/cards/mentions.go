@@ -3,8 +3,12 @@ package cards
 import (
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 )
+
+// A Markdown block needs two JSON-escaped newlines instead of one inline space.
+const MaxMentionBlockExtraBytes = 3
 
 // ValidMentionID accepts only Feishu open IDs, never @all or markup.
 func ValidMentionID(id string) bool {
@@ -19,8 +23,8 @@ func ValidMentionID(id string) bool {
 	return true
 }
 
-// WithMentions appends a bridge-owned mention element to a base Card JSON 2.0
-// document. Public text must already come from the Safe-based card renderers.
+// WithMentions puts validated reminders at the beginning of the first public
+// paragraph. Public text must already come from the Safe-based card renderers.
 func WithMentions(base string, ids []string) (string, error) {
 	if len(ids) == 0 {
 		return base, nil
@@ -48,7 +52,18 @@ func WithMentions(base string, ids []string) (string, error) {
 			seen[id] = true
 		}
 	}
-	body["elements"] = append(elements, element{"tag": "markdown", "content": strings.Join(mentions, " "), "text_size": "notation"})
+	if len(elements) == 0 {
+		return "", errors.New("notification card requires a public text element")
+	}
+	first, ok := elements[0].(map[string]any)
+	if !ok || first["tag"] != "markdown" {
+		return "", errors.New("notification card requires leading public markdown")
+	}
+	content, ok := first["content"].(string)
+	if !ok {
+		return "", errors.New("notification card requires public markdown content")
+	}
+	first["content"] = mentionPrefix(strings.Join(mentions, " "), content)
 	encoded, err := json.Marshal(card)
 	if err != nil {
 		return "", err
@@ -57,4 +72,21 @@ func WithMentions(base string, ids []string) (string, error) {
 		return "", errors.New("notification card exceeds byte limit")
 	}
 	return string(encoded), nil
+}
+
+var inlineBlockPrefix = regexp.MustCompile(`^(#{1,6}[ \t]+|[-+*][ \t]+|[0-9]+[.)][ \t]+)`)
+
+func mentionPrefix(mentions, content string) string {
+	text := strings.TrimLeft(content, "\r\n")
+	firstLine, _, _ := strings.Cut(text, "\n")
+	_, _, quoteDepth := publicQuotePrefix(firstLine, -1)
+	if openingMessageFence(firstLine) != nil || strings.HasPrefix(text, "|") || quoteDepth > 0 || strings.HasPrefix(text, "    ") || strings.HasPrefix(text, "\t") {
+		// Code, tables and quoted blocks need their own line start. Keeping
+		// the reminder in a paragraph preserves their original Markdown.
+		return mentions + "\n\n" + content
+	}
+	if prefix := inlineBlockPrefix.FindString(text); prefix != "" {
+		return prefix + mentions + " " + text[len(prefix):]
+	}
+	return mentions + " " + text
 }

@@ -19,12 +19,16 @@ type MessageReadbackGateway interface {
 }
 
 type CardReadbackProof struct {
-	AppID           string `json:"-"`
-	ChatID          string `json:"-"`
-	ParentMessageID string `json:"-"`
-	TargetMessageID string `json:"-"`
-	Card            string `json:"-"`
-	Marker          string `json:"-"`
+	// RootCreation is reserved for a SendCard that created an original root.
+	// Later replies may assign that same root a platform thread identity.
+	RootCreation                                bool   `json:"-"`
+	FollowMode, RootMessageID, PlatformThreadID string `json:"-"`
+	AppID                                       string `json:"-"`
+	ChatID                                      string `json:"-"`
+	ParentMessageID                             string `json:"-"`
+	TargetMessageID                             string `json:"-"`
+	Card                                        string `json:"-"`
+	Marker                                      string `json:"-"`
 }
 
 var ErrReadbackIncomplete = errors.New("message readback evidence incomplete")
@@ -42,6 +46,7 @@ func (o Outbound) ReconcileOne(ctx context.Context, host, thread string, nowMS i
 	}
 	a := r.Attempt
 	messageID, err := FindMarkedCard(ctx, o.Readback, CardReadbackProof{
+		FollowMode: a.FollowMode, RootMessageID: a.RootMessageID, PlatformThreadID: a.PlatformThreadID,
 		AppID:           r.AppID,
 		ChatID:          a.ChatID,
 		ParentMessageID: a.ParentMessageID,
@@ -66,7 +71,7 @@ func (o Outbound) ReconcileOne(ctx context.Context, host, thread string, nowMS i
 // result means the available readback is inconclusive; it never means that a
 // remote write was rejected.
 func FindMarkedCard(ctx context.Context, reader MessageReadbackGateway, proof CardReadbackProof) (string, error) {
-	if reader == nil || proof.AppID == "" || proof.ChatID == "" || proof.Card == "" || proof.Marker == "" {
+	if reader == nil || proof.AppID == "" || proof.ChatID == "" || proof.Card == "" || proof.Marker == "" || proof.RootCreation && proof.ParentMessageID != "" {
 		return "", ErrReadbackIncomplete
 	}
 	// Recovery reads share a total budget, rather than paying the transport
@@ -75,7 +80,7 @@ func FindMarkedCard(ctx context.Context, reader MessageReadbackGateway, proof Ca
 	defer cancel()
 	var msg feishu.CardMessage
 	var err error
-	if proof.TargetMessageID != "" {
+	if proof.TargetMessageID != "" && !proof.RootCreation {
 		msg, err = reader.ReadCardMessage(checkCtx, proof.TargetMessageID)
 		if err != nil {
 			return "", err
@@ -89,7 +94,11 @@ func FindMarkedCard(ctx context.Context, reader MessageReadbackGateway, proof Ca
 		found := map[string]feishu.CardMessage{}
 		complete := false
 		for n := 0; n < 20; n++ {
-			page, e := reader.ListCardMessages(checkCtx, "chat", proof.ChatID, cursor)
+			containerType, containerID := "chat", proof.ChatID
+			if !proof.RootCreation && proof.FollowMode == "topic" && proof.PlatformThreadID != "" {
+				containerType, containerID = "thread", proof.PlatformThreadID
+			}
+			page, e := reader.ListCardMessages(checkCtx, containerType, containerID, cursor)
 			if e != nil {
 				return "", e
 			}
@@ -157,6 +166,7 @@ func FindMarkedCard(ctx context.Context, reader MessageReadbackGateway, proof Ca
 func matchesReadback(r store.MirrorReadback, m feishu.CardMessage) bool {
 	a := r.Attempt
 	return matchesCardReadback(CardReadbackProof{
+		FollowMode: a.FollowMode, RootMessageID: a.RootMessageID, PlatformThreadID: a.PlatformThreadID,
 		AppID:           r.AppID,
 		ChatID:          a.ChatID,
 		ParentMessageID: a.ParentMessageID,
@@ -173,16 +183,42 @@ func matchesCardReadback(proof CardReadbackProof, m feishu.CardMessage) bool {
 	if proof.TargetMessageID != "" && m.ID != proof.TargetMessageID {
 		return false
 	}
-	if m.ThreadID != nil && *m.ThreadID != "" {
-		return false
-	}
-	if proof.ParentMessageID != "" {
-		if m.ParentID == nil || *m.ParentID != proof.ParentMessageID {
+	if proof.RootCreation {
+		if proof.ParentMessageID != "" || m.ParentID != nil && *m.ParentID != "" {
 			return false
 		}
-	} else if m.ParentID != nil && *m.ParentID != "" || m.RootID != nil && *m.RootID != "" {
-		return false
+		if m.RootID != nil && *m.RootID != "" && *m.RootID != m.ID {
+			return false
+		}
+		if proof.RootMessageID != "" && proof.RootMessageID != m.ID {
+			return false
+		}
+		if proof.PlatformThreadID != "" && (m.ThreadID == nil || *m.ThreadID != proof.PlatformThreadID) {
+			return false
+		}
+	} else {
+		if proof.FollowMode == "topic" {
+			if proof.RootMessageID == "" && proof.PlatformThreadID == "" || m.RootID == nil || *m.RootID == "" || m.ThreadID == nil || *m.ThreadID == "" {
+				return false
+			}
+			if proof.RootMessageID != "" && *m.RootID != proof.RootMessageID {
+				return false
+			}
+			if proof.PlatformThreadID != "" && *m.ThreadID != proof.PlatformThreadID {
+				return false
+			}
+		} else if m.ThreadID != nil && *m.ThreadID != "" {
+			return false
+		}
+		if proof.ParentMessageID != "" {
+			if m.ParentID == nil || *m.ParentID != proof.ParentMessageID {
+				return false
+			}
+		} else if m.ParentID != nil && *m.ParentID != "" || m.RootID != nil && *m.RootID != "" {
+			return false
+		}
 	}
+
 	expected, err := parseProofJSON(proof.Card)
 	if err != nil {
 		return false

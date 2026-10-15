@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/store"
 )
@@ -160,11 +161,23 @@ func TestSyncPublicHistoryCreatesOneProcessAndOneFinalWithParent(t *testing.T) {
 	if len(g.writes) != 5 || g.writes[3].Operation != "update" || g.writes[4].Operation != "reply" || g.writes[4].Parent != g.writes[0].ID {
 		t.Fatalf("final did not remain independent: %+v", g.writes)
 	}
+	for _, record := range []string{"starting", "next public action", "not a final answer"} {
+		if !strings.Contains(g.writes[3].Card, record) {
+			t.Fatal("terminal progress discarded a public process record")
+		}
+	}
+	if !strings.Contains(g.writes[3].Card, `"tag":"collapsible_panel"`) || strings.Contains(g.writes[3].Card, "final part one") || strings.Contains(g.writes[3].Card, "hidden-reasoning") || strings.Contains(g.writes[3].Card, "secret-tool-output") {
+		t.Fatal("terminal process panel included final/private content or was absent")
+	}
 	if !strings.Contains(g.writes[4].Card, "final part one") || !strings.Contains(g.writes[4].Card, "final part two") || strings.Contains(g.writes[4].Card, "not a final answer") {
 		t.Fatal("native final phase was not respected")
 	}
 	if done, err := e.FinalDelivered(ctx, "thread", "turn"); err != nil || !done {
 		t.Fatalf("confirmed final not recognized: %v %v", done, err)
+	}
+	retainedProgress, err := e.Store.Mirror(ctx, "host", "thread", mirrorKey("progress", "turn"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	e.Store.Close()
 	reopened, err := store.Open(path)
@@ -182,6 +195,9 @@ func TestSyncPublicHistoryCreatesOneProcessAndOneFinalWithParent(t *testing.T) {
 	for _, m := range mirrors {
 		if m.Replay {
 			t.Fatal("reconnect replaced original live event provenance")
+		}
+		if m.Kind == "progress" && (m.Card != retainedProgress.Card || m.RemoteID != g.writes[1].ID) {
+			t.Fatal("restart changed retained process history or its real message")
 		}
 	}
 }
@@ -236,7 +252,11 @@ func TestCompletedBackfillDoesNotInventProcessAndLegacyIDsAreTurnScoped(t *testi
 	e, _ := engineFixture(t)
 	var turns []codexclient.Turn
 	for n := 0; n < 80; n++ {
-		turns = append(turns, codexclient.Turn{ID: fmt.Sprintf("turn-%d", n), Status: "completed", Items: []codexclient.Item{input("legacy-item-0", fmt.Sprintf("question-%d", n)), agent("legacy-item-1", fmt.Sprintf("answer-%d", n), "")}})
+		turns = append(turns, codexclient.Turn{ID: fmt.Sprintf("turn-%d", n), Status: "completed", Items: []codexclient.Item{
+			input("legacy-item-0", fmt.Sprintf("question-%d", n)),
+			agent("legacy-comment", "historical public process", "commentary"),
+			agent("legacy-item-1", fmt.Sprintf("answer-%d", n), ""),
+		}})
 	}
 	apply(t, e, 200, true, turns...)
 	mirrors, err := e.Store.Mirrors(context.Background(), "host", "thread")
@@ -334,11 +354,13 @@ func TestLongFinalCorrectionUpdatesExistingSegmentsWithoutReposting(t *testing.T
 func TestProgressHasActualByteBoundAndLateBusyDoesNotRegressCompletion(t *testing.T) {
 	ctx := context.Background()
 	e, _ := engineFixture(t)
-	e.MaxCardBytes = 600
+	// This deliberately small budget must still hold the new required omission
+	// disclosure, status and a visibly truncated summary, plus the wire marker.
+	e.MaxCardBytes = len(cards.Task(cards.TaskView{Status: "inProgress", Progress: cards.ProgressView{Body: "…（内容已截短）", OmittedRecords: 1, ElapsedSeconds: -1}})) + cards.MaxRequestMarkerBytes + 30
 	turn := codexclient.Turn{ID: "turn", Status: "inProgress", Items: []codexclient.Item{input("user", "question"), agent("comment", strings.Repeat("<at>😀", 300), "commentary")}}
 	apply(t, e, 200, false, turn)
 	m, _ := e.Store.Mirror(ctx, "host", "thread", mirrorKey("progress", "turn"))
-	if len(m.Card) > 600 || !json.Valid([]byte(m.Card)) {
+	if len(m.Card) > e.MaxCardBytes-cards.MaxRequestMarkerBytes || !json.Valid([]byte(m.Card)) {
 		t.Fatal("progress was not bounded by actual card bytes")
 	}
 	turn.Status = "completed"
