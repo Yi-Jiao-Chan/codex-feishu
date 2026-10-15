@@ -43,6 +43,8 @@ func (n *managerNative) ListProjects(context.Context) ([]codexclient.Project, er
 	n.reads++
 	return n.projects, nil
 }
+
+func (n *managerNative) CodexHome() string { return n.h.codexHome }
 func (n *managerNative) StartCreation(ctx context.Context, s codexclient.CreationSpec) (codexclient.CreationResult, error) {
 	n.h.requireDispatch(ctx, "native")
 	params, err := codexclient.CreationRequestJSON(s)
@@ -173,13 +175,18 @@ type managerGateway struct {
 	workgroups                             map[string]string
 	afterRoot                              func(string)
 	getCalls                               int
+	expectedDirectory                      string
 }
 
 func (g *managerGateway) CreateGroupWithDescription(ctx context.Context, name, owner string, members []string, uuid, description string) (string, error) {
 	g.h.requireDispatch(ctx, "group")
 	g.groups++
 	g.h.order = append(g.h.order, "group")
-	if owner != "ou_owner" || uuid == "" || !contains(members, "ou_creator") || !strings.Contains(description, g.h.root) {
+	expected := g.expectedDirectory
+	if expected == "" {
+		expected = g.h.root
+	}
+	if owner != "ou_owner" || uuid == "" || !contains(members, "ou_creator") || !strings.Contains(description, expected) {
 		g.h.t.Fatal("group request lost frozen identity/location")
 	}
 	if g.groupErr != nil {
@@ -292,14 +299,14 @@ type managerHarness struct {
 	m                         *Manager
 	n                         *managerNative
 	g                         *managerGateway
-	root, db                  string
+	root, db, codexHome       string
 	clock                     time.Time
 	order, activated, notices []string
 }
 
 func newManagerHarness(t *testing.T) *managerHarness {
 	t.Helper()
-	h := &managerHarness{t: t, root: t.TempDir(), db: filepath.Join(t.TempDir(), "creation.db"), clock: time.Unix(1800000000, 0)}
+	h := &managerHarness{t: t, root: t.TempDir(), db: filepath.Join(t.TempDir(), "creation.db"), codexHome: t.TempDir(), clock: time.Unix(1800000000, 0)}
 	var err error
 	h.s, err = store.Open(h.db)
 	if err != nil {

@@ -2,7 +2,63 @@
 
 日期：2026-10-15。本文记录当前开发实现、自动验证、共享 daemon / Codex App 证据和仍待真实飞书验收的边界。创建功能默认关闭；本机候选已按用户授权启用联调，目录范围显式设为 `/`，实际执行目录仍要求 R/W/X。本记录不把本地测试、协议证据或 App 观察扩写成完整飞书 UI 通过。
 
-## 当前候选：紧凑视觉修正
+## 当前候选：工作树创建后的消息续接修复
+
+用户反馈首条回复在 App 可见但没有同步到群，后续群消息停在接收状态。真实只读证据确认 workflow 已 confirmed、原生 cwd 与冻结执行目录一致，首条已接收而后续收据仍 received。原因是 Runtime 授权仍以原仓库 `Directory` 比较新工作树 cwd，且直接将工作树存储目录套用可浏览目录范围，阻断了 actor 接管与普通收发。
+
+已修复为 `ExecutionDirectory()` 精确匹配，重新验证原选择目录及整个 Git 根的授权范围；复用既有只读工作树校验，核验完整草稿 marker、注册的 root/common-dir、实际 cwd/RWX，允许创建后的正常修改和提交。完整 marker 阻止短 bucket 被其他任务复用后串到旧会话。原群、线程、收据和请求参数保持不变，不新建替代资源。
+
+已更新原候选服务，构建 `9d051de7672d+worktree-sync-20261015`，二进制 `/data00/home/chenxiaoyu.lemon/.local/lib/codex-feishu/worktree-sync-20261015/codex-feishu`，SHA-256：
+
+```text
+e9cf5b90b6b169817b906bad9c1d6b9d5dcc38bfc8c07db23b01470477b95fb3
+```
+
+- 新增真实 Git Runtime 回归在修复前复现失败，修复后仓库根和子目录均可投递原最终回复、消费待提交消息，且不重复建群或提交首条输入。受限项目根之外的私有工作树可继续使用；范围收缩、cwd 漂移、未注册替换目录及同仓重新注册但缺少原 marker 的替换 checkout 均拒绝。
+- 最终 `go test ./... -timeout 60s` 全仓通过；app/creation 的创建接管、工作树与授权专项 `-race` 通过。独立审查提出的短 bucket 复用风险已用既有只读 verifier 修正，复核无新增问题。
+- 停桥并持有 App / 数据库锁后，一致备份 schema 29 的 55 张表、42,441 行，无迁移。重启后原 36 个绑定、40 条输入收据、6 批附件、14 个附件项、6 个草稿、4 个 workflow 及 82 个创建 attempt 的主键和冻结身份均保留；配置字节、运行 SHA、数据库完整性和外键检查通过。
+- Codex / 飞书连接、配置、准确版本及 creation protocol 检查通过；doctor 仍为 `diagnostics-pending`，`phase1_released=false`。
+- 仍存在的旧版工作树已由原 actor 补齐最终回复，原收据进入 consumed；真实飞书 GET 核验同群最终卡，公开回复文字与原生历史一致。该证据仅覆盖该旧路径会话，不代替最新缺失目录会话的恢复或客户端 UI。
+- 最新测试工作树在反馈后的检查中已不存在，Git 注册也已移除；私有桥 marker 与冻结参数仍匹配。该目录缺失独立于本次 cwd 比较错误，不能将其待提交输入和待投递回复记为恢复通过。已向用户核实是否主动清理，尚未重建目录或原生资源。
+- 用户随后反馈当前使用未再观察到问题，记录为当前收发可用的反馈，保留现候选。用户未说明是否清理过原工作树；跟进只读检查仍显示原目录缺失、原首条 accepted 和后续 received、无已投递最终卡，因此这条已移除目录会话的恢复仍未确认，不扩大为该场景或完整发布验收通过。
+
+私有部署与一致备份保存在 `worktree-sync-deploy-20261015/`；原线程只读证据和日志保存在 `creation-sync-debug-20261015-1792068835/`。不向真实群注入测试任务，不提交原文、凭据或原生标识。
+
+## 上一修正：工作树路径对齐 Codex Home
+
+用户实际创建工作树后反馈路径与 App 不同。新建路径改为 `<initialize.codexHome>/worktrees/<4位ID>/<仓库名>`，直接取共享服务握手中的真实 Codex Home；不从桥进程的环境猜测，不改全局配置。已有 App 目录会跳过，创建时原子领取，冲突不写入；桥 marker 单独命名，不伪造 App 元数据。旧候选已冻结的路径和请求参数保持原样，避免移动已创建会话。
+
+已更新原候选服务，构建 `9d051de7672d+worktree-path-20261015`，二进制 `/data00/home/chenxiaoyu.lemon/.local/lib/codex-feishu/worktree-path-20261015/codex-feishu`，SHA-256：
+
+```text
+2f80c821d34bb7de9804058c73a59a3f8951578bad777ad9f95c5b69f3ec1edf
+```
+
+- 全仓 `go test ./... -timeout 55s` 通过；新增服务端 Home 与进程环境不一致、已有 App bucket、领取竞争和旧路径 unknown 恢复覆盖。路径与握手专项 `-race` 通过；独立路径安全审查未发现新增问题。
+- 真实 0.162.1 共享 daemon 已在新形式目录创建工作树，保留原 projectId，接收首条原生输入，并在持久化后由另一连接最小 resume 同一线程。复用原独立验收项目，证据位于私有 `worktree-native-20261015-03/`；飞书 gateway 仍为 fixture，该证据不代替 App / 飞书 UI。
+- 停止原桥并持有 App / 数据库锁后，一致备份 schema 29 的 55 张表、42,003 行，无迁移。重启后原 35 个绑定、38 条输入收据、6 批附件、14 个附件项、5 个草稿、3 个 workflow、70 个创建 attempt 的主键均保留，冻结身份和已有工作树路径相同。配置字节未变，运行二进制 SHA 一致，数据库完整性及外键检查通过。私有备份与证明保存在 `worktree-path-deploy-20261015/`。
+- Codex / 飞书连接、配置、准确版本和 creation protocol 健康检查通过；历史绑定/未知操作仍保留 pending，doctor 整体为 `diagnostics-pending`。新版真实 App / 飞书 UI 仍待反馈，`phase1_released=false`。
+- 路径形式对齐不代表已实现 App 的自动清理、环境 setup、未提交文件复制或 handoff。
+
+## 上一候选：创建独立工作树
+
+新增“当前目录 / 新建工作树”切换与基准分支选择，继续使用紧凑主卡和原长连接。默认当前目录；工作树基于精确分支的已提交内容，以 detached HEAD 检出。工作树由桥持久保留，不复制未提交/未跟踪文件，不运行环境 setup，不接管 Codex App 的工作树清理。行为、范围和恢复契约见 [09 新建工作树](../codex-feishu/09-feishu-task-creation.md#新建工作树)。
+
+已更新原候选服务，构建 `9d051de7672d+worktree-20261015`，二进制 `/data00/home/chenxiaoyu.lemon/.local/lib/codex-feishu/worktree-20261015/codex-feishu`，SHA-256：
+
+```text
+3aa0d05ffeda929fb0a00d2373ef11ca5de1024646b3e4e2663da17aebd608c2
+```
+
+- 全仓 `go test ./... -timeout 55s` 通过；工作树、迁移和卡片专项 race 通过。实际 Git 测试覆盖固定分支版本、原目录修改保留、子目录 cwd、重复领取、崩溃后复用、unknown 不重发、Git 根授权、私有路径/marker 冲突、初始化锁和半成品检出拒绝、精确 ref 及失效分支重选。
+- 真实 0.162.1 共享 daemon 的独立验收项目已创建线程，首条原生输入接收，实际 cwd 为新工作树且保留原 projectId；持久化后另一连接以最小 resume 验证同一线程和策略。该受控测试的飞书 gateway 使用 fixture，不冒充真实建群或 App 页面验收。新生 rollout 尚未持久化时不创建替代线程；后续只读回原 ID 成功。
+- 本人专用预览卡的当前目录、工作树和分支不可用视图均通过真实飞书 PATCH/GET 校验。平台接受与读回不代表按钮实际回调、PC/手机布局或创建到 App 续接已验收；已请求用户测试这些新增交互，当前保持 pending。
+- 停止原桥并持有 App / 数据库锁后，一致备份并迁移 schema 28→29。55 张旧表的 40,641 行在全部旧列上的摘要一致；原 33 个绑定、37 条输入收据、6 批附件、14 个附件项、4 个创建草稿及 2 个 workflow 主键保留，旧创建模式为 local。配置字节未变，运行二进制 SHA 一致，`quick_check=ok`、外键错误为 0；共享 daemon 未重启。
+- 原服务已恢复，Codex / 飞书连接、配置、准确版本和 creation protocol 检查通过。doctor 仍为 `diagnostics-pending`，历史绑定/未知操作与完整发布验收未清除或提升。`phase1_released=false` 保持不变。
+
+私有部署、备份、摘要证明及只读健康记录保存在 `~/.local/share/codex-feishu/worktree-deploy-20261015/`；原生证据保存在 `worktree-native-20261015-02/`，卡片证据保存在 `worktree-card-20261015/`。原文、凭据、原生标识与数据库不提交 Git。
+
+## 紧凑视觉修正（上一候选）
 
 用户已确认浏览优先功能可用，但实际截图中的样式仍不接受。本轮保持动作与后端不变，仅调整创建 renderer：所有常规与主要按钮改 medium，并放进明确 none / auto 内容宽度分栏；form 显式 8px 间距；主任务框默认两行；目录名突出，短父路径灰色显示并可展开完整路径与主机；更改/上一级位于对应目录右侧；最近/下一批和最终确认/取消各自紧凑横排。移除常驻主机 UUID 和“独立目录”技术标记，简化重复说明。具体对照见[视觉修正](feishu-create-directory-ui-redesign-2026-10-15.md#7-用户截图后的视觉修正2026-10-15)。
 

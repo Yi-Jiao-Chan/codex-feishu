@@ -45,6 +45,22 @@ draft 保存 creator、入口 message ID、任务文本、host、selected_direct
 
 mute 只阻止自动建群，用户主动创建不因此被拒绝。selected_directory 始终只有一个值。
 
+## 新建工作树
+
+创建卡默认使用“当前目录”；可切换到“新建工作树”，选择本地或远端基准分支。切换时保存已编辑的任务和跟进位置，分支选择随最终创建一同提交。Git 仓库须已有提交；非 Git 目录继续使用当前目录模式。分支下拉优先显示原选择、当前分支与 main/master，最多 100 项，并按完整卡片字节预算收缩；已删除的原选择不会自动换成其他分支，卡片提供仍可用的分支重新选择。
+
+本机 0.162.1 的 `thread/start` 没有创建工作树参数。桥先创建自己的持久 Git 工作树，再向原共享 daemon 传入该工作树的实际 cwd 和经核验的原 projectId。工作树基于所选分支的**已提交内容**，以 detached HEAD 检出；原目录未提交或未跟踪的文件不会复制，环境 setup 和 `.worktreeinclude` 也不在本次实现中。这与 [Codex App 工作树](https://learn.chatgpt.com/docs/environments/git-worktrees)的自动复制和环境流程有明确区别，卡片直接说明使用已提交内容。
+
+新工作树保存在 `<initialize.codexHome>/worktrees/<4位ID>/<仓库名>`，对齐 Codex App 的默认目录形式；Codex Home 取实际共享服务握手，不读取桥的 HOME / CODEX_HOME 作为替代。规划时跳过已有目录，创建时以原子 mkdir 领取；若被其他工作树抢占，拒绝写入。桥使用自己的私有 marker，不改 App 元数据，也不接管 App 的清理、环境 setup 或 handoff 生命周期。此前冻结的数据库同级 `worktrees/<draftID>/checkout` 保留原路径、marker 和请求参数，不移动已有会话。
+
+用户所选目录与整个 Git 根目录都必须在 creation.allowed_roots 内；只允许 `/repo/sub` 不授予检出整个 `/repo` 的权限。允许整个仓库时，选择子目录会保留相同相对 cwd。新路径不扩大普通目录浏览权限，项目关系仍从原目录和原生 catalog 核验。
+
+schema 29 冻结工作方式、精确 ref、commit、Git 根/common-dir 与唯一目标路径。创建工作树作为独立 attempt，在 Git 命令前落盘；不切换原分支、不创建新分支、不修改全局 Git/Codex 配置。重启后只以私有 marker、准确注册路径/common-dir、固定 commit、无初始化锁且完整干净的检出确认 unknown，缺证据不重跑 add。之后已确认的工作树允许正常修改和提交，不再要求保持初始 HEAD。群描述、原生创建/恢复与持久绑定均使用实际执行 cwd。
+
+创建后的 Runtime 授权同样精确比较冻结的 `ExecutionDirectory()`，不拿原仓库 cwd 比较新工作树。原选择目录及整个 Git 根仍须在 creation.allowed_roots 内，私有工作树不必直接位于可浏览范围；收发前只读核验完整草稿 marker、准确注册的 checkout/common-dir 与实际 cwd/RWX。目录被移除或被其他任务复用时拒绝执行，不重建工作树、线程或群。已确认的原输入通过历史收据核对，尚未 dispatch 的普通输入沿用原收据提交。
+
+已通过实际 Git、崩溃恢复、目录范围与 schema 28→29 保留测试；0.162.1 共享 daemon 已验证新工作树、原项目身份、首条输入及持久化后第二连接 resume。飞书新控件已通过真实平台 PATCH/GET 校验并部署候选；实际回调、创建到 App 工作树展示与客户端继续须单独验收，不据此提升完整 P2 或一期发布状态。
+
 ## 专属群与话题
 
 默认 group：创建机器人与 owner 的任务群；卡片明确显示“新建专属群”。topic：在已授权工作群发送任务根卡，保存 root_message_id / 平台 thread ID。来自单聊时必须选工作群；没有可用群时不执行，保持草稿或切回 group。
@@ -57,6 +73,7 @@ mute 只阻止自动建群，用户主动创建不因此被拒绝。selected_dir
 草稿提交（领取唯一 token / revision）
   → 校验目录、项目、成员和位置
   → 持久 create intent
+  → 如选择工作树：持久记录并创建/核验同一个工作树
   → 创建目标群，或创建任务根卡
   → 保存目标平台 ID
   → thread/start(cwd, 可选 projectId, 桥自建 threadSource)
@@ -82,3 +99,4 @@ thread/start 响应丢失属于关键 unknown：本机尚未证明可通过唯�
 4. 重复 callback、群成功线程失败、线程成功输入失败、创建响应丢失均不生成第二套对象。
 5. App 出现该线程，App 与飞书继续同一 thread ID；discovery 不再建群。
 6. 两个话题并行及根消息撤回，内容不串话题也不落主群。
+7. 当前目录/新建工作树切换保留草稿；所选分支版本和实际 cwd 正确，原目录修改保留；工作树创建中断不重复创建，半成品不启动会话。

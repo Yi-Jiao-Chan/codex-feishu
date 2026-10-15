@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -73,6 +75,10 @@ func creationRuntimeService(r *Runtime) *Service {
 // Native creation is confirmed here, but the platform route and first input
 // can be materialized later, including after this Runtime has entered Run.
 func prepareRuntimeCreation(t *testing.T, r *Runtime, n *creationRuntimeNative, thread string) store.CreationDraft {
+	return prepareRuntimeCreationWorkspace(t, r, n, thread, store.CreationIntent{Directory: r.AllowedRoots[0]})
+}
+
+func prepareRuntimeCreationWorkspace(t *testing.T, r *Runtime, n *creationRuntimeNative, thread string, plan store.CreationIntent) store.CreationDraft {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := r.Store.BeginBaseline(ctx, r.HostID, r.AppID, time.Now().UnixMilli()); err != nil {
@@ -82,19 +88,28 @@ func prepareRuntimeCreation(t *testing.T, r *Runtime, n *creationRuntimeNative, 
 		t.Fatal(err)
 	}
 	now := time.Now().UnixMilli()
-	d, fresh, err := r.Store.ReceiveCreationDraft(ctx, store.CreationDraft{HostID: r.HostID, AppID: r.AppID, CreatorID: "creator", SourceMessageID: "source-" + thread, SourceChatID: "entry-chat", SourceChatType: "p2p", Body: "initial task", Directory: r.AllowedRoots[0], FollowMode: "group", CreatedAtMS: now, ExpiresAtMS: now + time.Hour.Milliseconds()})
+	d, fresh, err := r.Store.ReceiveCreationDraft(ctx, store.CreationDraft{HostID: r.HostID, AppID: r.AppID, CreatorID: "creator", SourceMessageID: "source-" + thread, SourceChatID: "entry-chat", SourceChatType: "p2p", Body: "initial task", Directory: plan.Directory, FollowMode: "group", WorkspaceMode: plan.WorkspaceMode, BaseBranch: plan.BaseBranch, CreatedAtMS: now, ExpiresAtMS: now + time.Hour.Milliseconds()})
 	if err != nil || !fresh {
 		t.Fatal("creation draft fixture failed", err)
 	}
-	i, claimed, err := r.Store.ClaimCreationIntent(ctx, d, store.CreationIntent{OwnerID: r.OwnerID, Name: "created task", Members: []string{r.OwnerID, "creator"}}, now)
+	plan.OwnerID, plan.Name, plan.Members = r.OwnerID, "created task", []string{r.OwnerID, "creator"}
+	i, claimed, err := r.Store.ClaimCreationIntent(ctx, d, plan, now)
 	if err != nil || !claimed {
 		t.Fatal("creation intent fixture failed", err)
 	}
-	params, err := codexclient.CreationRequestJSON(codexclient.CreationSpec{IntentID: i.ID, CWD: i.Directory})
+	params, err := codexclient.CreationRequestJSON(codexclient.CreationSpec{IntentID: i.ID, CWD: i.ExecutionDirectory(), ProjectID: i.ProjectID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, step := range []struct{ name, params, id string }{{"group", `{"uuid":"fixture-group"}`, "created-chat"}, {"root", `{"chatId":"created-chat"}`, "created-root"}, {"native", params, thread}} {
+	steps := []struct{ name, params, id string }{{"group", `{"uuid":"fixture-group"}`, "created-chat"}, {"root", `{"chatId":"created-chat"}`, "created-root"}, {"native", params, thread}}
+	if i.WorkspaceMode == "worktree" {
+		marker, err := json.Marshal(struct{ DraftID, Source, Repository, Common, Branch, Commit, Destination, CWD string }{i.DraftID, i.Directory, i.GitRoot, i.GitCommonDir, i.BaseBranch, i.BaseCommit, i.WorktreePath, i.ExecutionDirectory()})
+		if err != nil || os.WriteFile(filepath.Join(filepath.Dir(i.WorktreePath), ".codex-feishu-"+i.DraftID+".json"), marker, 0600) != nil {
+			t.Fatal("worktree marker fixture failed", err)
+		}
+		steps = append([]struct{ name, params, id string }{{"worktree", string(marker), i.WorktreePath}}, steps...)
+	}
+	for _, step := range steps {
 		a, err := r.Store.PrepareCreationAttempt(ctx, d.ID, step.name, step.params, now)
 		if err != nil {
 			t.Fatal(err)
@@ -109,7 +124,7 @@ func prepareRuntimeCreation(t *testing.T, r *Runtime, n *creationRuntimeNative, 
 	source, _ := codexclient.CreationThreadSource(i.ID)
 	marker, _ := json.Marshal(source)
 	n.mu.Lock()
-	n.threads[thread] = codexclient.Thread{ID: thread, CWD: i.Directory, Source: json.RawMessage(`"vscode"`), ThreadSource: marker}
+	n.threads[thread] = codexclient.Thread{ID: thread, CWD: i.ExecutionDirectory(), Source: json.RawMessage(`"vscode"`), ThreadSource: marker}
 	n.mu.Unlock()
 	return d
 }
@@ -126,7 +141,7 @@ func acceptRuntimeCreation(t *testing.T, r *Runtime, n *creationRuntimeNative, d
 	}
 	// Supply a real-shaped, correlated first turn and final reply to exercise
 	// ordinary history staging/delivery after takeover, not just actor presence.
-	n.set(receipt.ThreadID, d.Directory, "completed")
+	n.set(receipt.ThreadID, i.ExecutionDirectory(), "completed")
 	n.mu.Lock()
 	n.turns[receipt.ThreadID][0].Items[0].ClientID = &receipt.ClientID
 	source, _ := codexclient.CreationThreadSource(i.ID)

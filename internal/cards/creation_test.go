@@ -95,7 +95,7 @@ func TestCreationDraftFormAndActionContract(t *testing.T) {
 			}
 		}
 	}
-	if !body || !form || primary != 1 || !reflect.DeepEqual(actions, map[string]bool{"creation_submit": true, "creation_panel": true, "creation_cancel": true}) {
+	if !body || !form || primary != 1 || !reflect.DeepEqual(actions, map[string]bool{"creation_submit": true, "creation_panel": true, "creation_cancel": true, "creation_local": true, "creation_worktree": true}) {
 		t.Fatal("main task summary contract", actions)
 	}
 	if !strings.Contains(card, "新建专属群") || !strings.Contains(card, v.Directory) {
@@ -448,7 +448,7 @@ func TestCreationBodyLengthBoundaryAndLongBodyPanel(t *testing.T) {
 	if bodyInput || !longBodyPanel || !hint {
 		t.Fatalf("long body was truncated or exposed as an input: input=%v panel=%v hint=%v", bodyInput, longBodyPanel, hint)
 	}
-	if !reflect.DeepEqual(actions, map[string]bool{"creation_submit": true, "creation_panel": true, "creation_cancel": true}) {
+	if !reflect.DeepEqual(actions, map[string]bool{"creation_submit": true, "creation_panel": true, "creation_cancel": true, "creation_local": true, "creation_worktree": true}) {
 		t.Fatalf("long body removed creation controls: %v", actions)
 	}
 	if !strings.Contains(card, v.Body) {

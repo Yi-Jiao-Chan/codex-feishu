@@ -160,7 +160,7 @@ func (m *Manager) Action(ctx context.Context, user, chat, message, token string,
 		return store.ErrSubmissionStale
 	}
 	switch kind {
-	case "creation_submit", "creation_browse", "creation_back", "creation_pick", "creation_path", "creation_cancel", "creation_retry", "creation_check", "creation_search", "creation_search_next", "creation_search_pick", "creation_panel", "creation_goto", "creation_filter", "creation_lookup", "creation_projects":
+	case "creation_submit", "creation_browse", "creation_back", "creation_pick", "creation_path", "creation_cancel", "creation_retry", "creation_check", "creation_search", "creation_search_next", "creation_search_pick", "creation_panel", "creation_goto", "creation_filter", "creation_lookup", "creation_projects", "creation_local", "creation_worktree":
 	default:
 		return store.ErrSubmissionStale
 	}
@@ -346,6 +346,18 @@ func (m *Manager) tickUI(ctx context.Context) error {
 }
 
 func actionError(err error) string {
+	if errors.Is(err, ErrWorktreeScope) {
+		return "worktree-scope"
+	}
+	if errors.Is(err, ErrWorktreeRepository) {
+		return "worktree-repository"
+	}
+	if errors.Is(err, ErrWorktreeBranch) {
+		return "worktree-branch"
+	}
+	if errors.Is(err, ErrWorktreeStorage) || errors.Is(err, ErrWorktreeIdentity) {
+		return "worktree-storage"
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "directory-read"
 	}
@@ -406,13 +418,16 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 	if target, ok := p.Form["creation_target"].(string); ok {
 		d.TargetChatID = target
 	}
+	if branch, ok := p.Form["creation_branch"].(string); ok && d.WorkspaceMode == "worktree" {
+		d.BaseBranch = branch
+	}
 	if utf8.RuneCountInString(d.Body) > MaxTaskRunes {
 		return ErrTaskTooLong
 	}
 	if d.FollowMode != "group" && d.FollowMode != "topic" || d.FollowMode == "topic" && !m.Config.Creation.TopicsEnabled {
 		return store.ErrSubmissionStale
 	}
-	if a.Kind == "creation_submit" && d.View != "main" {
+	if (a.Kind == "creation_submit" || a.Kind == "creation_local" || a.Kind == "creation_worktree") && d.View != "main" {
 		return ErrSearchSelectionRequired
 	}
 	if d.ExpiresAtMS <= m.now().UnixMilli() {
@@ -437,6 +452,14 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 		d.Directory, d.ProjectID = choice.Path, choice.ProjectID
 	}
 	switch a.Kind {
+	case "creation_local":
+		d.WorkspaceMode, d.BaseBranch = "local", ""
+	case "creation_worktree":
+		_, branch, err := worktreeBranches(ctx, d.Directory, d.BaseBranch, m.Config.Creation.AllowedRoots)
+		if err != nil {
+			return err
+		}
+		d.WorkspaceMode, d.BaseBranch = "worktree", branch
 	case "creation_search", "creation_search_next", "creation_projects":
 		query := strings.TrimSpace(textValue(p.Form, "creation_query"))
 		if a.Kind == "creation_projects" {
@@ -590,6 +613,11 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 			name = name[:40]
 		}
 		i := store.CreationIntent{OwnerID: m.Config.Access.OwnerOpenID, Name: bindings.WithRobotPrefix(string(name)), Members: append([]string{m.Config.Access.OwnerOpenID, d.CreatorID}, m.Config.Groups.AdditionalMemberOpenIDs...)}
+		if d.WorkspaceMode == "worktree" {
+			if err := m.planWorktree(ctx, n, d, &i); err != nil {
+				return err
+			}
+		}
 		_, _, err = m.Store.ClaimCreationIntent(ctx, d, i, m.now().UnixMilli())
 		return err
 	default:
@@ -648,12 +676,22 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 	if _, err = m.directories(n).Validate(ctx, i.Directory, i.ProjectID); err != nil {
 		return m.Store.SetCreationError(ctx, d.ID, actionError(err))
 	}
+	if i.WorkspaceMode == "worktree" {
+		ready, err := m.ensureWorktree(ctx, n, i)
+		if err != nil {
+			return m.Store.SetCreationError(ctx, d.ID, actionError(err))
+		}
+		if !ready {
+			return nil
+		}
+	}
+	cwd := i.ExecutionDirectory()
 	if i.FollowMode == "topic" && (!m.Config.Creation.TopicsEnabled || !contains(m.Config.Creation.WorkgroupChatIDs, i.TargetChatID)) {
 		return store.ErrConflict
 	}
 	chat := i.ChatID
 	if i.FollowMode == "group" && chat == "" {
-		p := groupRequest{Name: i.Name, Owner: i.OwnerID, Members: i.Members, UUID: i.ID, Description: "工作目录：" + i.Directory}
+		p := groupRequest{Name: i.Name, Owner: i.OwnerID, Members: i.Members, UUID: i.ID, Description: "工作目录：" + cwd}
 		raw, _ := json.Marshal(p)
 		a, err := m.Store.PrepareCreationAttempt(ctx, d.ID, "group", string(raw), m.now().UnixMilli())
 		if err != nil {
@@ -686,7 +724,7 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 		return m.Store.SetCreationError(ctx, d.ID, "target-membership")
 	}
 	if i.RootMessageID == "" {
-		root, err := m.ensureCard(ctx, d.ID, "root", cardRequest{Operation: "send", ChatID: chat}, cards.CreationRoot(i.Body, i.Directory, "来自飞书创建"))
+		root, err := m.ensureCard(ctx, d.ID, "root", cardRequest{Operation: "send", ChatID: chat}, cards.CreationRoot(i.Body, cwd, "来自飞书创建"))
 		if err != nil || root == "" {
 			return err
 		}
@@ -697,10 +735,10 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 	}
 	if i.NativeThreadID == "" {
 		choice, err := m.directories(n).Validate(ctx, i.Directory, i.ProjectID)
-		if err != nil || choice.Path != i.Directory {
+		if err != nil || choice.Path != i.Directory || cwd == "" {
 			return m.Store.SetCreationError(ctx, d.ID, "directory")
 		}
-		spec := codexclient.CreationSpec{IntentID: i.ID, CWD: i.Directory, ProjectID: i.ProjectID}
+		spec := codexclient.CreationSpec{IntentID: i.ID, CWD: cwd, ProjectID: i.ProjectID}
 		params, err := codexclient.CreationRequestJSON(spec)
 		if err != nil {
 			return err
@@ -893,7 +931,7 @@ func (m *Manager) reconcileNative(ctx context.Context, n Native, i store.Creatio
 		}
 		var label string
 		_ = json.Unmarshal(t.ThreadSource, &label)
-		if label != source || t.ID != id || t.CWD != i.Directory || t.Ephemeral || t.ParentThreadID != nil || t.ForkedFromID != nil || i.ProjectID != "" && (t.ProjectID == nil || *t.ProjectID != i.ProjectID) {
+		if label != source || t.ID != id || t.CWD != i.ExecutionDirectory() || t.Ephemeral || t.ParentThreadID != nil || t.ForkedFromID != nil || i.ProjectID != "" && (t.ProjectID == nil || *t.ProjectID != i.ProjectID) {
 			return store.ErrConflict
 		}
 		// Recover effective policies through a minimal resume, without overrides.
@@ -904,7 +942,7 @@ func (m *Manager) reconcileNative(ctx context.Context, n Native, i store.Creatio
 		if !ok {
 			return nil
 		}
-		result, err := reader.ReadCreation(ctx, codexclient.CreationSpec{IntentID: i.ID, CWD: i.Directory, ProjectID: i.ProjectID}, id)
+		result, err := reader.ReadCreation(ctx, codexclient.CreationSpec{IntentID: i.ID, CWD: i.ExecutionDirectory(), ProjectID: i.ProjectID}, id)
 		if err != nil {
 			return nil
 		}
@@ -1049,6 +1087,8 @@ func (m *Manager) actionBusy(ctx context.Context, a store.CreationAction) (bool,
 		busy = "正在保存目录选择…"
 	case "creation_submit":
 		busy = "正在核验创建信息…"
+	case "creation_local", "creation_worktree":
+		busy = "正在更新工作方式…"
 	}
 	step := "entry:busy:" + a.ID
 	var base string
@@ -1099,7 +1139,7 @@ func (m *Manager) entryCard(ctx context.Context, n Native, d store.CreationDraft
 	if d.CardRevision >= d.Revision {
 		return nil
 	}
-	v := cards.CreationView{State: d.State, Error: creationErrorText(d.ErrorCode), Host: d.HostID, Body: d.Body, Directory: d.Directory, ProjectLabel: "独立目录", FollowMode: d.FollowMode, TargetChatID: d.TargetChatID, Token: d.Token, Revision: d.Revision, TopicsEnabled: m.Config.Creation.TopicsEnabled}
+	v := cards.CreationView{State: d.State, Error: creationErrorText(d.ErrorCode), Host: d.HostID, Body: d.Body, Directory: d.Directory, ProjectLabel: "独立目录", FollowMode: d.FollowMode, TargetChatID: d.TargetChatID, Token: d.Token, Revision: d.Revision, TopicsEnabled: m.Config.Creation.TopicsEnabled, WorkspaceMode: d.WorkspaceMode, BaseBranch: d.BaseBranch}
 	if d.State == "draft" && d.View == "search" {
 		read, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
@@ -1124,6 +1164,15 @@ func (m *Manager) entryCard(ctx context.Context, n Native, d store.CreationDraft
 	}
 	if d.State == "draft" && d.View == "main" {
 		m.workgroupOptions(ctx, &v)
+		if d.WorkspaceMode == "worktree" {
+			read, cancel := context.WithTimeout(ctx, 2*time.Second)
+			options, selected, err := worktreeBranches(read, d.Directory, d.BaseBranch, m.Config.Creation.AllowedRoots)
+			v.Branches, v.BaseBranch = options, selected
+			cancel()
+			if err != nil {
+				v.Error = creationErrorText(actionError(err))
+			}
+		}
 	}
 	if d.View == "directories" && d.State == "draft" {
 		read, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -1151,6 +1200,7 @@ func (m *Manager) entryCard(ctx context.Context, n Native, d store.CreationDraft
 		}
 		v.State = i.State
 		v.ThreadID = i.NativeThreadID
+		v.Directory = i.ExecutionDirectory()
 		if d.State == "created" {
 			v.State = "created"
 			chat := i.ChatID
@@ -1194,6 +1244,16 @@ func (m *Manager) workgroupOptions(ctx context.Context, v *cards.CreationView) {
 
 func creationErrorText(code string) string {
 	switch code {
+	case "worktree-scope":
+		return "新建工作树需要整个 Git 仓库在允许范围内，请选择已授权的仓库目录，或使用当前目录模式。"
+	case "worktree-repository":
+		return "此目录不是可用的 Git 仓库，请更改目录，或选择当前目录模式。"
+	case "worktree-branch":
+		return "基准分支或对应子目录不可用，请重新选择分支。"
+	case "worktree-storage", "worktree-rejected":
+		return "独立工作树目录不可用，请检查磁盘和目录权限后继续。"
+	case "worktree-unknown":
+		return "正在核验工作树创建结果，请勿重复创建。"
 	case "":
 		return ""
 	case "task-length":

@@ -301,6 +301,8 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 			message = "正在保存所选目录…"
 		case "creation_projects":
 			message = "正在加载最近目录与项目…"
+		case "creation_local", "creation_worktree":
+			message = "正在更新工作方式…"
 		}
 		return respond("info", message), nil
 	}
