@@ -58,7 +58,8 @@ type Config struct {
 		DefaultFollowMode string   `toml:"default_follow_mode"`
 		WorkgroupChatIDs  []string `toml:"workgroup_chat_ids"`
 	} `toml:"creation"`
-	Storage struct {
+	FilePreview FilePreviewConfig `toml:"file_preview" json:"file_preview,omitzero"`
+	Storage     struct {
 		DatabaseFile string `toml:"database_file"`
 	} `toml:"storage"`
 }
@@ -86,6 +87,9 @@ func Load(path string) (Config, error) {
 func (c Config) Validate() error {
 	if c.SchemaVersion != 1 {
 		return errors.New("unsupported config schema")
+	}
+	if err := c.ValidateFilePreview(); err != nil {
+		return err
 	}
 	seenTypes := map[string]bool{}
 	for _, kind := range c.Interactions.EnabledTypes {

@@ -114,6 +114,21 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 		}
 		o.Checks = append(o.Checks, check{"config", "pass", true, "validated phase1 configuration and allowed directories"})
 		data["interactions"] = map[string]any{"enabled": cfg.Interactions.Enabled, "enabled_types": cfg.Interactions.EnabledTypes, "ui_verified": false, "required_protocol": "verified shared app-server"}
+		preview := cfg.FilePreviewLimits()
+		data["file_preview"] = map[string]any{
+			"enabled": preview.Enabled, "base_url": preview.BaseURL,
+			"listen_address": preview.ListenAddress, "allowed_roots_count": len(preview.AllowedRoots),
+			"max_file_bytes": preview.MaxFileBytes, "ui_verified": false,
+		}
+		if preview.Enabled {
+			if _, err := cfg.FilePreviewSecret(); err != nil {
+				o.State, o.Data = "file-preview-secret-unavailable", data
+				o.Checks = append(o.Checks, check{"file_preview.secret", "fail", true, "preview access code requires an owner-only regular 0600 file; value omitted"})
+				return o, 3
+			}
+			o.Checks = append(o.Checks, check{"file_preview.secret", "pass", true, "private preview access credential verified; value omitted"},
+				check{"file_preview.browser", "pending", false, "IP/network reachability, browser sign-in and real Feishu clicks require separate client acceptance"})
+		}
 		secret, err = cfg.Secret()
 		if err != nil {
 			o.State, o.Checks = "secret-unavailable", append(o.Checks, check{"feishu.secret", "fail", true, "secret file must be a private regular file containing one value"})

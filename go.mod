@@ -6,6 +6,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/larksuite/oapi-sdk-go/v3 v3.12.0
 	github.com/pelletier/go-toml/v2 v2.4.3
+	github.com/yuin/goldmark v1.8.6
 	golang.org/x/sys v0.44.0
 	modernc.org/sqlite v1.53.0
 )

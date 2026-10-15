@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"codex-feishu/internal/config"
 )
 
 type Input struct {
@@ -35,7 +37,8 @@ type Input struct {
 		Timezone   string  `json:"timezone"`
 		QuietHours *string `json:"quiet_hours"`
 	} `json:"notifications"`
-	Features struct {
+	FilePreview *config.FilePreviewConfig `json:"file_preview,omitempty"`
+	Features    struct {
 		Phase    string `json:"phase"`
 		Creation bool   `json:"creation"`
 	} `json:"features"`

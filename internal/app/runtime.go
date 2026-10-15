@@ -49,6 +49,7 @@ type Runtime struct {
 	AsyncQuestionsSinceMS      int64
 	ProgressTimeZone           string
 	PrepareHuman               func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
+	PreparePublic              func(context.Context, string, string) (string, error)
 	SyncGroupName              func(context.Context, store.Binding, string) error
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
@@ -382,6 +383,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	defer timer.Stop()
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
 	engine.PrepareHuman = r.PrepareHuman
+	engine.PreparePublic = r.PreparePublic
 	engine.ProgressRender = r.RenderProgress
 	engine.SuppressAsyncQuestions = r.SuppressAsyncQuestions
 	engine.AsyncQuestionsSinceMS = r.AsyncQuestionsSinceMS
