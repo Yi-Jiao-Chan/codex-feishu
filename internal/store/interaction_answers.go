@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 )
 
-// Actual native outputs are separate from Feishu submission attempts. Closure
-// and a saved local answer cannot establish the callback's effective result.
+// Native answer evidence is separate from Feishu submission attempts. Closure
+// and a saved local answer cannot establish an effective answer by themselves.
 const InteractionAnswersSchema = `
 CREATE TABLE IF NOT EXISTS interaction_answers (
  request_key TEXT PRIMARY KEY REFERENCES interaction_requests(request_key),
@@ -34,7 +34,8 @@ func (s *Store) RecordInteractionAnswer(ctx context.Context, key, result string)
 	if err != nil {
 		return err
 	}
-	if request.State != "resolved" || request.Mode != "native" || request.Method != "item/tool/requestUserInput" {
+	question := request.Mode == "native" && request.Method == "item/tool/requestUserInput" || request.Mode == "async" && request.Method == "async"
+	if request.State != "resolved" || !question {
 		return ErrConflict
 	}
 	var prior string

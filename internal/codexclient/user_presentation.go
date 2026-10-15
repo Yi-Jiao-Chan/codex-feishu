@@ -61,7 +61,7 @@ func (i Item) UserPresentation() UserPresentation {
 	if replies, ok := ParseAsyncQuestionReplies(presentation.Text); ok {
 		parts := make([]string, 0, len(replies))
 		for _, reply := range replies {
-			parts = append(parts, "问题：\n\n"+reply.Question+"\n\n回答：\n\n"+reply.Answer)
+			parts = append(parts, "**"+reply.Question+"**\n\n"+reply.Answer)
 		}
 		presentation.Text = strings.Join(parts, "\n\n")
 	}

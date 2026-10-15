@@ -33,7 +33,7 @@ func TestAsyncQuestionRepliesPreserveIdentityOrderAndAnswerBytes(t *testing.T) {
 	}
 	item := presentationItem(map[string]string{"type": "text", "text": text}, map[string]string{"type": "localImage", "path": "/not-read/answer.png"})
 	presentation := item.UserPresentation()
-	wantText := "问题：\n\n" + question + "\n\n回答：\n\n" + answer + "\n\n问题：\n\n还需要什么？\n\n回答：\n\n补充说明"
+	wantText := "**" + question + "**\n\n" + answer + "\n\n**还需要什么？**\n\n补充说明"
 	if presentation.Text != wantText || len(presentation.Attachments) != 1 || presentation.Attachments[0].Path != "/not-read/answer.png" {
 		t.Fatal("async answer presentation lost text or its native attachment")
 	}

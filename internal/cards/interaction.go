@@ -151,7 +151,11 @@ func renderInteraction(v InteractionView, limits interactionLimits) string {
 	} else if v.State == "pending" && !limited {
 		// A disabled button alone gives no explanation on clients that do not
 		// render disabled controls. Keep the reason in the normal body.
-		elements = append(elements, element{"tag": "markdown", "content": "此请求暂不能在飞书提交，请回 Codex App 处理。", "text_size": "normal", "margin": "0px"})
+		prompt := "此请求暂不能在飞书提交，请回 Codex App 处理。"
+		if v.Kind == "async_question" {
+			prompt = "请在 Codex App 中回答。"
+		}
+		elements = append(elements, element{"tag": "markdown", "content": prompt, "text_size": "normal", "margin": "0px"})
 	}
 
 	if v.State != "pending" && strings.TrimSpace(v.Summary) != "" {

@@ -38,6 +38,7 @@ type Controller struct {
 	Now                func() time.Time
 	mu                 sync.Mutex
 	requests           map[string]codexclient.InteractiveRequest
+	asyncObserved      map[string]int64
 }
 
 func (c *Controller) enabled(kind string) bool {
@@ -91,14 +92,31 @@ func (c *Controller) Observe(ctx context.Context, e codexclient.Event) error {
 		return nil
 	}
 	var p struct {
-		ThreadID  string          `json:"threadId"`
-		RequestID json.RawMessage `json:"requestId"`
+		ThreadID  string           `json:"threadId"`
+		TurnID    string           `json:"turnId"`
+		Item      codexclient.Item `json:"item"`
+		RequestID json.RawMessage  `json:"requestId"`
 		Turn      struct {
 			ID string `json:"id"`
 		} `json:"turn"`
 	}
 	if json.Unmarshal(e.Params, &p) != nil {
 		return nil
+	}
+	if (e.Method == "item/started" || e.Method == "item/completed") && p.ThreadID != "" && p.TurnID != "" && p.Item.ID != "" && p.Item.Type == "agentMessage" && p.Item.Delivery != nil && *p.Item.Delivery == "async" && len(p.Item.Questions) > 0 {
+		if _, err := c.Store.Binding(ctx, c.HostID, p.ThreadID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		if c.asyncObserved == nil {
+			c.asyncObserved = map[string]int64{}
+		}
+		identity := key(p.ThreadID, p.TurnID, p.Item.ID)
+		if _, seen := c.asyncObserved[identity]; !seen {
+			c.asyncObserved[identity] = c.now().UnixMilli()
+		}
 	}
 	if e.Method == "serverRequest/resolved" && codexclient.NativeRequestID(p.RequestID) != "" {
 		if c.closed == nil {
@@ -125,13 +143,22 @@ func (c *Controller) Observe(ctx context.Context, e codexclient.Event) error {
 	return nil
 }
 func (c *Controller) Stage(ctx context.Context, thread string, turns []codexclient.Turn) error {
+	if err := c.Prepare(ctx, thread, turns); err != nil {
+		return err
+	}
+	return c.StageCards(ctx, thread, turns)
+}
+
+// Prepare records question identities before ordinary message projection. The
+// enabled type list controls answering in Feishu, not question visibility.
+func (c *Controller) Prepare(ctx context.Context, thread string, turns []codexclient.Turn) error {
 	if _, err := c.Store.Binding(ctx, c.HostID, thread); errors.Is(err, sql.ErrNoRows) {
 		return nil
 	} else if err != nil {
 		return err
 	}
 	if c.Native == nil {
-		return c.StageCards(ctx, thread, turns)
+		return nil
 	}
 	// Observer and history preparation serialize durable closure against first
 	// insertion. Network responses never run with this mutex held.
@@ -172,12 +199,17 @@ func (c *Controller) Stage(ctx context.Context, thread string, turns []codexclie
 	c.mu.Unlock()
 	for _, t := range turns {
 		for _, item := range t.Items {
-			if !c.enabled("async_question") || item.Type != "agentMessage" || item.Delivery == nil || *item.Delivery != "async" || len(item.Questions) == 0 {
+			if item.Type != "agentMessage" || item.Delivery == nil || *item.Delivery != "async" || len(item.Questions) == 0 {
 				continue
 			}
 			k := key(c.HostID, c.AppID, thread, t.ID, "async", item.ID)
 			_, existingErr := c.Store.Interaction(ctx, k)
 			fresh := t.StartedAt != nil && *t.StartedAt >= c.StartedAtMS/1000
+			identity := key(thread, t.ID, item.ID)
+			c.mu.Lock()
+			observedAt, observed := c.asyncObserved[identity]
+			c.mu.Unlock()
+			fresh = fresh || observed
 			if !fresh && errors.Is(existingErr, sql.ErrNoRows) {
 				continue
 			}
@@ -196,13 +228,23 @@ func (c *Controller) Stage(ctx context.Context, thread string, turns []codexclie
 			row := store.InteractionRequest{Key: k, HostID: c.HostID, AppID: c.AppID, ThreadID: thread, TurnID: t.ID, ItemID: item.ID, Mode: "async", Method: "async", Payload: string(payload), ConnectionID: c.Native.ConnectionID(), Generation: int64(c.Native.GenerationID()), State: "pending", CreatedAtMS: c.now().UnixMilli(), Replay: !fresh}
 			if fresh {
 				row.EventAt = c.now().Unix()
+				if observed {
+					row.EventAt = observedAt / 1000
+				}
 			}
 			if err := c.Store.ObserveInteraction(ctx, row); err != nil {
 				return err
 			}
+			c.mu.Lock()
+			delete(c.asyncObserved, identity)
+			c.mu.Unlock()
 		}
 	}
-	return c.StageCards(ctx, thread, turns)
+	rows, err := c.Store.Interactions(ctx, c.scope(thread))
+	if err != nil {
+		return err
+	}
+	return c.closeAnsweredAsync(ctx, rows, turns)
 }
 func (c *Controller) StageCards(ctx context.Context, thread string, turns []codexclient.Turn) error {
 	rows, err := c.Store.Interactions(ctx, c.scope(thread))
@@ -220,6 +262,13 @@ func (c *Controller) StageCards(ctx context.Context, thread string, turns []code
 		return err
 	}
 	for _, row := range rows {
+		if row.Mode == "async" && row.State == "resolved" {
+			if _, err := c.Store.Mirror(ctx, c.HostID, thread, store.InteractionCardKey(row.Key)); errors.Is(err, sql.ErrNoRows) {
+				continue // Already answered before first observation: no late question or @.
+			} else if err != nil {
+				return err
+			}
+		}
 		if row.Mode == "native" && row.State != "resolved" {
 			for _, t := range turns {
 				if t.ID == row.TurnID && t.Status != "inProgress" {
@@ -272,7 +321,7 @@ func (c *Controller) view(ctx context.Context, row store.InteractionRequest, tur
 	}
 	if !c.enabled(v.Kind) {
 		v.Enabled = false
-		if c.Native != nil && row.State == "pending" {
+		if c.Native != nil && row.State == "pending" && v.Kind != "async_question" {
 			v.Reason += "\n此类型尚未开启飞书操作，请在 Codex App 中处理。"
 		}
 	}
@@ -398,14 +447,14 @@ func (c *Controller) view(ctx context.Context, row store.InteractionRequest, tur
 
 func (c *Controller) questionReceipt(ctx context.Context, row store.InteractionRequest, request codexclient.InteractiveRequest, view *cards.InteractionView) error {
 	var result []byte
-	if row.Mode == "native" && row.State == "resolved" {
+	if row.State == "resolved" {
 		stored, err := c.Store.InteractionAnswer(ctx, row.Key)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if err == nil {
 			result = []byte(stored)
-		} else if c.ReadQuestionResult != nil {
+		} else if row.Mode == "native" && c.ReadQuestionResult != nil {
 			if recorded, readErr := c.ReadQuestionResult(ctx, request); readErr == nil {
 				if _, validationErr := codexclient.ParseQuestionAnswers(request, recorded); validationErr == nil {
 					if err := c.Store.RecordInteractionAnswer(ctx, row.Key, string(recorded)); err != nil {

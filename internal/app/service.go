@@ -529,11 +529,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 			return interactive.Observe(ctx, event)
 		}
 		r.WaitingReminder = nil
-		for _, kind := range s.Config.Interactions.EnabledTypes {
-			if kind == "async_question" {
-				r.SuppressAsyncQuestions = true
-			}
-		}
+		r.SuppressAsyncQuestions = true
 		r.AsyncQuestionsSinceMS = interactive.StartedAtMS
 		r.HistoryHydrated = func(ctx context.Context, thread string, turns []codexclient.Turn) error {
 			if err := tracker.Hydrated(ctx, thread, turns); err != nil {
@@ -544,7 +540,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 				return err
 			}
 			defer release()
-			return interactive.Stage(opctx, thread, turns)
+			return interactive.StageCards(opctx, thread, turns)
 		}
 	}
 	r.CanDeliver = s.canDeliver
@@ -608,6 +604,11 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		ctx = opctx
 		if err := tracker.ReconcileContext(ctx, thread, turns); err != nil {
 			return err
+		}
+		if interactive != nil {
+			if err := interactive.Prepare(ctx, thread, turns); err != nil {
+				return err
+			}
 		}
 		return task(thread).Prepare(ctx, thread, turns)
 	}

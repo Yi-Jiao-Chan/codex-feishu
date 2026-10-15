@@ -51,3 +51,27 @@ func TestInteractionAnswerReceiptSurvivesMigrationAndReopen(t *testing.T) {
 		t.Fatal("read-only receipt changed a submission attempt", err)
 	}
 }
+
+func TestAsyncAnswerReceiptRequiresResolvedQuestionAndRemainsImmutable(t *testing.T) {
+	s, _, scope, _ := submissionStore(t)
+	ctx := context.Background()
+	r := InteractionRequest{Key: "async-question", HostID: scope.HostID, AppID: scope.AppID, ThreadID: scope.ThreadID, TurnID: "turn", ItemID: "call", Mode: "async", Method: "async", Payload: `{}`, ConnectionID: "connection", Generation: 1, State: "pending", CreatedAtMS: 1000}
+	if err := s.ObserveInteraction(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	result := `{"answers":{"q_0":{"answers":["合成回答"]}}}`
+	if err := s.RecordInteractionAnswer(ctx, r.Key, result); !errors.Is(err, ErrConflict) {
+		t.Fatal("pending async question acquired an answer receipt", err)
+	}
+	if err := s.CloseAsyncInteraction(ctx, r.Key, r.ConnectionID, true); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.RecordInteractionAnswer(ctx, r.Key, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RecordInteractionAnswer(ctx, r.Key, `{"answers":{"q_0":{"answers":["其他回答"]}}}`); !errors.Is(err, ErrConflict) {
+		t.Fatal("recorded native input was overwritten", err)
+	}
+}
