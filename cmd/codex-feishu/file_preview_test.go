@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"codex-feishu/internal/config"
+	"github.com/pelletier/go-toml/v2"
 )
 
 func previewCommandStdout(t *testing.T, args []string) (int, string) {
@@ -37,6 +38,17 @@ func previewCommandStdout(t *testing.T, args []string) (int, string) {
 		t.Fatal(err)
 	}
 	return code, string(body)
+}
+
+func writePreviewFixtureConfig(t *testing.T, path string, cfg config.Config) {
+	t.Helper()
+	b, err := toml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestPreviewSecretCreationDoesNotExposeOrReplaceCredentials(t *testing.T) {
@@ -72,7 +84,7 @@ func TestPreviewShowSecretExplicitlyRevealsConfiguredCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.FilePreview = config.FilePreviewConfig{Enabled: true, BaseURL: "http://10.0.0.1:8787", SecretFile: secretPath, AllowedRoots: cfg.Discovery.AllowedRoots}
-	writeDoctorFixtureConfig(t, path, cfg)
+	writePreviewFixtureConfig(t, path, cfg)
 
 	code, stdout := previewCommandStdout(t, []string{"file-preview", "show-secret", "--config", path})
 	if code != 0 || stdout != secret+"\n" {
@@ -88,7 +100,7 @@ func TestPreviewShowSecretRejectsInvalidRequestsWithoutExposingCredential(t *tes
 		t.Fatal(err)
 	}
 	cfg.FilePreview = config.FilePreviewConfig{Enabled: true, BaseURL: "http://10.0.0.1:8787", SecretFile: secretPath, AllowedRoots: cfg.Discovery.AllowedRoots}
-	writeDoctorFixtureConfig(t, path, cfg)
+	writePreviewFixtureConfig(t, path, cfg)
 
 	for _, args := range [][]string{
 		{"file-preview", "show-secret"},
@@ -116,14 +128,14 @@ func TestPreviewShowSecretRejectsDisabledAndUnavailableCredentials(t *testing.T)
 		t.Fatal(err)
 	}
 	cfg.FilePreview = config.FilePreviewConfig{SecretFile: secretPath}
-	writeDoctorFixtureConfig(t, path, cfg)
+	writePreviewFixtureConfig(t, path, cfg)
 	code, out := candidateCommandOutput(t, []string{"file-preview", "show-secret", "--config", path})
 	if code != 2 || out.OK {
 		t.Fatalf("disabled preview unexpectedly revealed credential: code=%d output=%+v", code, out)
 	}
 
 	cfg.FilePreview = config.FilePreviewConfig{Enabled: true, BaseURL: "http://10.0.0.1:8787", SecretFile: secretPath, AllowedRoots: cfg.Discovery.AllowedRoots}
-	writeDoctorFixtureConfig(t, path, cfg)
+	writePreviewFixtureConfig(t, path, cfg)
 	if err := os.Chmod(secretPath, 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +205,7 @@ func TestDoctorPreviewNeverExposesCredentialOrClaimsClientAcceptance(t *testing.
 		t.Fatal(err)
 	}
 	cfg.FilePreview = config.FilePreviewConfig{Enabled: true, BaseURL: "http://10.0.0.1:8787", SecretFile: secret, AllowedRoots: cfg.Discovery.AllowedRoots}
-	writeDoctorFixtureConfig(t, path, cfg)
+	writePreviewFixtureConfig(t, path, cfg)
 	o, code := inspectDoctor(context.Background(), path, false, true, deps)
 	if code != 0 || !o.OK {
 		t.Fatalf("configured preview prerequisites failed: %d %+v", code, o)

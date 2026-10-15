@@ -59,6 +59,12 @@ go test -race ./internal/filepreview ./internal/sync ./internal/app ./cmd/codex-
 - 构建 `0cd26da888ac+file-preview-commands-20261015-105038`，二进制 SHA-256 为 `9f09628ebd0b07acdfe6a4f82bf75c63f6160750da4bfe75106fea1b75e8b048`。经既有 service stop/install/start 切换；配置、口令和文件链接保持。私有备份 `backup-file-preview-commands-20261015-105038` 的 SQLite 一致性检查通过。
 - 安装稳定 CLI 链接 `/data00/home/chenxiaoyu.lemon/.local/bin/codex-feishu`，指向本次构建，不修改 shell PATH 或全局 Codex 配置。用户可按该绝对路径调用 CLI。构建、备份、服务操作和不含口令的验证结果保存在私有 `file-preview-commands-20261015-105038/` 版本目录。
 
+## 独立提交范围与验证
+
+发布分支 `codex/file-preview` 从 `0cd26da888ac` 单独抽取文件预览、Chrome 登录修复、CLI 和 `/preview` 口令获取及对应文档。独立分支沿用原数据库 schema；本机较新候选的附件、任务创建和话题协议不在本次提交中，上文部署记录仍描述当时完整工作区候选。
+
+独立工作树已通过 `go test -timeout=90s ./...`。预览 CLI 测试改为自带配置写入辅助函数；版本能力字段使旧版输出捕获超出管道缓冲区，因此同时保留临时文件捕获的测试修正。只读核验确认实际配置口令未出现在待发布文件中；原工作区分支和暂存区保持。
+
 ## 未通过项
 
 用户已确认电脑 Chrome 修复后可用；飞书内置浏览器、手机访问和布局仍 pending。新增 `/preview` 的用户设备实际命令验收另行记录，自动测试不替代该验收。HTTP 直连的传输由用户所用网络承载，需要传输加密时可接 HTTPS。

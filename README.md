@@ -14,6 +14,7 @@ M0 真实可行性联调已通过。一期候选 `serve` 已实际部署，用�
 - 飞书图片、文件与多附件输入已接入：默认关闭，静态 PNG/JPEG/WebP 使用原生 `localImage`，通用文件使用安全的绝对路径文本引用；草稿封存、受限下载、原生 Add/Steer/Restore、FIFO 和重启恢复均已实现。本机候选已启用，用户已确认图片 / 文件输入可用；完整附件矩阵仍分别记录，见[附件实施记录](docs/research/feishu-inbound-attachments-implementation-2026-10-15.md)。
 - 配置预览/原子应用、私聊配对、只读 doctor/status、用户服务管理，以及受控卡/群/线程/绑定组件。管理组件复用原接收器和原生连接，不自动提交测试输入。
 - 飞书卡片处理原生审批与问答，完成后展示实际回答。命令审批（允许本次）和同步问答已通过真实 App / 飞书验收并在本机常用候选开启；文件、网络、额外权限与异步问答仍待联调。新配置默认关闭，显式按类型启用，见[扩展验收记录](docs/codex-feishu/13-feishu-approvals-and-questions.md)。
+- 可选受控网页预览：本地文件引用自动转换为浏览器链接，Markdown 排版和代码行号均可查看；使用口令登录，所有者可私聊 `/preview` 或运行 `file-preview show-secret` 获取口令。见[网页预览](docs/codex-feishu/14-file-preview.md)。
 
 以上同时有隔离测试、原生协议证据和部分真实 App / 飞书确认；全部一期矩阵尚未通过。默认 `verify` 与受控组件 observed 仍保留完整 P1 pending；显式 `--acceptance-report` 可只读核验已有的完整案例报告、人工确认、证据摘要与当前构建/部署，不能以 mock 或诊断就绪替代真实 UI，也不自动发布。
 
