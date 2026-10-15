@@ -16,6 +16,10 @@ import (
 
 // A Unix WebSocket fixture exercises our real framing/multiplexing, not a mock Client.
 func fixture(t *testing.T, handle func(context.Context, *websocket.Conn, wire)) string {
+	return fixtureWithHome(t, t.TempDir(), handle)
+}
+
+func fixtureWithHome(t *testing.T, home string, handle func(context.Context, *websocket.Conn, wire)) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "daemon.sock")
 	l, err := net.Listen("unix", path)
@@ -38,7 +42,7 @@ func fixture(t *testing.T, handle func(context.Context, *websocket.Conn, wire)) 
 				return
 			}
 			if in.Method == "initialize" {
-				send(r.Context(), c, in.ID, map[string]any{"userAgent": "fixture"})
+				send(r.Context(), c, in.ID, map[string]any{"userAgent": "fixture", "codexHome": home})
 				continue
 			}
 			if in.Method == "initialized" {
@@ -50,6 +54,22 @@ func fixture(t *testing.T, handle func(context.Context, *websocket.Conn, wire)) 
 	go server.Serve(l)
 	t.Cleanup(func() { server.Close() })
 	return path
+}
+
+func TestCodexHomeComesFromConnectedServer(t *testing.T) {
+	serverHome, clientHome := t.TempDir(), t.TempDir()
+	t.Setenv("CODEX_HOME", clientHome)
+	path := fixtureWithHome(t, serverHome, func(context.Context, *websocket.Conn, wire) {})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	client, err := Connect(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if client.CodexHome() != serverHome || client.CodexHome() == clientHome {
+		t.Fatal("worktree home was guessed from the bridge environment")
+	}
 }
 func send(ctx context.Context, c *websocket.Conn, id json.RawMessage, result any) {
 	b, _ := json.Marshal(map[string]any{"id": id, "result": result})

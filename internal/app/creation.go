@@ -24,11 +24,23 @@ func (s *Service) authorizeCreation(ctx context.Context, t codexclient.Thread, a
 	if err != nil {
 		return true, err
 	}
-	if automatic || i.State != "confirmed" || t.Ephemeral || t.ParentThreadID != nil || t.ForkedFromID != nil || t.CWD != i.Directory || !s.Config.Operator(i.CreatorID) || i.OwnerID != s.Config.Access.OwnerOpenID {
+	cwd := i.ExecutionDirectory()
+	if automatic || i.State != "confirmed" || t.Ephemeral || t.ParentThreadID != nil || t.ForkedFromID != nil || cwd == "" || t.CWD != cwd || !s.Config.Operator(i.CreatorID) || i.OwnerID != s.Config.Access.OwnerOpenID {
 		return true, store.ErrIneligible
 	}
-	if _, err := (creation.DirectoryService{Roots: s.Config.Creation.AllowedRoots}).Validate(ctx, t.CWD, ""); err != nil {
+	directories := creation.DirectoryService{Roots: s.Config.Creation.AllowedRoots}
+	if choice, err := directories.Validate(ctx, i.Directory, ""); err != nil || choice.Path != i.Directory {
 		return true, store.ErrIneligible
+	}
+	if i.WorkspaceMode == "worktree" {
+		// Scope follows the authorized source repository; the private checkout
+		// need not be directly inside the selectable directory roots.
+		if choice, err := directories.Validate(ctx, i.GitRoot, ""); err != nil || choice.Path != i.GitRoot {
+			return true, store.ErrIneligible
+		}
+		if err := creation.ValidateCreatedWorktree(ctx, i); err != nil {
+			return true, store.ErrIneligible
+		}
 	}
 	if i.ProjectID != "" && (t.ProjectID == nil || *t.ProjectID != i.ProjectID) {
 		return true, store.ErrConflict

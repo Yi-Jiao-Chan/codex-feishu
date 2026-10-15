@@ -88,14 +88,47 @@ type CreationDirectoryPage struct {
 type CreationView struct {
 	State, Error, Host, Body, Directory, ProjectLabel, FollowMode, TargetChatID string
 	Token, ChatLink, ThreadID                                                   string
+	WorkspaceMode, BaseBranch                                                   string
 	Revision                                                                    int64
 	TopicsEnabled                                                               bool
 	Workgroups                                                                  []CreationOption
+	Branches                                                                    []CreationOption
 	QuickChoices                                                                []CreationDirectoryChoice
 	SearchQuery                                                                 string
 	SearchPage                                                                  *CreationDirectoryPage
 	DirectoryPage                                                               *CreationDirectoryPage
 	Busy                                                                        string
+}
+
+func creationWorkspace(v CreationView) []element {
+	local, isolated := "当前目录", "新建工作树"
+	if v.WorkspaceMode == "worktree" {
+		isolated = "✓ " + isolated
+	} else {
+		local = "✓ " + local
+	}
+	useLocal := creationButton(v, local, "creation_local", nil, true)
+	useWorktree := creationButton(v, isolated, "creation_worktree", nil, true)
+	if v.Directory == "" {
+		useWorktree["disabled"] = true
+	}
+	els := []element{creationText("工作方式", "notation"), creationRow(useLocal, useWorktree)}
+	if v.WorkspaceMode == "worktree" {
+		options := make([]element, 0, len(v.Branches))
+		for _, branch := range v.Branches {
+			options = append(options, element{"text": element{"tag": "plain_text", "content": interactionLine(branch.Label, 80)}, "value": branch.Value})
+		}
+		els = append(els, creationText("基准分支", "notation"))
+		if len(options) > 0 {
+			selectBranch := element{"tag": "select_static", "name": "creation_branch", "width": "fill", "options": options, "placeholder": element{"tag": "plain_text", "content": "选择起始分支"}}
+			if v.BaseBranch != "" {
+				selectBranch["initial_option"] = v.BaseBranch
+			}
+			els = append(els, selectBranch)
+		}
+		els = append(els, creationText("基于所选分支的已提交内容，创建独立工作树。", "notation"))
+	}
+	return els
 }
 
 func creationButton(v CreationView, label, action string, values element, submit bool) element {
@@ -269,6 +302,18 @@ func creationFollowPanel(v CreationView) element {
 // Creation renders a pure view. Every callback is revalidated against the
 // durable draft; displaying a path or a selected option grants no authority.
 func Creation(v CreationView) string {
+	for {
+		raw := creation(v)
+		if len(raw) <= 28*1024 || len(v.Branches) <= 1 {
+			return raw
+		}
+		// The selected branch is first. Leave room for the request marker and
+		// pending status even with long task bodies and Git ref names.
+		v.Branches = v.Branches[:len(v.Branches)-1]
+	}
+}
+
+func creation(v CreationView) string {
 	if v.Busy != "" {
 		els := []element{creationText("**"+creationLiteral(v.Busy)+"**", "normal")}
 		if v.Host != "" {
@@ -321,15 +366,24 @@ func Creation(v CreationView) string {
 			)
 		}
 		form = append(form, creationDirectorySummary(v, v.Directory, "工作目录", creationButton(v, "更改目录", "creation_panel", nil, true)))
+		form = append(form, creationWorkspace(v)...)
 		form = append(form, creationFollowPanel(v))
 		submit := creationPrimary(creationButton(v, "创建任务", "creation_submit", nil, true))
 		if v.Directory == "" {
 			submit["disabled"] = true
 			form = append(form, creationText("请先选择工作目录，再创建任务。", "notation"))
 		}
+		if v.WorkspaceMode == "worktree" && len(v.Branches) == 0 {
+			submit["disabled"] = true
+			form = append(form, creationText("请选择可用的 Git 仓库和基准分支。", "notation"))
+		}
 		form = append(form, creationRow(submit, creationButton(v, "取消", "creation_cancel", nil, true)))
 		els = append(els, creationForm("creation_form", form))
 	} else {
+		if v.WorkspaceMode == "worktree" {
+			branch := strings.TrimPrefix(strings.TrimPrefix(v.BaseBranch, "refs/heads/"), "refs/remotes/")
+			els = append(els, creationText("新建工作树 · "+creationLiteral(branch), "notation"))
+		}
 		if v.Body != "" {
 			els = append(els, publicBodyElements(v.Body, "normal")...)
 		}

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -52,18 +54,68 @@ CREATE TABLE IF NOT EXISTS creation_actions (
 );
 `
 
+// Existing drafts and workflows keep their original, local-directory mode.
+func migrateCreationWorktrees(tx *sql.Tx) error {
+	for _, column := range []struct{ table, name, definition string }{
+		{"creation_drafts", "workspace_mode", "TEXT NOT NULL DEFAULT 'local' CHECK(workspace_mode IN ('local','worktree'))"},
+		{"creation_drafts", "base_branch", "TEXT NOT NULL DEFAULT ''"},
+		{"creation_workflows", "workspace_mode", "TEXT NOT NULL DEFAULT 'local' CHECK(workspace_mode IN ('local','worktree'))"},
+		{"creation_workflows", "base_branch", "TEXT NOT NULL DEFAULT ''"},
+		{"creation_workflows", "base_commit", "TEXT NOT NULL DEFAULT ''"},
+		{"creation_workflows", "git_root", "TEXT NOT NULL DEFAULT ''"},
+		{"creation_workflows", "git_common_dir", "TEXT NOT NULL DEFAULT ''"},
+		{"creation_workflows", "worktree_path", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		var present int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&present); err != nil {
+			return err
+		}
+		if present == 0 {
+			if _, err := tx.Exec(`ALTER TABLE ` + column.table + ` ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 type CreationDraft struct {
 	ID, HostID, AppID, CreatorID, SourceMessageID, SourceChatID, SourceChatType        string
 	SourceRootID, SourceThreadID, Body, Directory, ProjectID, FollowMode, TargetChatID string
 	Token, State, View, BrowsePath, BrowseCursor, CardID, ErrorCode                    string
+	WorkspaceMode, BaseBranch                                                          string
 	Revision, ExpiresAtMS, CreatedAtMS, CardRevision                                   int64
 }
 
 type CreationIntent struct {
 	ID, DraftID, HostID, AppID, CreatorID, Body, Directory, ProjectID, FollowMode, TargetChatID         string
 	OwnerID, Name, State, ChatID, RootMessageID, PlatformThreadID, NativeThreadID, ReceiptID, ErrorCode string
+	WorkspaceMode, BaseBranch, BaseCommit, GitRoot, GitCommonDir, WorktreePath                          string
 	Members                                                                                             []string
 	CreatedAtMS                                                                                         int64
+}
+
+// ExecutionDirectory preserves a selected project subdirectory in the new
+// checkout. The frozen worktree identity is validated before it is persisted.
+func (i CreationIntent) ExecutionDirectory() string {
+	if i.WorkspaceMode == "worktree" {
+		rel, err := filepath.Rel(i.GitRoot, i.Directory)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return ""
+		}
+		return filepath.Join(i.WorktreePath, rel)
+	}
+	return i.Directory
+}
+
+var creationCommit = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
+func validCreationWorkspace(i CreationIntent) bool {
+	if i.WorkspaceMode == "local" {
+		return i.BaseBranch == "" && i.BaseCommit == "" && i.GitRoot == "" && i.GitCommonDir == "" && i.WorktreePath == ""
+	}
+	return i.WorkspaceMode == "worktree" && i.BaseBranch != "" && creationCommit.MatchString(i.BaseCommit) &&
+		filepath.IsAbs(i.GitRoot) && filepath.IsAbs(i.GitCommonDir) && filepath.IsAbs(i.WorktreePath) && i.ExecutionDirectory() != ""
 }
 
 type CreationAttempt struct {
@@ -76,18 +128,18 @@ type CreationAction struct {
 	Revision, CreatedAtMS             int64
 }
 
-const creationDraftColumns = `draft_id,host_id,app_id,creator_id,source_message_id,source_chat_id,source_chat_type,source_root_id,source_thread_id,body,directory,project_id,follow_mode,target_chat_id,revision,token,expires_at_ms,created_at_ms,state,view,browse_path,browse_cursor,card_id,card_revision,error_code`
-const creationIntentColumns = `intent_id,draft_id,host_id,app_id,creator_id,body,directory,project_id,follow_mode,target_chat_id,owner_id,members_json,name,state,chat_id,root_message_id,platform_thread_id,native_thread_id,receipt_id,created_at_ms,error_code`
+const creationDraftColumns = `draft_id,host_id,app_id,creator_id,source_message_id,source_chat_id,source_chat_type,source_root_id,source_thread_id,body,directory,project_id,follow_mode,target_chat_id,revision,token,expires_at_ms,created_at_ms,state,view,browse_path,browse_cursor,card_id,card_revision,error_code,workspace_mode,base_branch`
+const creationIntentColumns = `intent_id,draft_id,host_id,app_id,creator_id,body,directory,project_id,follow_mode,target_chat_id,owner_id,members_json,name,state,chat_id,root_message_id,platform_thread_id,native_thread_id,receipt_id,created_at_ms,error_code,workspace_mode,base_branch,base_commit,git_root,git_common_dir,worktree_path`
 const creationAttemptColumns = `attempt_id,draft_id,step,params_json,state,remote_id,result_json,created_at_ms`
 
 func scanCreationDraft(row rowScanner) (d CreationDraft, err error) {
-	err = row.Scan(&d.ID, &d.HostID, &d.AppID, &d.CreatorID, &d.SourceMessageID, &d.SourceChatID, &d.SourceChatType, &d.SourceRootID, &d.SourceThreadID, &d.Body, &d.Directory, &d.ProjectID, &d.FollowMode, &d.TargetChatID, &d.Revision, &d.Token, &d.ExpiresAtMS, &d.CreatedAtMS, &d.State, &d.View, &d.BrowsePath, &d.BrowseCursor, &d.CardID, &d.CardRevision, &d.ErrorCode)
+	err = row.Scan(&d.ID, &d.HostID, &d.AppID, &d.CreatorID, &d.SourceMessageID, &d.SourceChatID, &d.SourceChatType, &d.SourceRootID, &d.SourceThreadID, &d.Body, &d.Directory, &d.ProjectID, &d.FollowMode, &d.TargetChatID, &d.Revision, &d.Token, &d.ExpiresAtMS, &d.CreatedAtMS, &d.State, &d.View, &d.BrowsePath, &d.BrowseCursor, &d.CardID, &d.CardRevision, &d.ErrorCode, &d.WorkspaceMode, &d.BaseBranch)
 	return
 }
 
 func scanCreationIntent(row rowScanner) (i CreationIntent, err error) {
 	var members string
-	err = row.Scan(&i.ID, &i.DraftID, &i.HostID, &i.AppID, &i.CreatorID, &i.Body, &i.Directory, &i.ProjectID, &i.FollowMode, &i.TargetChatID, &i.OwnerID, &members, &i.Name, &i.State, &i.ChatID, &i.RootMessageID, &i.PlatformThreadID, &i.NativeThreadID, &i.ReceiptID, &i.CreatedAtMS, &i.ErrorCode)
+	err = row.Scan(&i.ID, &i.DraftID, &i.HostID, &i.AppID, &i.CreatorID, &i.Body, &i.Directory, &i.ProjectID, &i.FollowMode, &i.TargetChatID, &i.OwnerID, &members, &i.Name, &i.State, &i.ChatID, &i.RootMessageID, &i.PlatformThreadID, &i.NativeThreadID, &i.ReceiptID, &i.CreatedAtMS, &i.ErrorCode, &i.WorkspaceMode, &i.BaseBranch, &i.BaseCommit, &i.GitRoot, &i.GitCommonDir, &i.WorktreePath)
 	if err == nil {
 		err = json.Unmarshal([]byte(members), &i.Members)
 	}
@@ -116,8 +168,11 @@ func (s *Store) ReceiveCreationDraft(ctx context.Context, d CreationDraft) (Crea
 	if d.FollowMode == "" {
 		d.FollowMode = "group"
 	}
+	if d.WorkspaceMode == "" {
+		d.WorkspaceMode = "local"
+	}
 	d.ID, d.Token = ID(), ID()
-	r, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO creation_drafts(draft_id,host_id,app_id,creator_id,source_message_id,source_chat_id,source_chat_type,source_root_id,source_thread_id,body,directory,project_id,follow_mode,target_chat_id,token,expires_at_ms,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, d.ID, d.HostID, d.AppID, d.CreatorID, d.SourceMessageID, d.SourceChatID, d.SourceChatType, d.SourceRootID, d.SourceThreadID, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.Token, d.ExpiresAtMS, d.CreatedAtMS)
+	r, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO creation_drafts(draft_id,host_id,app_id,creator_id,source_message_id,source_chat_id,source_chat_type,source_root_id,source_thread_id,body,directory,project_id,follow_mode,target_chat_id,token,expires_at_ms,created_at_ms,workspace_mode,base_branch) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, d.ID, d.HostID, d.AppID, d.CreatorID, d.SourceMessageID, d.SourceChatID, d.SourceChatType, d.SourceRootID, d.SourceThreadID, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.Token, d.ExpiresAtMS, d.CreatedAtMS, d.WorkspaceMode, d.BaseBranch)
 	if err != nil {
 		return d, false, err
 	}
@@ -135,7 +190,10 @@ func (s *Store) ReceiveCreationDraft(ctx context.Context, d CreationDraft) (Crea
 // UpdateCreationDraft applies only fields revalidated by the use case. It
 // never accepts a native thread or a remote object ID from a callback.
 func (s *Store) UpdateCreationDraft(ctx context.Context, d CreationDraft, expected int64, nowMS int64) (CreationDraft, error) {
-	r, err := s.DB.ExecContext(ctx, `UPDATE creation_drafts SET body=?,directory=?,project_id=?,follow_mode=?,target_chat_id=?,view=?,browse_path=?,browse_cursor=?,error_code=?,revision=revision+1 WHERE draft_id=? AND host_id=? AND app_id=? AND creator_id=? AND token=? AND card_id=? AND revision=? AND state='draft' AND expires_at_ms>?`, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.View, d.BrowsePath, d.BrowseCursor, d.ErrorCode, d.ID, d.HostID, d.AppID, d.CreatorID, d.Token, d.CardID, expected, nowMS)
+	if d.WorkspaceMode == "" {
+		d.WorkspaceMode = "local"
+	}
+	r, err := s.DB.ExecContext(ctx, `UPDATE creation_drafts SET body=?,directory=?,project_id=?,follow_mode=?,target_chat_id=?,view=?,browse_path=?,browse_cursor=?,error_code=?,workspace_mode=?,base_branch=?,revision=revision+1 WHERE draft_id=? AND host_id=? AND app_id=? AND creator_id=? AND token=? AND card_id=? AND revision=? AND state='draft' AND expires_at_ms>?`, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.View, d.BrowsePath, d.BrowseCursor, d.ErrorCode, d.WorkspaceMode, d.BaseBranch, d.ID, d.HostID, d.AppID, d.CreatorID, d.Token, d.CardID, expected, nowMS)
 	if err != nil {
 		return d, err
 	}
@@ -177,7 +235,14 @@ func (s *Store) ClaimCreationIntent(ctx context.Context, d CreationDraft, i Crea
 	if strings.TrimSpace(d.Body) == "" || d.Directory == "" || i.OwnerID == "" {
 		return i, false, ErrConflict
 	}
-	r, err := tx.ExecContext(ctx, `UPDATE creation_drafts SET body=?,directory=?,project_id=?,follow_mode=?,target_chat_id=?,state='creating',revision=revision+1,error_code='' WHERE draft_id=? AND host_id=? AND app_id=? AND creator_id=? AND token=? AND card_id=? AND revision=? AND state='draft' AND expires_at_ms>?`, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.ID, d.HostID, d.AppID, d.CreatorID, d.Token, d.CardID, d.Revision, nowMS)
+	if d.WorkspaceMode == "" {
+		d.WorkspaceMode = "local"
+	}
+	i.Directory, i.WorkspaceMode, i.BaseBranch = d.Directory, d.WorkspaceMode, d.BaseBranch
+	if !validCreationWorkspace(i) {
+		return i, false, ErrConflict
+	}
+	r, err := tx.ExecContext(ctx, `UPDATE creation_drafts SET body=?,directory=?,project_id=?,follow_mode=?,target_chat_id=?,workspace_mode=?,base_branch=?,state='creating',revision=revision+1,error_code='' WHERE draft_id=? AND host_id=? AND app_id=? AND creator_id=? AND token=? AND card_id=? AND revision=? AND state='draft' AND expires_at_ms>?`, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.WorkspaceMode, d.BaseBranch, d.ID, d.HostID, d.AppID, d.CreatorID, d.Token, d.CardID, d.Revision, nowMS)
 	if err != nil {
 		return i, false, err
 	}
@@ -192,7 +257,7 @@ func (s *Store) ClaimCreationIntent(ctx context.Context, d CreationDraft, i Crea
 	if err != nil {
 		return i, false, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO creation_workflows(intent_id,draft_id,host_id,app_id,creator_id,body,directory,project_id,follow_mode,target_chat_id,owner_id,members_json,name,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'ready',?)`, i.ID, i.DraftID, i.HostID, i.AppID, i.CreatorID, i.Body, i.Directory, i.ProjectID, i.FollowMode, i.TargetChatID, i.OwnerID, string(members), i.Name, nowMS)
+	_, err = tx.ExecContext(ctx, `INSERT INTO creation_workflows(intent_id,draft_id,host_id,app_id,creator_id,body,directory,project_id,follow_mode,target_chat_id,owner_id,members_json,name,state,created_at_ms,workspace_mode,base_branch,base_commit,git_root,git_common_dir,worktree_path) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'ready',?,?,?,?,?,?,?)`, i.ID, i.DraftID, i.HostID, i.AppID, i.CreatorID, i.Body, i.Directory, i.ProjectID, i.FollowMode, i.TargetChatID, i.OwnerID, string(members), i.Name, nowMS, i.WorkspaceMode, i.BaseBranch, i.BaseCommit, i.GitRoot, i.GitCommonDir, i.WorktreePath)
 	if err != nil {
 		return i, false, err
 	}
@@ -300,6 +365,12 @@ func (s *Store) FinishCreationAttempt(ctx context.Context, a CreationAttempt, ou
 		return err
 	}
 	defer tx.Rollback()
+	if a.Step == "worktree" && outcome == "confirmed" {
+		var path string
+		if err = tx.QueryRowContext(ctx, `SELECT worktree_path FROM creation_workflows WHERE draft_id=? AND workspace_mode='worktree'`, a.DraftID).Scan(&path); err != nil || path == "" || path != remote {
+			return ErrConflict
+		}
+	}
 	r, err := tx.ExecContext(ctx, `UPDATE creation_attempts SET state=?,remote_id=?,result_json=? WHERE attempt_id=? AND draft_id=? AND step=? AND params_json=? AND state IN ('dispatching','unknown')`, outcome, remote, result, a.ID, a.DraftID, a.Step, a.Params)
 	if err != nil {
 		return err
@@ -308,7 +379,7 @@ func (s *Store) FinishCreationAttempt(ctx context.Context, a CreationAttempt, ou
 	if n != 1 {
 		return ErrConflict
 	}
-	if a.Step == "group" || a.Step == "root" || a.Step == "native" {
+	if a.Step == "group" || a.Step == "root" || a.Step == "native" || a.Step == "worktree" {
 		state, code := "working", ""
 		if outcome != "confirmed" {
 			state, code = outcome, a.Step+"-"+outcome
@@ -316,7 +387,7 @@ func (s *Store) FinishCreationAttempt(ctx context.Context, a CreationAttempt, ou
 		if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET state=?,error_code=? WHERE draft_id=?`, state, code, a.DraftID); err != nil {
 			return err
 		}
-		if outcome == "confirmed" {
+		if outcome == "confirmed" && a.Step != "worktree" {
 			column := map[string]string{"group": "chat_id", "root": "root_message_id", "native": "native_thread_id"}[a.Step]
 			if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET `+column+`=? WHERE draft_id=? AND (`+column+`='' OR `+column+`=?)`, remote, a.DraftID, remote); err != nil {
 				return err
@@ -363,7 +434,7 @@ func (s *Store) recoverCreationLanes(ctx context.Context, host, app string, ui, 
 	if _, err = tx.ExecContext(ctx, `UPDATE creation_attempts SET state='unknown' WHERE state='dispatching' AND ((? AND step LIKE 'entry:%') OR (? AND step NOT LIKE 'entry:%')) AND draft_id IN (SELECT draft_id FROM creation_drafts WHERE host_id=? AND app_id=?)`, ui, workflows, host, app); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET state='unknown',error_code='recovery-unknown' WHERE ? AND host_id=? AND app_id=? AND EXISTS(SELECT 1 FROM creation_attempts a WHERE a.draft_id=creation_workflows.draft_id AND a.step IN ('group','root','native') AND a.state='unknown')`, workflows, host, app); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET state='unknown',error_code='recovery-unknown' WHERE ? AND host_id=? AND app_id=? AND EXISTS(SELECT 1 FROM creation_attempts a WHERE a.draft_id=creation_workflows.draft_id AND a.step IN ('group','root','native','worktree') AND a.state='unknown')`, workflows, host, app); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE creation_drafts SET error_code='recovery-unknown',revision=revision+1 WHERE ? AND host_id=? AND app_id=? AND error_code<>'recovery-unknown' AND EXISTS(SELECT 1 FROM creation_workflows i WHERE i.draft_id=creation_drafts.draft_id AND i.state='unknown' AND i.error_code='recovery-unknown')`, workflows, host, app); err != nil {
@@ -422,7 +493,7 @@ func (s *Store) RetryCreation(ctx context.Context, d CreationDraft) error {
 	// authorizes a fresh prepared attempt with the very same frozen params.
 	if _, err = tx.ExecContext(ctx, `INSERT INTO creation_attempts(attempt_id,draft_id,step,params_json,state,created_at_ms)
  SELECT lower(hex(randomblob(16))),draft_id,step,params_json,'prepared',created_at_ms+1 FROM creation_attempts a
- WHERE draft_id=? AND step IN ('group','root','native') AND state='rejected'
+ WHERE draft_id=? AND step IN ('group','root','native','worktree') AND state='rejected'
  AND rowid=(SELECT MAX(rowid) FROM creation_attempts latest WHERE latest.draft_id=a.draft_id AND latest.step=a.step)`, d.ID); err != nil {
 		return err
 	}
@@ -507,6 +578,12 @@ func (s *Store) MaterializeCreation(ctx context.Context, draft string) (Binding,
 	if i.NativeThreadID == "" || i.RootMessageID == "" || i.State == "rejected" {
 		return Binding{}, Receipt{}, ErrConflict
 	}
+	if i.WorkspaceMode == "worktree" {
+		var state, path string
+		if err = tx.QueryRowContext(ctx, `SELECT state,remote_id FROM creation_attempts WHERE draft_id=? AND step='worktree' ORDER BY rowid DESC LIMIT 1`, draft).Scan(&state, &path); err != nil || state != "confirmed" || path != i.WorktreePath {
+			return Binding{}, Receipt{}, ErrConflict
+		}
+	}
 	chat := i.ChatID
 	if i.FollowMode == "topic" {
 		chat = i.TargetChatID
@@ -514,11 +591,11 @@ func (s *Store) MaterializeCreation(ctx context.Context, draft string) (Binding,
 	if chat == "" {
 		return Binding{}, Receipt{}, ErrConflict
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO thread_observations(host_id,thread_id,origin,proof,state,cwd,created_at,exclusion_reason) VALUES(?,?,'new','birth','excluded',?,?,'bridge_creation') ON CONFLICT(host_id,thread_id) DO UPDATE SET state='excluded',exclusion_reason='bridge_creation'`, i.HostID, i.NativeThreadID, i.Directory, i.CreatedAtMS/1000); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO thread_observations(host_id,thread_id,origin,proof,state,cwd,created_at,exclusion_reason) VALUES(?,?,'new','birth','excluded',?,?,'bridge_creation') ON CONFLICT(host_id,thread_id) DO UPDATE SET state='excluded',exclusion_reason='bridge_creation'`, i.HostID, i.NativeThreadID, i.ExecutionDirectory(), i.CreatedAtMS/1000); err != nil {
 		return Binding{}, Receipt{}, err
 	}
 	members, _ := json.Marshal(i.Members)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO create_intents(intent_id,host_id,thread_id,owner_id,name,members_json,state,chat_id,created_at,description) VALUES(?,?,?,?,?,?,'confirmed',?,?,?) ON CONFLICT(host_id,thread_id) DO NOTHING`, i.ID, i.HostID, i.NativeThreadID, i.OwnerID, i.Name, string(members), chat, i.CreatedAtMS/1000, "工作目录："+i.Directory); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO create_intents(intent_id,host_id,thread_id,owner_id,name,members_json,state,chat_id,created_at,description) VALUES(?,?,?,?,?,?,'confirmed',?,?,?) ON CONFLICT(host_id,thread_id) DO NOTHING`, i.ID, i.HostID, i.NativeThreadID, i.OwnerID, i.Name, string(members), chat, i.CreatedAtMS/1000, "工作目录："+i.ExecutionDirectory()); err != nil {
 		return Binding{}, Receipt{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO bindings(host_id,thread_id,intent_id,chat_id,follow_mode,root_message_id,platform_thread_id) VALUES(?,?,?,?,?,?,?) ON CONFLICT(host_id,thread_id) DO NOTHING`, i.HostID, i.NativeThreadID, i.ID, chat, i.FollowMode, i.RootMessageID, i.PlatformThreadID); err != nil {

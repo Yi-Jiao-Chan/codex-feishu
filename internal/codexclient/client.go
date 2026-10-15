@@ -99,6 +99,7 @@ type Client struct {
 	closeOnce      sync.Once
 	generation     uint64
 	connectionID   string
+	codexHome      string // Immutable initialize response, not this client's environment.
 	terminal       error
 }
 
@@ -129,8 +130,12 @@ func Connect(ctx context.Context, path string) (*Client, error) {
 	life, cancel := context.WithCancel(ctx)
 	c := &Client{conn: conn, ctx: life, cancel: cancel, pending: map[string]chan reply{}, serverRequests: map[string]InteractiveRequest{}, serverAnswered: map[string]string{}, serverTerminal: map[string]bool{}, writeGate: make(chan struct{}, 1), events: make(chan Event, 512), done: make(chan struct{}), generation: generation.Add(1), connectionID: hex.EncodeToString(nonce[:])}
 	go c.read()
-	err = c.Call(setupCtx, "initialize", map[string]any{"clientInfo": map[string]string{"name": "codex-feishu", "title": "Codex Feishu Bridge", "version": "0.0.1-dev"}, "capabilities": map[string]bool{"experimentalApi": true}}, nil)
+	var initialized struct {
+		CodexHome string `json:"codexHome"`
+	}
+	err = c.Call(setupCtx, "initialize", map[string]any{"clientInfo": map[string]string{"name": "codex-feishu", "title": "Codex Feishu Bridge", "version": "0.0.1-dev"}, "capabilities": map[string]bool{"experimentalApi": true}}, &initialized)
 	if err == nil {
+		c.codexHome = initialized.CodexHome
 		b, _ := json.Marshal(map[string]string{"method": "initialized"})
 		err = c.writeMessage(setupCtx, b, nil)
 	}
@@ -143,6 +148,10 @@ func Connect(ctx context.Context, path string) (*Client, error) {
 func (c *Client) Events() <-chan Event  { return c.events }
 func (c *Client) Done() <-chan struct{} { return c.done }
 func (c *Client) GenerationID() uint64  { return c.generation }
+
+// CodexHome is reported by the connected daemon. Filesystem consumers must
+// validate this absolute server path before use; missing metadata is empty.
+func (c *Client) CodexHome() string { return c.codexHome }
 
 // ConnectionID remains unique across process restarts, unlike GenerationID.
 func (c *Client) ConnectionID() string { return c.connectionID }

@@ -12,6 +12,8 @@ schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输�
 
 ## SQLite 结构
 
+schema 29 为创建草稿保存 `workspace_mode` / `base_branch`，为创建 workflow 冻结基准 commit、Git 根/common-dir 与工作树路径。旧草稿和 workflow 保持 local，既有正文、远程 ID、收据和 attempt 不变。工作树同样使用 prepared / dispatching / unknown / rejected / confirmed 日志，只有明确 rejected 才能显式 retry；unknown 只核验既有完整检出。Materialize 必须有匹配目标路径的 confirmed 工作树收据，cwd 使用最终执行路径。详见 [09 新建工作树](09-feishu-task-creation.md#新建工作树)。
+
 schema 11 新增 `legacy_adoptions`。schema 1 须经显式接管，不能由普通启动自动升级；库存摘要、旧绑定与 confirmed 消息 ID 和正式表在同一事务保存，原日志保留。存储基础与纯历史 mapper 已通过隔离测试，迁移 CLI、一致备份及锁已通过隔离测试，真实切换仍待验收，见[M0 接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
 
 schema 12 新增 `reaction_throttles`：reaction 的明确限流拒绝保存原操作日志和等待时间，下一 revision 依据最新输入状态领取。旧 reaction 的成功删除与 ID 清除在同一事务确认，后续 add 被拒绝时不再删除旧 ID。changing/unknown 不进入重试，reaction 失败不触发原生输入重试；status 的 `reactions.deferred` 表示等待或到期尚未完成的反馈。详见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)。

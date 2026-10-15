@@ -66,6 +66,9 @@ func cardDirectoryPage(p DirectoryPage) *cards.CreationDirectoryPage {
 // No selected value is a
 // proof of authorization. It is validated again before native dispatch.
 func resetDirectoryView(d *store.CreationDraft, choice DirectoryChoice) {
+	if d.Directory != choice.Path {
+		d.BaseBranch = ""
+	}
 	d.Directory, d.ProjectID, d.View, d.BrowsePath, d.BrowseCursor = choice.Path, choice.ProjectID, "main", "", ""
 }
 
@@ -162,6 +165,9 @@ func (m *Manager) rejectSelectionAction(ctx context.Context, a store.CreationAct
 	}
 	if target, ok := p.Form["creation_target"].(string); ok && (target == "" || contains(m.Config.Creation.WorkgroupChatIDs, target)) {
 		d.TargetChatID = target
+	}
+	if branch, ok := p.Form["creation_branch"].(string); ok && d.WorkspaceMode == "worktree" && (branch == "HEAD" || strings.HasPrefix(branch, "refs/heads/") || strings.HasPrefix(branch, "refs/remotes/")) && utf8.RuneCountInString(branch) <= 1000 {
+		d.BaseBranch = branch
 	}
 	if a.Kind == "creation_search" || a.Kind == "creation_search_next" {
 		query := strings.TrimSpace(textValue(p.Form, "creation_query"))
