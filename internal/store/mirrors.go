@@ -149,14 +149,15 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			if old.Terminal && !m.Terminal {
 				continue
 			}
-			// Presentation updates and callbacks may omit this metadata. Merge
-			// only new item identities, retaining the first value even if zero.
+			// Presentation updates and callbacks may omit this metadata. Keep
+			// the first positive reception time, allowing a legacy zero to be
+			// filled once without retiming already recorded items.
 			if m.ProgressObservedAt != nil {
 				if old.ProgressObservedAt == nil {
 					old.ProgressObservedAt = make(map[string]int64)
 				}
 				for id, at := range m.ProgressObservedAt {
-					if _, seen := old.ProgressObservedAt[id]; !seen {
+					if previous, seen := old.ProgressObservedAt[id]; !seen || previous == 0 && at > 0 {
 						old.ProgressObservedAt[id] = at
 					}
 				}

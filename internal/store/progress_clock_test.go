@@ -34,13 +34,28 @@ func TestProgressClockSurvivesReopenAndMetadataFreeUpdates(t *testing.T) {
 		t.Fatal("metadata-free update cleared clock", err)
 	}
 	revision := m.Revision
-	// Identical-card metadata changes retain the first value, including zero.
+	// Identical-card metadata changes may fill a legacy zero once.
 	doc.ProgressObservedAt = map[string]int64{"first": 300, "historical": 300, "next": 300}
 	stage(t, reopened, 300, doc)
 	m, err = reopened.Mirror(ctx, "host", "thread", doc.Key)
-	want := map[string]int64{"first": 100, "historical": 0, "next": 300}
+	want := map[string]int64{"first": 100, "historical": 300, "next": 300}
 	if err != nil || !reflect.DeepEqual(m.ProgressObservedAt, want) || m.Revision != revision {
 		t.Fatalf("first clock replaced or metadata alone bumped revision: %+v, %v", m, err)
+	}
+	// Neither a stale zero nor a newer positive time may replace that value.
+	doc.ProgressObservedAt = map[string]int64{"first": 0, "historical": 400, "next": 0}
+	stage(t, reopened, 400, doc)
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	verified, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verified.Close()
+	m, err = verified.Mirror(ctx, "host", "thread", doc.Key)
+	if err != nil || !reflect.DeepEqual(m.ProgressObservedAt, want) || m.Revision != revision {
+		t.Fatalf("filled clock changed across stale update/reopen: %+v, %v", m, err)
 	}
 }
 

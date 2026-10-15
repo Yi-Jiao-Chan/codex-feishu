@@ -50,24 +50,40 @@ func TestProgressClockKeepsItemIdentityAcrossCompletionReplayAndReopen(t *testin
 	}
 }
 
-func TestHistoricalAndLegacyProgressClocksRemainUnknown(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
-		t.Run(map[bool]string{false: "historical replay", true: "legacy existing mirror"}[legacy], func(t *testing.T) {
-			e, _ := engineFixture(t)
+func TestHistoricalAndLegacyProgressClocksUseFirstRecordedReception(t *testing.T) {
+	for _, source := range []string{"historical replay", "legacy existing mirror", "persisted unknown clock"} {
+		t.Run(source, func(t *testing.T) {
+			e, path := engineFixture(t)
 			turn := codexclient.Turn{ID: "turn", Status: "inProgress", ItemsView: "full", Items: []codexclient.Item{input("user", "request"), agent("old", "known text", "commentary")}}
-			if legacy {
+			if source != "historical replay" {
 				doc := store.Mirror{Key: mirrorKey("progress", "turn"), TurnID: "turn", Kind: "progress", Card: `{"legacy":true}`, ParentKey: mirrorKey("human", "turn", "user", "0")}
+				if source == "persisted unknown clock" {
+					doc.ProgressObservedAt = map[string]int64{"old": 0}
+				}
 				if err := e.Store.StageSnapshot(context.Background(), "host", "thread", []store.Mirror{doc}, nil, store.Watermark{ObservedAtMS: 100000}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			apply(t, e, 200000, !legacy, turn)
+			apply(t, e, 200000, source == "historical replay", turn)
 			turn.Items[1].Text = "updated known text"
 			turn.Items = append(turn.Items, agent("new", "new live text", "commentary"))
 			apply(t, e, 201000, false, turn)
+			want := map[string]int64{"old": 200000, "new": 201000}
 			m, err := e.Store.Mirror(context.Background(), "host", "thread", mirrorKey("progress", "turn"))
-			if err != nil || !reflect.DeepEqual(m.ProgressObservedAt, map[string]int64{"old": 0, "new": 201000}) {
-				t.Fatalf("unknown clock upgraded to now: %+v, %v", m.ProgressObservedAt, err)
+			if err != nil || !reflect.DeepEqual(m.ProgressObservedAt, want) {
+				t.Fatalf("first recorded reception missing: %+v, %v", m.ProgressObservedAt, err)
+			}
+			e.Store.Close()
+			reopened, err := store.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			e.Store = reopened
+			apply(t, e, 300000, true, turn)
+			m, err = e.Store.Mirror(context.Background(), "host", "thread", mirrorKey("progress", "turn"))
+			if err != nil || !reflect.DeepEqual(m.ProgressObservedAt, want) {
+				t.Fatalf("reopen/replay retimed fallback: %+v, %v", m.ProgressObservedAt, err)
 			}
 		})
 	}

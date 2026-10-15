@@ -269,13 +269,12 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			}
 			for n := range view.Records {
 				record := &view.Records[n]
-				at, seen := clocks[record.ItemID]
-				if !seen {
-					// Historical replay and legacy mirrors cannot prove when an
-					// individual record was first received. Preserve that unknown.
-					if !replay && !(hadProgress && previousProgress.ProgressObservedAt == nil) {
-						at = observedAtMS
-					}
+				at := clocks[record.ItemID]
+				if at <= 0 {
+					// This is the first complete snapshot that records a local
+					// reception time, including replay and legacy unknown clocks.
+					// Persist it once; it is not the native generation time.
+					at = observedAtMS
 					clocks[record.ItemID] = at
 				}
 				record.ReceivedAtMS = at
