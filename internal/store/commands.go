@@ -30,6 +30,9 @@ CREATE TABLE command_replies (
 type CommandRequest struct {
 	HostID, AppID, MessageID, ChatID, ChatType, UserID, ThreadID string
 	Kind, Feedback, NotificationTimezone                         string
+	OwnerOpenID                                                  string
+	FilePreviewEnabled                                           bool
+	PreviewAccessCode                                            string `json:"-"`
 	Operators, NotificationTargets, AllowedRoots                 []string
 	ScopeRoots                                                   []string // Canonical roots used by ResolveScope.
 	Directory                                                    rules.DirectoryCommand
@@ -98,6 +101,16 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 	}
 	var body, settingsCard string
 	switch req.Kind {
+	case "preview":
+		if !operator || req.OwnerOpenID == "" || req.UserID != req.OwnerOpenID || req.ChatType != "p2p" ||
+			req.ThreadID != "" || !req.FilePreviewEnabled || req.PreviewAccessCode == "" {
+			return CommandReply{}, false, ErrConflict
+		}
+		fence := "```"
+		for strings.Contains(req.PreviewAccessCode, fence) {
+			fence += "`"
+		}
+		settingsCard = cards.Message("文件预览", "仅本人私聊", "浏览器访问口令：\n"+fence+"\n"+req.PreviewAccessCode+"\n"+fence+"\n打开文件预览链接后，在登录页输入此口令。")
 	case "directory":
 		if !operator {
 			return CommandReply{}, false, ErrConflict
@@ -147,6 +160,9 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 		}
 	case "help", "status":
 		body = "一期从 Codex App 发起任务，第一条实际输入后自动建专属群；在已绑定群中普通消息进入同一会话的队列。\n这里暂不创建新任务。支持 /mute-dir、/unmute-dir、/notify at；已绑定群的操作者可用 /stop 和 /continue。"
+		if req.FilePreviewEnabled {
+			body += "\n部署所有者可私聊发送 /preview 获取文件预览口令。"
+		}
 	case "feedback":
 		body = req.Feedback
 		if body == "" {

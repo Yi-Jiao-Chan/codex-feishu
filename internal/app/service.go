@@ -49,6 +49,7 @@ type Service struct {
 	Gateway              ServiceGateway
 	BotID                string
 	Connect              func(context.Context) (ServiceNative, error)
+	PreparePublic        func(context.Context, string, string) (string, error)
 	Notice               func(string)
 	Now                  func() time.Time
 	RetryInterval        time.Duration    // Tests may shorten; production starts at 1s.
@@ -514,6 +515,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		PollInterval:          time.Duration(s.Config.Sync.CardUpdateMinIntervalMS) * time.Millisecond,
 		MinProgressIntervalMS: int64(s.Config.Sync.CardUpdateMinIntervalMS),
 		ProgressTimeZone:      s.Config.Notifications.Timezone,
+		PreparePublic:         s.PreparePublic,
 		Mentions:              store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn},
 		Ready:                 s.Gateway.Ready, Notice: s.Notice, Now: s.Now, EventObservedContext: tracker.ObserveContext,
 		HistoryHydrated: tracker.Hydrated, WaitingReminder: tracker.DispatchOne,

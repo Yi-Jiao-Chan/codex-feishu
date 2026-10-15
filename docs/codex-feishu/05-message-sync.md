@@ -26,6 +26,8 @@ AI 回复 · Codex · 16:22
 
 ## 镜像流程
 
+可选 `file_preview` 启用后，公开 assistant 文本中的本地文件链接在卡片拆片前转换为受鉴权保护的网页地址，保留行号；文件映射先本地持久化，再进入既有 outbox。转换使用独立展示副本，不改变原生历史或用户输入，`cards` 保持纯渲染。登记失败不推进本轮快照，错误正文不进入诊断。详见 [14 网页预览](14-file-preview.md)。
+
 1. 事件定位 ThreadKey 与绑定/创建意图；已决定自动绑定但暂未建群的线程继续保存公开事件和待绑定投递，绑定后补齐历史。
 2. item upsert 到镜像状态，转换成 MirrorDocument；持久 outbox 后再推进同步水位。
 3. **按 turn 聚合过程，不按 agentMessage 逐条发消息。** 每轮最多创建一张过程卡，保存 message ID；公开 commentary / partial_answer 更新原卡，合并窗口内变化，最短更新间隔 2 秒。正文只保留最新公开动作摘要；工具仅显示状态摘要，不转发 reasoning / 全量命令输出。

@@ -34,7 +34,10 @@ type Engine struct {
 	MaxCardBytes           int
 	MentionTargets         []string // Reserve the complete structured reminder before splitting final text.
 	PrepareHuman           func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
-	humanAttachments       map[string][]cards.AttachmentView
+	// PreparePublic registers local file references before they enter durable
+	// cards. It changes only a display copy, never native history or input.
+	PreparePublic    func(context.Context, string, string) (string, error)
+	humanAttachments map[string][]cards.AttachmentView
 	// ProgressRender is pure; the actor prepares its durable control state first.
 	// An empty interrupted render suppresses a new historical progress card.
 	ProgressRender func(thread, turn, nativeStatus string, progress cards.ProgressView) string
@@ -127,6 +130,25 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 				e.humanAttachments[mirrorKey("attachments", turn.ID, item.ID)] = views
 			}
 		}
+	}
+	if e.PreparePublic != nil {
+		display := append([]codexclient.Turn(nil), turns...)
+		for n, turn := range turns {
+			display[n].Items = append([]codexclient.Item(nil), turn.Items...)
+			for j, item := range turn.Items {
+				if item.Type != "agentMessage" || item.Text == "" {
+					continue
+				}
+				text, prepareErr := e.PreparePublic(ctx, thread, item.Text)
+				if prepareErr != nil {
+					return errors.New("public file preview preparation unavailable")
+				}
+				display[n].Items[j].Text = text
+			}
+		}
+		turns = display
+	}
+	if e.PrepareHuman != nil || e.PreparePublic != nil {
 		plan, err = e.renderSnapshot(thread, turns, receipts, old, replay, observedAtMS)
 		if err != nil {
 			return err

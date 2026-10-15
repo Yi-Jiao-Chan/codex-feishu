@@ -23,6 +23,7 @@
 | service uninstall --config PATH --keep-data --json | 删除本工具服务，默认保留配置、密钥与数据库 |
 | serve --config PATH | 前台常驻组合根；单部署锁、重连、优雅退出 |
 | status --config PATH --json | 两侧连接、服务、绑定数、队列、outbox 和 unknown 操作摘要 |
+| file-preview show-secret --config PATH | 显式向标准输出打印当前网页预览口令；拒绝 JSON 模式，仍核验私有口令文件 |
 | verify --config PATH --target self --json | 依授权范围运行本人测试卡/私有测试群/独立 Codex 测试线程，产出验收记录 |
 | verify --config PATH --acceptance-report PATH --json | 只读核验明确提供的当前构建案例报告及私有证据摘要；人工 UI 来源单列，不执行测试或自动发布 |
 
@@ -75,6 +76,8 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 配置 doctor 只查询既有管理端点、daemon version、机器人身份与权限 GET，不新建原生客户端或飞书长连接。独立的 `doctor --codex-only` 才执行短暂只读 handshake / thread list。权限按 API 文档认可的 OR 替代关系检查，只计算 `grant_status=1` 且 `scope_type=tenant`；缺字段、未知状态或授权响应不明确保留 pending。scope 满足不证明消息订阅、卡片回调、建群、更新、reaction 或 App UI 已验收：每项能力的 `runtime_observed` 仍为 unknown，实际 verify 单独提供证据。
 
 ## 配置与输入文件
+
+可选本地文件预览通过 `file_preview` 对象配置，默认关闭。setup 省略该对象时保留当前设置，显式提供时整体替换，启用时私有口令的变化会使旧 plan 失效。`file-preview init-secret` 只生成新的 0600 口令文件；`file-preview show-secret` 显式打印口令；`file-preview link` 本地登记指定文件并返回可点击地址。这些 CLI 均不发送消息或改变 Codex 会话。部署所有者也可私聊机器人发送 `/preview` 取得口令；群内只提示转到私聊，口令回复按现有私有 outbox 持久投递。监听、访问范围及真实浏览器验收见 [14 网页预览](14-file-preview.md)。
 
 正式配置默认 `~/.config/codex-feishu/config.toml`；状态默认 `~/.local/share/codex-feishu/bridge.db`，尊重已有 XDG 路径。不得覆盖 HOME 或 CODEX_HOME。安装工具展开这些路径后传给服务，运行时可见路径全为绝对路径。
 

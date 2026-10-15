@@ -73,6 +73,15 @@ func runServe(ctx context.Context, args []string) int {
 			return 3
 		}
 	}
+	var preview *previewHTTP
+	if cfg.FilePreview.Enabled {
+		preview, err = startFilePreview(cfg)
+		if err != nil {
+			emit(output{Command: "serve", State: "file-preview-unavailable", Checks: []check{{"file_preview", "fail", true, err.Error()}}})
+			return 3
+		}
+		defer preview.Close()
+	}
 	secret, err := cfg.Secret()
 	if err != nil {
 		emit(output{Command: "serve", State: "secret-unavailable"})
@@ -110,6 +119,11 @@ func runServe(ctx context.Context, args []string) int {
 	}
 	defer pairManager.Close()
 	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Pairing: pairManager, Connect: serveNativeConnect(cfg.Codex.CLIPath, codexclient.Discover, codexclient.Connect)}
+	if preview != nil {
+		service.PreparePublic = func(ctx context.Context, _ string, body string) (string, error) {
+			return preview.preview.Rewrite(ctx, body)
+		}
+	}
 	var noticeMu sync.Mutex
 	last := map[string]time.Time{}
 	service.Notice = func(code string) {
@@ -176,10 +190,14 @@ func runServe(ctx context.Context, args []string) int {
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	var workers sync.WaitGroup
-	results := make(chan error, 2)
+	results := make(chan error, 3)
 	workers.Add(2)
 	go func() { defer workers.Done(); results <- service.Run(runCtx) }()
 	go func() { defer workers.Done(); results <- server.Serve(runCtx) }()
+	if preview != nil {
+		workers.Add(1)
+		go func() { defer workers.Done(); results <- preview.Serve(runCtx) }()
+	}
 	emit(output{Command: "serve", State: "starting", Data: map[string]any{"host_id": cfg.Host.ID, "store_schema": store.SchemaVersion, "phase1_released": phase1Released, "candidate_test_deployment": *candidate, "control_endpoint": endpoint}})
 	err = <-results
 	stop()

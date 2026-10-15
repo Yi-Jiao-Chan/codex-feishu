@@ -14,6 +14,7 @@
 | 飞书事件、API、权限、群和话题 | [03 飞书网关](03-feishu-gateway.md) |
 | App 会话发现、自动建群和绑定 | [04 发现与绑定](04-discovery-and-bindings.md) |
 | 人类/AI 双向同步 | [05 消息同步](05-message-sync.md) |
+| 本地文件浏览器链接 | [14 受控网页预览](14-file-preview.md) |
 | 默认排队、追加引导、停止与恢复 | [06 输入队列与引导](06-queue-and-steering.md) |
 | 目录 mute、@ 与免打扰 | [07 规则与通知](07-rules-and-notifications.md) |
 | 原生卡片和操作回调 | [08 卡片与操作](08-cards-and-actions.md) |

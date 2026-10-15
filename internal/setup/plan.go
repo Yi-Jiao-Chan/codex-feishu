@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -238,6 +239,19 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	if in.Notifications.QuietHours != nil {
 		c.Notifications.QuietHours = *in.Notifications.QuietHours
 	}
+	if in.FilePreview != nil {
+		c.FilePreview = *in.FilePreview
+		c.FilePreview.AllowedRoots = nil
+		for _, root := range in.FilePreview.AllowedRoots {
+			canonical, err := rules.CanonicalDirectory(root)
+			if err != nil {
+				return plan, errors.New("file preview allowed directory unavailable")
+			}
+			if !has(c.FilePreview.AllowedRoots, canonical) {
+				c.FilePreview.AllowedRoots = append(c.FilePreview.AllowedRoots, canonical)
+			}
+		}
+	}
 	artifactPath, err := filepath.EvalSymlinks(in.Artifact.BinaryPath)
 	if err != nil || !filepath.IsAbs(artifactPath) {
 		return plan, errors.New("artifact path unavailable")
@@ -297,6 +311,14 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	stableEnvironment.Daemon.SocketPath = ""
 	plan.sourceDigest = digest(encoded([]any{in, digest(artifactBytes), digest([]byte(secret)), stableEnvironment, plan.Paths}))
 	plan.legacySourceDigest = digest(encoded([]any{in, digest(artifactBytes), digest([]byte(secret)), plan.Environment, plan.Paths, plan.ExistingPolicies}))
+	if c.FilePreview.Enabled {
+		previewSecret, err := c.FilePreviewSecret()
+		if err != nil {
+			return plan, err
+		}
+		plan.sourceDigest = digest(encoded([]any{plan.sourceDigest, "file-preview-v1", digest([]byte(previewSecret))}))
+		plan.legacySourceDigest = digest(encoded([]any{plan.legacySourceDigest, "file-preview-v1", digest([]byte(previewSecret))}))
+	}
 	if p.CandidateTest {
 		// The existing journal stores this mode-bound source digest, so recovery
 		// cannot switch between normal and candidate authorization.
@@ -318,6 +340,10 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	}
 	if len(plan.PolicyChanges) > 0 {
 		plan.NextSteps = append(plan.NextSteps, "explicit existing policy changes apply with revision CAS and a recoverable configuration journal; off and snooze remain unchanged")
+	}
+	preview := plan.Config.FilePreviewLimits()
+	if preview.Enabled {
+		plan.NextSteps = append(plan.NextSteps, fmt.Sprintf("file preview: authenticated read-only browser access at %s; explicitly allowed roots=%d; max_file_bytes=%d; real client/network acceptance pending", preview.BaseURL, len(preview.AllowedRoots), preview.MaxFileBytes))
 	}
 	plan.NextSteps = append(plan.NextSteps, "apply configuration only; service installation/start and authorized verification are separate")
 	plan.Verification = in.Verification

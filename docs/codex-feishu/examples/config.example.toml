@@ -46,5 +46,16 @@ enabled = false
 default_follow_mode = "group"
 workgroup_chat_ids = []
 
+[file_preview]
+# 可选只读浏览器预览；IP直连需显式绑定可达地址，默认不开启。
+enabled = false
+base_url = ""
+listen_address = "127.0.0.1:8787"
+# 独立指定，不能由 discovery/creation 自动授权；例：/absolute/path/to/project。
+allowed_roots = []
+# directory/secret_file 省略时使用数据库旁的 file-preview 和 file-preview.key。
+# 先用 file-preview init-secret 在私有目录创建0600口令文件。
+max_file_bytes = 1048576
+
 [storage]
 database_file = "/absolute/path/to/codex-feishu/bridge.db"
