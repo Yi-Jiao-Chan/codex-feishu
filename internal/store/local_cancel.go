@@ -55,8 +55,12 @@ func (s *Store) CancelPendingSubmission(ctx context.Context, scope SubmissionSco
 	if err != nil {
 		return SubmissionAction{}, ErrSubmissionStale
 	}
-	m, err := readMirror(ctx, tx, scope.HostID, scope.ThreadID, QueueCardKey(n.ID))
-	if err != nil || m.RemoteID != card || m.ParentMessageID != n.MessageID || m.ParentKey != "" || m.TurnID != m.Key || m.Kind != "progress" {
+	identity, err := submissionCardIdentityTx(ctx, tx, scope, n)
+	if err != nil {
+		return SubmissionAction{}, err
+	}
+	m, err := readMirror(ctx, tx, scope.HostID, scope.ThreadID, identity.key)
+	if err != nil || m.RemoteID != card || !validSubmissionCard(m, identity) {
 		return SubmissionAction{}, ErrSubmissionStale
 	}
 	a, err := scanSubmissionAction(tx.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM submission_actions WHERE host_id=? AND app_id=? AND thread_id=? AND token=? AND revision=? AND kind='remove'`, scope.HostID, scope.AppID, scope.ThreadID, token, revision))

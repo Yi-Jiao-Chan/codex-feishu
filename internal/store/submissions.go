@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -48,12 +49,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS submission_one_dispatching_thread
 var ErrSubmissionStale = errors.New("input state changed; refresh its card")
 var ErrSubmissionBusy = errors.New("thread has an input operation awaiting verification")
 
+// An explicit retry of a definitely rejected creation input gets a distinct
+// immutable attempt while keeping its original receipt and client ID.
+func IsQueueAddStage(stage string) bool {
+	return stage == "add" || strings.HasPrefix(stage, "add:creation:")
+}
+
 type SubmissionScope struct{ HostID, AppID, ThreadID string }
 
 // Submission embeds the existing M0 receipt, so cards, reactions and history
 // suppression keep using exactly the same receipt/client/message identities.
 type Submission struct {
 	Receipt
+	InputJSON    string // Frozen native parts; empty for pre-attachment text receipts.
 	Revision     int64
 	QueueOrdinal int
 	TurnID       string
@@ -100,12 +108,12 @@ func (s *Store) SubmissionBinding(ctx context.Context, scope SubmissionScope) (s
 	return submissionBinding(ctx, s.DB, scope)
 }
 
-const submissionColumns = `r.id,r.app_id,r.message_id,r.thread_id,r.chat_id,r.body,r.client_id,n.queue_id,n.state,r.card_id,r.action_token,n.revision,n.queue_ordinal,n.turn_id,n.item_id`
+const submissionColumns = `r.id,r.app_id,r.message_id,r.thread_id,r.chat_id,r.body,r.client_id,n.queue_id,n.state,r.card_id,r.action_token,n.revision,n.queue_ordinal,n.turn_id,n.item_id,r.input_json,r.reply_message_id`
 const actionColumns = `action_id,receipt_id,token,kind,stage,state,queue_id,expected_turn_id,client_id,result,revision`
 const submissionAttemptColumns = `attempt_id,receipt_id,action_id,stage,state,queue_id,expected_turn_id,client_id,remote_id,deleted`
 
 func scanSubmission(row rowScanner) (n Submission, err error) {
-	err = row.Scan(&n.ID, &n.AppID, &n.MessageID, &n.ThreadID, &n.ChatID, &n.Body, &n.ClientID, &n.QueueID, &n.State, &n.CardID, &n.ActionToken, &n.Revision, &n.QueueOrdinal, &n.TurnID, &n.ItemID)
+	err = row.Scan(&n.ID, &n.AppID, &n.MessageID, &n.ThreadID, &n.ChatID, &n.Body, &n.ClientID, &n.QueueID, &n.State, &n.CardID, &n.ActionToken, &n.Revision, &n.QueueOrdinal, &n.TurnID, &n.ItemID, &n.InputJSON, &n.ReplyMessageID)
 	return
 }
 
@@ -159,6 +167,10 @@ func (s *Store) StageSubmissions(ctx context.Context, scope SubmissionScope) err
 	if err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO submission_order(receipt_id)
+ SELECT id FROM m0_receipts WHERE app_id=? AND thread_id=? AND chat_id=? AND state<>'draft' ORDER BY rowid`, scope.AppID, scope.ThreadID, chat); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO submission_inputs(receipt_id,host_id,app_id,thread_id,state,queue_id)
  SELECT r.id,?,?,?,CASE
  WHEN r.state='received' AND EXISTS(SELECT 1 FROM m0_operations WHERE key='m0.add.'||r.id) THEN 'unknown'
@@ -178,7 +190,8 @@ func (s *Store) Submissions(ctx context.Context, scope SubmissionScope) ([]Submi
 		return nil, err
 	}
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+submissionColumns+` FROM submission_inputs n JOIN m0_receipts r ON r.id=n.receipt_id
- WHERE n.host_id=? AND n.app_id=? AND n.thread_id=? AND r.app_id=? AND r.thread_id=? AND r.chat_id=? ORDER BY r.rowid`,
+ LEFT JOIN submission_order so ON so.receipt_id=r.id
+ WHERE n.host_id=? AND n.app_id=? AND n.thread_id=? AND r.app_id=? AND r.thread_id=? AND r.chat_id=? ORDER BY COALESCE(so.sequence,0),r.rowid`,
 		scope.HostID, scope.AppID, scope.ThreadID, scope.AppID, scope.ThreadID, chat)
 	if err != nil {
 		return nil, err
@@ -431,8 +444,17 @@ func (s *Store) ClaimSubmissionAttempt(ctx context.Context, scope SubmissionScop
 		if err != nil {
 			return a, false, err
 		}
-		if stage != "add" || n.State != "received" {
+		if !IsQueueAddStage(stage) || n.State != "received" {
 			return a, false, ErrSubmissionStale
+		}
+		if stage != "add" {
+			var count int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM creation_workflows WHERE host_id=? AND app_id=? AND native_thread_id=? AND receipt_id=? AND initial_add_stage=? AND state IN ('ready','working')`, scope.HostID, scope.AppID, scope.ThreadID, receiptID, stage).Scan(&count); err != nil {
+				return a, false, err
+			}
+			if count != 1 {
+				return a, false, ErrSubmissionStale
+			}
 		}
 		a.ClientID = n.ClientID
 		n.State = "submitting"
@@ -513,7 +535,7 @@ func (s *Store) FinishSubmissionAttempt(ctx context.Context, scope SubmissionSco
 		if err != nil {
 			return err
 		}
-		if (a.Stage == "add" || a.Stage == "restore") && outcome == "confirmed" && remoteID == "" && n.ItemID == "" {
+		if (IsQueueAddStage(a.Stage) || a.Stage == "restore") && outcome == "confirmed" && remoteID == "" && n.ItemID == "" {
 			return ErrConflict
 		}
 	}
@@ -528,7 +550,11 @@ func (s *Store) FinishSubmissionAttempt(ctx context.Context, scope SubmissionSco
 	if outcome == "unknown" {
 		n.State = "unknown"
 	} else {
-		switch a.Stage {
+		stage := a.Stage
+		if IsQueueAddStage(stage) {
+			stage = "add"
+		}
+		switch stage {
 		case "add", "restore":
 			if outcome == "confirmed" {
 				n.State, n.QueueOrdinal = "accepted", 0

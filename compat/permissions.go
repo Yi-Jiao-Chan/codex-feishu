@@ -82,3 +82,19 @@ func EvaluatePermissions(granted []string) []CapabilityCheck {
 	}
 	return checks
 }
+
+// EvaluatePermissionsForAttachments applies the opt-in attachment feature
+// gates to the two optional capabilities while preserving every baseline
+// manifest requirement and its documented OR semantics.
+func EvaluatePermissionsForAttachments(granted []string, enabled, standalone bool) []CapabilityCheck {
+	checks := EvaluatePermissions(granted)
+	for i := range checks {
+		switch checks[i].ID {
+		case "download_message_resources":
+			checks[i].Required = enabled
+		case "receive_standalone_attachments":
+			checks[i].Required = enabled && standalone
+		}
+	}
+	return checks
+}

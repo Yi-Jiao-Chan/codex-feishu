@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 25
+const SchemaVersion = 28
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -327,6 +327,88 @@ PRAGMA user_version=23;`); err != nil {
 			return err
 		}
 		if _, err = tx.Exec("PRAGMA user_version=25"); err != nil {
+			return err
+		}
+	}
+	if version < 26 {
+		var payloadColumn int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('m0_receipts') WHERE name='input_json'`).Scan(&payloadColumn); err != nil {
+			return err
+		}
+		if payloadColumn == 0 {
+			if _, err := tx.Exec(`ALTER TABLE m0_receipts ADD COLUMN input_json TEXT NOT NULL DEFAULT ''`); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.Exec(AttachmentsSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=26"); err != nil {
+			return err
+		}
+	}
+
+	if version < 27 {
+		var targetColumn int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('bindings') WHERE name='follow_mode'`).Scan(&targetColumn); err != nil {
+			return err
+		}
+		if targetColumn == 0 {
+			if _, err = tx.Exec(FollowTargetsSchema); err != nil {
+				return err
+			}
+			rows, checkErr := tx.Query("PRAGMA foreign_key_check")
+			if checkErr != nil {
+				return checkErr
+			}
+			bad := rows.Next()
+			checkErr = rows.Err()
+			rows.Close()
+			if checkErr != nil {
+				return checkErr
+			}
+			if bad {
+				return errors.New("follow target migration violates foreign keys")
+			}
+			// DROP/rename leaves obsolete deferred parent counters even though all
+			// current references are valid. Clear them only after the full check.
+			if _, err = tx.Exec(`PRAGMA defer_foreign_keys=OFF`); err != nil {
+				return err
+			}
+		}
+		var outboundTargetColumn int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('outbound_attempts') WHERE name='follow_mode'`).Scan(&outboundTargetColumn); err != nil {
+			return err
+		}
+		if outboundTargetColumn == 0 {
+			if _, err = tx.Exec(`ALTER TABLE outbound_attempts ADD COLUMN follow_mode TEXT NOT NULL DEFAULT 'group';
+ALTER TABLE outbound_attempts ADD COLUMN root_message_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE outbound_attempts ADD COLUMN platform_thread_id TEXT NOT NULL DEFAULT '';`); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.Exec(`PRAGMA user_version=27`); err != nil {
+			return err
+		}
+	}
+
+	if version < 28 {
+		var replyColumn int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('m0_receipts') WHERE name='reply_message_id'`).Scan(&replyColumn); err != nil {
+			return err
+		}
+		if replyColumn == 0 {
+			if _, err = tx.Exec(`ALTER TABLE m0_receipts ADD COLUMN reply_message_id TEXT NOT NULL DEFAULT ''`); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.Exec(CreationSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(FollowAttemptSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=28"); err != nil {
 			return err
 		}
 	}

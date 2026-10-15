@@ -49,11 +49,14 @@ type Runtime struct {
 	AsyncQuestionsSinceMS      int64
 	ProgressTimeZone           string
 	PrepareHuman               func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
+	PreparePublic              func(context.Context, string, string) (string, error)
 	SyncGroupName              func(context.Context, store.Binding, string) error
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
 	BeginDelivery              func(context.Context, store.Binding) (context.Context, func(), error)
 	VerificationAuthorize      func(context.Context, codexclient.Thread, bool) (handled bool, err error)
+	CreationAuthorize          func(context.Context, codexclient.Thread, bool) (handled bool, err error)
+	CanAttach                  func(context.Context, string) error
 	ActorTick                  func(context.Context, string) error
 	HistoryPreparing           func(context.Context, string, []codexclient.Turn) error
 	HistoryStaged              func(context.Context, string, []codexclient.Turn) error
@@ -152,6 +155,11 @@ func (r *Runtime) Authorize(ctx context.Context, t codexclient.Thread, automatic
 }
 
 func (r *Runtime) authorize(ctx context.Context, t codexclient.Thread, automatic bool) (bool, error) {
+	if r.CreationAuthorize != nil {
+		if handled, err := r.CreationAuthorize(ctx, t, automatic); handled || err != nil {
+			return handled, err
+		}
+	}
 	if r.VerificationAuthorize != nil {
 		if handled, err := r.VerificationAuthorize(ctx, t, automatic); handled || err != nil {
 			return handled, err
@@ -256,10 +264,24 @@ func (r *Runtime) Run(parent context.Context) error {
 		workers.Add(1)
 		go func() { defer workers.Done(); r.runDiscovery(ctx, e, scanned) }()
 	}
+	// Creation activation is durable. A full notification channel or temporary
+	// metadata/rollout failure must not strand a confirmed native conversation.
+	activationTimer := time.NewTicker(time.Second)
+	defer activationTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-activationTimer.C:
+			ids, err := r.Store.ConfirmedCreationThreads(ctx, r.HostID, r.AppID)
+			if err != nil {
+				return err
+			}
+			for _, id := range ids {
+				if !r.ActorStarted(id) {
+					startActor(id, true, true)
+				}
+			}
 		case id := <-r.activations:
 			activationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			_, err := r.Store.Binding(activationCtx, r.HostID, id)
@@ -382,6 +404,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	defer timer.Stop()
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
 	engine.PrepareHuman = r.PrepareHuman
+	engine.PreparePublic = r.PreparePublic
 	engine.ProgressRender = r.RenderProgress
 	engine.SuppressAsyncQuestions = r.SuppressAsyncQuestions
 	engine.AsyncQuestionsSinceMS = r.AsyncQuestionsSinceMS
@@ -449,7 +472,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	syncedTitle := ""
 	var nextNameSyncAtMS int64
 	syncName := func(b store.Binding) {
-		if r.SyncGroupName == nil || syncedTitle == title || r.now().UnixMilli() < nextNameSyncAtMS || !r.ready() ||
+		if b.FollowMode == "topic" || r.SyncGroupName == nil || syncedTitle == title || r.now().UnixMilli() < nextNameSyncAtMS || !r.ready() ||
 			(r.CanDeliver != nil && r.CanDeliver(ctx, b) != nil) {
 			return
 		}
@@ -483,7 +506,14 @@ actorLoop:
 			lastRead = r.now()
 			if !attached {
 				attachCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				t, err := r.Native.Attach(attachCtx, a.thread)
+				var t codexclient.Thread
+				var err error
+				if r.CanAttach != nil {
+					err = r.CanAttach(attachCtx, a.thread)
+				}
+				if err == nil {
+					t, err = r.Native.Attach(attachCtx, a.thread)
+				}
 				if err == nil && t.ID == a.thread {
 					err = r.Authorize(attachCtx, t, false)
 				} else if err == nil {

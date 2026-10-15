@@ -114,6 +114,49 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 		}
 		o.Checks = append(o.Checks, check{"config", "pass", true, "validated phase1 configuration and allowed directories"})
 		data["interactions"] = map[string]any{"enabled": cfg.Interactions.Enabled, "enabled_types": cfg.Interactions.EnabledTypes, "ui_verified": false, "required_protocol": "verified shared app-server"}
+		data["creation"] = map[string]any{
+			"enabled":                  cfg.Creation.Enabled,
+			"topics_enabled":           cfg.Creation.TopicsEnabled,
+			"entry_chat_ids_count":     len(cfg.Creation.EntryChatIDs),
+			"workgroup_chat_ids_count": len(cfg.Creation.WorkgroupChatIDs),
+			"allowed_roots_count":      len(cfg.Creation.AllowedRoots),
+			"common_directories_count": len(cfg.Creation.CommonDirectories),
+			"ui_verified":              false,
+		}
+		attachments := cfg.AttachmentLimits()
+		preview := cfg.FilePreviewLimits()
+		data["file_preview"] = map[string]any{
+			"enabled": preview.Enabled, "base_url": preview.BaseURL,
+			"listen_address": preview.ListenAddress, "allowed_roots_count": len(preview.AllowedRoots),
+			"max_file_bytes": preview.MaxFileBytes, "ui_verified": false,
+		}
+		if preview.Enabled {
+			if _, err := cfg.FilePreviewSecret(); err != nil {
+				o.State, o.Data = "file-preview-secret-unavailable", data
+				o.Checks = append(o.Checks, check{"file_preview.secret", "fail", true, "preview access code requires an owner-only regular 0600 file; value omitted"})
+				return o, 3
+			}
+			o.Checks = append(o.Checks, check{"file_preview.secret", "pass", true, "private preview access credential verified; value omitted"},
+				check{"file_preview.browser", "pending", false, "IP/network reachability, browser sign-in and real Feishu clicks require separate client acceptance"})
+		}
+		data["attachments"] = map[string]any{
+			"enabled":            attachments.Enabled,
+			"receive_standalone": attachments.ReceiveStandalone,
+			"root":               attachments.Directory,
+			"directory":          attachments.Directory,
+			"ui_verified":        false,
+			"limits": map[string]any{
+				"max_resources":    attachments.MaxResources,
+				"max_images":       attachments.MaxImages,
+				"max_image_bytes":  attachments.MaxImageBytes,
+				"max_images_bytes": attachments.MaxImagesBytes,
+				"max_file_bytes":   attachments.MaxFileBytes,
+				"max_batch_bytes":  attachments.MaxBatchBytes,
+				"max_image_pixels": attachments.MaxImagePixels,
+				"disk_quota_bytes": attachments.DiskQuotaBytes,
+				"download_workers": attachments.DownloadWorkers,
+			},
+		}
 		secret, err = cfg.Secret()
 		if err != nil {
 			o.State, o.Checks = "secret-unavailable", append(o.Checks, check{"feishu.secret", "fail", true, "secret file must be a private regular file containing one value"})
@@ -142,6 +185,14 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 			fail(3)
 		} else {
 			o.Checks = append(o.Checks, check{"codex.compatibility", "pass", true, "actual shared server version " + daemon.AppServerVersion + "; verified compatibility versions: " + verifiedVersions})
+		}
+		if cfg.Creation.Enabled {
+			status := "pass"
+			if !compat.VerifiedCreationCodexVersion(daemon.AppServerVersion) {
+				status = "fail"
+				fail(3)
+			}
+			o.Checks = append(o.Checks, check{"creation.protocol", status, true, "creation requires the separately verified 0.162.1 project/start/source protocol"})
 		}
 	}
 	if codexOnly {
@@ -208,7 +259,7 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 		fail(5)
 	} else {
 		o.Checks = append(o.Checks, check{"feishu.granted_scopes", "pass", true, "read current tenant grants; user grants and unapproved grants do not count"})
-		capabilities := compat.EvaluatePermissions(scopes)
+		capabilities := compat.EvaluatePermissionsForAttachments(scopes, cfg.Attachments.Enabled, cfg.Attachments.ReceiveStandalone)
 		data["feishu_capabilities"] = capabilities
 		for _, capability := range capabilities {
 			o.Checks = append(o.Checks, check{"feishu.permission." + capability.ID, capability.DocumentedPermissionSatisfied, capability.Required, capability})
@@ -220,6 +271,9 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 		}
 	}
 	o.Checks = append(o.Checks, check{"verification.live_ui", "pending", false, "subscription, card callbacks, group creation, message writes and App UI require separately authorized real verification; scope grants and transport readiness alone do not prove them"})
+	if cfg.Creation.Enabled {
+		o.Checks = append(o.Checks, check{"creation.live_ui", "pending", false, "creation entry groups, directory selection and topic routing require independent real Feishu/App UI acceptance; configuration scope does not prove readiness"})
+	}
 	data["phase1_released"] = phase1Released
 	if !phase1Released {
 		o.Checks = append(o.Checks, check{"release.acceptance", "pending", false, "development artifact; formal apply/install/start remain gated"})

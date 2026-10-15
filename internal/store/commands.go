@@ -28,8 +28,13 @@ CREATE TABLE command_replies (
 // CommandRequest contains trusted configuration and parsed values, never raw
 // inbound text. DirectoryScope must come from ResolveScope before this call.
 type CommandRequest struct {
+	SourceRootID, SourceThreadID                                 string
 	HostID, AppID, MessageID, ChatID, ChatType, UserID, ThreadID string
 	Kind, Feedback, NotificationTimezone                         string
+	CreationEnabled                                              bool
+	OwnerOpenID                                                  string
+	FilePreviewEnabled                                           bool
+	PreviewAccessCode                                            string `json:"-"`
 	Operators, NotificationTargets, AllowedRoots                 []string
 	ScopeRoots                                                   []string // Canonical roots used by ResolveScope.
 	Directory                                                    rules.DirectoryCommand
@@ -98,6 +103,16 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 	}
 	var body, settingsCard string
 	switch req.Kind {
+	case "preview":
+		if !operator || req.OwnerOpenID == "" || req.UserID != req.OwnerOpenID || req.ChatType != "p2p" ||
+			req.ThreadID != "" || !req.FilePreviewEnabled || req.PreviewAccessCode == "" {
+			return CommandReply{}, false, ErrConflict
+		}
+		fence := "```"
+		for strings.Contains(req.PreviewAccessCode, fence) {
+			fence += "`"
+		}
+		settingsCard = cards.Message("文件预览", "仅本人私聊", "浏览器访问口令：\n"+fence+"\n"+req.PreviewAccessCode+"\n"+fence+"\n打开文件预览链接后，在登录页输入此口令。")
 	case "directory":
 		if !operator {
 			return CommandReply{}, false, ErrConflict
@@ -147,6 +162,12 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 		}
 	case "help", "status":
 		body = "一期从 Codex App 发起任务，第一条实际输入后自动建专属群；在已绑定群中普通消息进入同一会话的队列。\n这里暂不创建新任务。支持 /mute-dir、/unmute-dir、/notify at；已绑定群的操作者可用 /stop 和 /continue。"
+		if req.CreationEnabled {
+			body = "私聊机器人发送任务描述或 /new，即可选择目录并创建 Codex 会话。授权入口群可 @机器人发起；已绑定任务群用 /new 新建，普通 @ 消息继续原会话。\n支持 /mute-dir、/unmute-dir、/notify at；任务群或对应话题可用 /stop 和 /continue。"
+		}
+		if req.FilePreviewEnabled {
+			body += "\n部署所有者可私聊发送 /preview 获取文件预览口令。"
+		}
 	case "feedback":
 		body = req.Feedback
 		if body == "" {
@@ -168,6 +189,9 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 	}
 	err = commandWriteOne(ctx, tx, `INSERT INTO command_replies(app_id,message_id,host_id,chat_id,chat_type,user_id,thread_id,kind,attempt_id,card_json,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,'ready',?)`, r.AppID, r.MessageID, r.HostID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.ID, r.Card, r.CreatedAtMS)
 	if err != nil {
+		return CommandReply{}, false, err
+	}
+	if err := recordCommandSourceTargetTx(ctx, tx, req); err != nil {
 		return CommandReply{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -393,6 +417,9 @@ func claimCommandReplyTx(ctx context.Context, tx *sql.Tx, r CommandReply, nowMS 
 		return CommandReply{}, false, err
 	}
 	if err := commandWriteOne(ctx, tx, `INSERT INTO command_reply_attempts(attempt_id,host_id,app_id,message_id,chat_id,chat_type,user_id,thread_id,kind,card_json,created_at_ms,dispatched_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'dispatching')`, r.ID, r.HostID, r.AppID, r.MessageID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.Card, r.CreatedAtMS, nowMS); err != nil {
+		return CommandReply{}, false, err
+	}
+	if err := freezeFollowAttemptTx(ctx, tx, r.ID, r.HostID, r.ThreadID, r.ChatID, r.MessageID); err != nil {
 		return CommandReply{}, false, err
 	}
 	wire, _, err := freezeCardRequestMarker(ctx, tx, "command", r.ID, r.Card)

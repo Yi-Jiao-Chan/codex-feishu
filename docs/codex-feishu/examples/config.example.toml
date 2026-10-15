@@ -41,10 +41,44 @@ enabled = false
 enabled_types = []
 # 可选类型：command、file、network、permissions、question、async_question。
 
+[attachments]
+# 默认关闭；保持关闭不新增权限。先在受控候选启用，完成真实飞书/App/模型验收后再推广。
+enabled = false
+# 独立图片/文件消息接收还需要发布敏感权限；同条 @ 图文可保持 false。
+receive_standalone = false
+directory = "/absolute/path/to/codex-feishu/attachments"
+max_resources = 10
+max_images = 5
+max_image_bytes = 10485760
+max_images_bytes = 20971520
+max_file_bytes = 20971520
+max_batch_bytes = 52428800
+max_image_pixels = 40000000
+disk_quota_bytes = 1073741824
+download_workers = 2
+
 [creation]
+# 第二期创建默认关闭；范围根需可读、可进入，最终执行目录另需可写。
 enabled = false
 default_follow_mode = "group"
+entry_chat_ids = []
 workgroup_chat_ids = []
+allowed_roots = []
+common_directories = []
+topics_enabled = false
+# 0 使用 1800 秒；显式值范围为 300–86400 秒。
+draft_ttl_seconds = 0
+
+[file_preview]
+# 可选只读浏览器预览；IP直连需显式绑定可达地址，默认不开启。
+enabled = false
+base_url = ""
+listen_address = "127.0.0.1:8787"
+# 独立指定，不能由 discovery/creation 自动授权；例：/absolute/path/to/project。
+allowed_roots = []
+# directory/secret_file 省略时使用数据库旁的 file-preview 和 file-preview.key。
+# 先用 file-preview init-secret 在私有目录创建0600口令文件。
+max_file_bytes = 1048576
 
 [storage]
 database_file = "/absolute/path/to/codex-feishu/bridge.db"

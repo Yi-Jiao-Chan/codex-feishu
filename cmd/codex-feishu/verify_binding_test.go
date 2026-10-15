@@ -340,20 +340,23 @@ func TestVerifyBindingInvalidArgumentsHaveNoDependencies(t *testing.T) {
 }
 
 func TestVersionManagedBindingKeepsReleaseAndUIGates(t *testing.T) {
-	reader, writer, err := os.Pipe()
+	// Version metadata can exceed a small OS pipe buffer. Capture to a file
+	// so producing the complete JSON never waits for the later decoder.
+	capture, err := os.CreateTemp(t.TempDir(), "version-output-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer capture.Close()
 	original := os.Stdout
-	os.Stdout = writer
+	defer func() { os.Stdout = original }()
+	os.Stdout = capture
 	code := run(context.Background(), []string{"version", "--json"})
 	os.Stdout = original
-	if err := writer.Close(); err != nil {
+	if _, err := capture.Seek(0, 0); err != nil {
 		t.Fatal(err)
 	}
 	var result output
-	if err := json.NewDecoder(reader).Decode(&result); err != nil || code != 0 {
+	if err := json.NewDecoder(capture).Decode(&result); err != nil || code != 0 {
 		t.Fatal(err, code)
 	}
 	data := result.Data.(map[string]any)

@@ -53,7 +53,8 @@ func freezeCardRequestMarker(ctx context.Context, tx *sql.Tx, kind, id, base str
 
 // CardReadback carries private frozen worker evidence, never status or logs.
 type CardReadback struct {
-	Kind, ID, HostID, AppID, ThreadID, ChatID, ParentMessageID, Card, Marker string `json:"-"`
+	Target                                                                   FollowAttemptTarget `json:"-"`
+	Kind, ID, HostID, AppID, ThreadID, ChatID, ParentMessageID, Card, Marker string              `json:"-"`
 }
 
 func (s *Store) CardRequestMarker(ctx context.Context, id string) (string, error) {
@@ -94,6 +95,30 @@ func (s *Store) ClaimCardReadback(ctx context.Context, kind, host, app, thread s
 	if err != nil {
 		return r, false, err
 	}
+	target, targetErr := readFollowAttemptTarget(ctx, tx, r.ID)
+	if errors.Is(targetErr, sql.ErrNoRows) {
+		var mode string
+		bindingErr := tx.QueryRowContext(ctx, `SELECT follow_mode FROM bindings WHERE host_id=? AND thread_id=?`, r.HostID, r.ThreadID).Scan(&mode)
+		if bindingErr != nil && !errors.Is(bindingErr, sql.ErrNoRows) {
+			return r, false, bindingErr
+		}
+		var sourceTopics int
+		if kind == "command" {
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM command_source_targets WHERE app_id=? AND message_id=? AND host_id=? AND chat_id=?`, r.AppID, r.ParentMessageID, r.HostID, r.ChatID).Scan(&sourceTopics); err != nil {
+				return r, false, err
+			}
+		}
+		if mode == "topic" || sourceTopics != 0 {
+			return r, false, ErrConflict
+		}
+		target = FollowAttemptTarget{AttemptID: r.ID, HostID: r.HostID, ThreadID: r.ThreadID, ChatID: r.ChatID, FollowMode: "group", ParentMessageID: r.ParentMessageID}
+	} else if targetErr != nil {
+		return r, false, targetErr
+	}
+	if target.HostID != r.HostID || target.ThreadID != r.ThreadID || target.ChatID != r.ChatID || target.ParentMessageID != r.ParentMessageID {
+		return r, false, ErrConflict
+	}
+	r.Target = target
 	r.Kind = kind
 	if err := commandWriteOne(ctx, tx, `UPDATE card_request_markers SET next_check_at_ms=? WHERE attempt_id=? AND kind=? AND next_check_at_ms<=?`, nowMS+intervalMS, r.ID, kind, nowMS); err != nil {
 		return r, false, err

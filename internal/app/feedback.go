@@ -77,8 +77,18 @@ func (f *Feedback) Sync(ctx context.Context, thread string, turns []codexclient.
 	}
 	engine := messages.Engine{Store: f.Store, HostID: f.HostID}
 	for _, n := range ns {
-		turn := history[n.TurnID]
-		desired := reactionFor(n.Receipt, turn)
+		effective := n
+		if n.State == "draft" {
+			target, found, err := f.Store.AttachmentSourceSubmission(ctx, f.scope(thread), n.ID)
+			if err != nil {
+				return err
+			}
+			if found {
+				effective = target
+			}
+		}
+		turn := history[effective.TurnID]
+		desired := reactionFor(effective.Receipt, turn)
 		if turn.Status == "inProgress" && f.Waiting != nil && f.Waiting(thread, turn.ID) {
 			desired = "THINKING"
 		}
@@ -106,8 +116,21 @@ func (f *Feedback) Received(ctx context.Context, thread string) error {
 		return err
 	}
 	for _, r := range receipts {
-		if r.State == "received" {
-			if err := f.set(ctx, thread, r, "Get"); err != nil {
+		if r.State == "received" || r.State == "draft" || r.State == "collecting" {
+			effective := r
+			if r.State == "draft" {
+				target, found, err := f.Store.AttachmentSourceSubmission(ctx, f.scope(thread), r.ID)
+				if err != nil {
+					return err
+				}
+				if found {
+					if target.State != "collecting" && target.State != "received" {
+						continue
+					}
+					effective = target.Receipt
+				}
+			}
+			if err := f.set(ctx, thread, r, reactionFor(effective, codexclient.Turn{})); err != nil {
 				return err
 			}
 		}

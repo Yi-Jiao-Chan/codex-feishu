@@ -2,7 +2,7 @@
 
 负责 `cmd/codex-feishu/`、`internal/config/`、`internal/setup/`、用户服务模板和发布元数据。依赖各模块健康接口；与 11 一起交付一期可安装版本。
 
-**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service 和 status。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。候选服务已实际部署到独立 schema 21 数据库，旧 M0 数据保留；`phase1_released=false` 时默认只允许配置预览，拒绝正式 apply、service install / start。显式候选模式已验证安装、重跑与保留数据卸载，保留未发布状态，禁止既有数据库迁移。配对已通过真实机器人私聊，并容许首尾空白和开头经核验的本机器人 mention；通知规则事务及迁移命令已通过隔离测试。完整自动测试编排、真实迁移与发布验收仍待完成；显式 acceptance-report 已提供只读报告核验与结束判定，不自行运行测试或替代人工 UI 观察。当前构建与真实证据范围见[集中验收记录](12-live-acceptance-handoff.md)。Agent 配置指南默认只在已验收版本进入应用阶段；明确授权的候选安装按指南中的独立路径执行，不能自动当作正式部署。
+**下表是开发验收契约，不是全部命令均已交付。** 开发版本已有 version、只读 doctor、默认只读 verify、M0 m0-listen、serve、setup plan / apply / pair / migrate、service、status 和附件状态/保守清理命令。新版 serve 已接入仅同用户可访问的健康通道，status 优先查运行实例，缺失时退回只读快照。doctor 已读取运行实例、实际 daemon 版本及 tenant 权限授权，version 内嵌权限能力清单。候选服务已实际部署到独立 schema 26 数据库，旧 M0 数据保留；`phase1_released=false` 时默认只允许配置预览，拒绝正式 apply、service install / start。显式候选模式已验证安装、重跑与保留数据卸载，保留未发布状态，禁止既有数据库迁移。配对已通过真实机器人私聊，并容许首尾空白和开头经核验的本机器人 mention；通知规则事务及迁移命令已通过隔离测试。完整自动测试编排、真实迁移与发布验收仍待完成；显式 acceptance-report 已提供只读报告核验与结束判定，不自行运行测试或替代人工 UI 观察。当前构建与真实证据范围见[集中验收记录](12-live-acceptance-handoff.md)。Agent 配置指南默认只在已验收版本进入应用阶段；明确授权的候选安装按指南中的独立路径执行，不能自动当作正式部署。
 
 ## 命令表
 
@@ -23,6 +23,8 @@
 | service uninstall --config PATH --keep-data --json | 删除本工具服务，默认保留配置、密钥与数据库 |
 | serve --config PATH | 前台常驻组合根；单部署锁、重连、优雅退出 |
 | status --config PATH --json | 两侧连接、服务、绑定数、队列、outbox 和 unknown 操作摘要 |
+| attachments status / cleanup --config PATH --json | 读取附件开关、磁盘额度与聚合用量；cleanup 须停桥并取得双锁，只清理无活动引用的生成文件 |
+| file-preview show-secret --config PATH | 显式向标准输出打印当前网页预览口令；拒绝 JSON 模式，仍核验私有口令文件 |
 | verify --config PATH --target self --json | 依授权范围运行本人测试卡/私有测试群/独立 Codex 测试线程，产出验收记录 |
 | verify --config PATH --acceptance-report PATH --json | 只读核验明确提供的当前构建案例报告及私有证据摘要；人工 UI 来源单列，不执行测试或自动发布 |
 
@@ -72,9 +74,11 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 
 安装前 doctor 默认允许桥尚未运行：仅在配置、私有密钥、实际共享 server 版本、tenant 机器人身份及必需权限全部确认后返回 `prerequisites-ready-bridge-not-observed`，未观察到的实例仍以非必需 pending 列出。启动后必须加 `--require-running`；连接、绑定恢复、初次历史基线或远端操作待核验时退出 5。若已存在运行实例，即使没有该标志，其未恢复状态也不能忽略。配置摘要或 socket 身份冲突退出 6。已有数据库不可读、版本不支持或部署身份不符退出 3；从未初始化的数据库只作安装前说明，不创建或迁移。
 
-配置 doctor 只查询既有管理端点、daemon version、机器人身份与权限 GET，不新建原生客户端或飞书长连接。独立的 `doctor --codex-only` 才执行短暂只读 handshake / thread list。权限按 API 文档认可的 OR 替代关系检查，只计算 `grant_status=1` 且 `scope_type=tenant`；缺字段、未知状态或授权响应不明确保留 pending。scope 满足不证明消息订阅、卡片回调、建群、更新、reaction 或 App UI 已验收：每项能力的 `runtime_observed` 仍为 unknown，实际 verify 单独提供证据。
+配置 doctor 只查询既有管理端点、daemon version、机器人身份与权限 GET，不新建原生客户端或飞书长连接。独立的 `doctor --codex-only` 才执行短暂只读 handshake / thread list。权限按 API 文档认可的 OR 替代关系检查，只计算 `grant_status=1` 且 `scope_type=tenant`；缺字段、未知状态或授权响应不明确保留 pending。附件下载权限只在 `enabled=true` 时成为 required；独立附件的群接收权限还需 `receive_standalone=true`。关闭时不改变 baseline required/recommended scopes。scope 满足不证明消息订阅、卡片回调、建群、更新、reaction、附件收取或 App UI 已验收：每项能力的 `runtime_observed` 仍为 unknown，实际 verify 单独提供证据。
 
 ## 配置与输入文件
+
+可选本地文件预览通过 `file_preview` 对象配置，默认关闭。setup 省略该对象时保留当前设置，显式提供时整体替换，启用时私有口令的变化会使旧 plan 失效。`file-preview init-secret` 只生成新的 0600 口令文件；`file-preview show-secret` 显式打印口令；`file-preview link` 本地登记指定文件并返回可点击地址。这些 CLI 均不发送消息或改变 Codex 会话。部署所有者也可私聊机器人发送 `/preview` 取得口令；群内只提示转到私聊，口令回复按现有私有 outbox 持久投递。监听、访问范围及真实浏览器验收见 [14 网页预览](14-file-preview.md)。
 
 正式配置默认 `~/.config/codex-feishu/config.toml`；状态默认 `~/.local/share/codex-feishu/bridge.db`，尊重已有 XDG 路径。不得覆盖 HOME 或 CODEX_HOME。安装工具展开这些路径后传给服务，运行时可见路径全为绝对路径。
 
@@ -82,6 +86,10 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 - [向导输入样例](examples/setup-input.example.json)：输入身份、目录、偏好和验证授权；允许缺 owner 后配对。
 
 正式 TOML 与向导 JSON 是不同 schema。setup 负责转换，拒绝未知键、占位值、不可访问目录、错误 open_id 类型与 schema 版本。通知/操作者为空时向导按已配对 owner 补齐；正式配置不得含 null 身份。identity.owner_open_id 写入 access.owner_open_id，identity.group_member_open_ids 写入 groups.additional_member_open_ids；owner 和机器人始终是默认成员。host_id 首次生成后沿用，配置重跑不换 ID、不重建数据库。setup pair 使用专用部分输入校验，不要求已经存在 owner。
+
+向导 JSON 的 `creation` 对象是可选的；省略时保留已有 creation 配置，显式提供时整体替换。`features.creation=true` 仍要求显式 creation 范围，不能从 discovery.allowed_roots 推断；`features.phase` 可为 `phase1` 或 `phase2`，phase2 不会隐式开启创建。启用创建必须提供真实可读、可进入的 `creation.allowed_roots`，最终执行目录另需可写；入口群、工作群和 common directories 只按其自身范围校验。默认跟进位置为 group，topic 需要开启 topics 并配置工作群；draft TTL 为 0 时使用 1800 秒。计划只展示入口群和目录范围计数，topic 与创建 UI 仍需独立真实验收。
+
+目录交互统一使用飞书原生卡片与既有长连接：最近 / 项目速选、显式项目名 / 绝对路径搜索、带路径导航 / 当前层筛选 / 分页的目录面板。无需额外 HTTP listener、域名、反向代理、H5 或 OAuth 配置。长连接传递卡片操作事件；目录读取和权限校验均在远程桥进程完成，结果更新原卡。平台 API 校验和模拟测试仍不等于真实手机布局或交互验收。
 
 配置中的 notifications 是新用户的初始化默认值，数据库的用户设置优先；重跑安装不重置用户通过命令关闭的 @。向导读取现有有效规则；用户明确要求修改当前 quiet 时，将该用户规则差异单列进 plan 并应用，不将默认空值当“清掉当前规则”。
 
@@ -97,7 +105,9 @@ apply 用部署配置锁，备份旧配置，原子写临时文件并 rename；�
 
 当前开发实现：计划实际核验所选二进制、现有 daemon、密钥文件权限、目录和现有部署；输入、二进制、密钥或配置变化使旧 plan_id 失效，兼容版本 daemon 的临时 socket 变化不影响恢复。已有 host_id 和数据库路径保留。通知 off / snooze 保持原值；向导仅修改本人明确提供的 quiet / timezone，不改变其他接收者。省略 quiet 保留现有规则，显式空字符串清除 quiet。
 
-apply 同时取得应用与数据库监听锁。已有规则的更新要求私有、准确 schema 21 数据库；完整状态比较后在同一 SQLite 事务提交规则与审计，重复执行不增加 revision 或审计。数据库旁的部署标记与配置 prepared 日志在配置替换前持久化，完整更新完成后保存 applied 并清理部署标记。中断返回 `setup-recovery-pending` / 退出 5；保持原输入文件、二进制、密钥、原 plan_id、配置备份和事务文件，再重跑原 apply。不要用新计划覆盖未完成事务，也不要删除日志。serve 在连接或迁移前拒绝未完成事务；改用备份/复制配置或数据库 symlink 别名也不能绕过同一数据库的恢复检查。当前 apply 不创建或迁移数据库，旧 M0 schema 1 仍须单独迁移与绑定接管验收。自动测试证据见[通知配置事务进展](../research/m3-policy-apply-2026-10-12.md)。
+apply 同时取得应用与数据库监听锁。已有规则的更新要求私有、准确 schema 26 数据库；完整状态比较后在同一 SQLite 事务提交规则与审计，重复执行不增加 revision 或审计。数据库旁的部署标记与配置 prepared 日志在配置替换前持久化，完整更新完成后保存 applied 并清理部署标记。中断返回 `setup-recovery-pending` / 退出 5；保持原输入文件、二进制、密钥、原 plan_id、配置备份和事务文件，再重跑原 apply。不要用新计划覆盖未完成事务，也不要删除日志。serve 在连接或迁移前拒绝未完成事务；改用备份/复制配置或数据库 symlink 别名也不能绕过同一数据库的恢复检查。当前 apply 不创建或迁移数据库，旧 M0 schema 1 仍须单独迁移与绑定接管验收。自动测试证据见[通知配置事务进展](../research/m3-policy-apply-2026-10-12.md)。
+
+附件设置通过 setup JSON 顶层可选 `attachments` 对象传入；省略时保留既有设置，显式提供时整体替换并按配置校验。`enabled` 和 `receive_standalone` 都是布尔开关，默认关闭；目录省略时为数据库旁的 `attachments`，预算为 10 资源、5 图片、单图 10 MiB、图片合计 20 MiB、单文件 20 MiB、批次 50 MiB、单图 40M 像素、1 GiB 磁盘和 2 个下载 worker。plan 在启用时列出本地私有存储与限额；只有 `receive_standalone=true` 才提示敏感 `im:message.group_msg` 和权限发布，设为 `false` 时只接收带 @ 的 post 图文。doctor 仅输出 enabled、根目录、限额聚合和 `ui_verified=false`，不输出正文、资源 key 或密钥。
 
 改变运行中配置前须停止本工具实例，再重新 plan / apply；应用锁或数据库锁被占用时拒绝替换配置。service install 更新正在使用的 unit 后仅报告 restart pending，须明确 stop / start；start 对已运行服务是 no-op。配置 Agent 不应将这两种情况写成更新已经生效。
 

@@ -2,7 +2,7 @@
 
 负责 `internal/store/`、迁移、恢复协调器。依赖 00；必须在输入提交与自动建群之前可用。
 
-## 当前实现边界（2026-10-12）
+## 当前实现边界（2026-10-15）
 
 schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输入与飞书收据关联、完整历史扫描水位的事务保存。待建群的 eligible 会话可以先入库，绑定及父消息确认后才领取发送；过程更新合并到最新版本，终态不回退，同一线程只允许一个 dispatching 写请求。send / reply / PATCH 都在调用网关前落账，启动时把遗留 dispatching 转为 unknown，不自动重发。通知规则按 app/user 持久保存，以 revision 防止并发修改丢失；重新初始化默认值不覆盖已有设置。
 
@@ -38,6 +38,14 @@ schema 21 新增私有 `verification_bindings`：仅将同一请求中已确认�
 
 schema 23 为 `create_intents` 增加 `description`。未曾 dispatch 的意图首次附着实际会话 CWD 后、领取 attempt 前事务冻结群描述；明确限流重试沿用原描述和 UUID。旧已有 attempt / unknown 意图保留旧固定描述，不改已发送请求参数，也不重新创建已有群，见[群工作目录研究](../research/chat-working-directory-2026-10-13.md)。
 
+schema 26 增加附件批次、来源收据和有序资源表，并把附件输入关联到现有 submission。资源按 `(host, app, thread, chat, sender)` 隔离；`source receipt`、草稿 revision、资源顺序和状态在数据库中保存。封存后的 `collecting` 输入在所有资源 ready 前保持等待，整体失败才释放后续普通提交；失败的本地下载重试移到队尾并保留原 client ID，没有 native attempt 才允许重试，unknown 一律不重发。冻结的 `input_json` 原样用于 queue/add、steer 和 restore，`Body` 仅作显示摘要。
+
+资源缓存目录默认位于数据库旁的 `attachments`，目录 0700、文件 0600，完成资源以 SHA-256 校验后原子发布；下载租约 90 秒，重启可恢复。首次 GET 使用真实有界流式读取，限制图片/文件大小、像素、批次和磁盘配额。关闭附件开关后仍完成已经封存的批次，不再接收新资源，未封存草稿保留。只读 `attachments status` 返回开关、聚合统计和磁盘额度；cleanup 必须在桥停止并取得应用锁和部署锁后执行，只删除未被非 cleared/nonremoved 状态引用的成品或 partial，queued/unknown 资源保留到会话结束。
+
+schema 27 将 `bindings` 扩展为可区分 group/topic 的 follow target，保存根消息、平台 thread、repair 标记并保持有效目标唯一；topic 的镜像和 outbound 继续沿用目标身份，不因根消息失效退回主群。旧 group 绑定迁移为 `follow_mode='group'`，健康诊断只按 deployment 的 host/app 统计 `group`、`topic` 和 `repair_required` 聚合。
+
+schema 28 新增 `creation_drafts`、`creation_workflows` 和 `creation_attempts`，并为 `m0_receipts` 增加 `reply_message_id`。草稿按 `(host, app, source_message_id)` 去重；workflow 与每个远程步骤分别保存冻结参数和状态，`unknown` 经恢复仍不可直接重发，明确 `rejected` 才可显式创建新 attempt。跨 chat 创建保留原 source message 用于去重，把新目标根消息写入 receipt reply anchor。健康接口在 schema 28 及以上才查询这些新表，并返回状态计数，不输出正文、目录、消息 / thread / attempt ID、payload 或凭据；旧 schema 保持空聚合且不访问新表。
+
 | 表 | 主键 / 唯一约束 | 主要字段 |
 | --- | --- | --- |
 | deployment | host_id | app_id、基线建立时间、schema 版本 |
@@ -53,6 +61,9 @@ schema 23 为 `create_intents` 增加 `description`。未曾 dispatch 的意图�
 | directory_rules | canonical_path + recursive | 规则与添加者；同一路径可有精确和递归两条 |
 | notification_rules | app_id + open_id | enabled、snooze_until、quiet 时间段、时区、版本 |
 | drafts | draft_id | 二期草稿、版本、唯一 create intent、有效期 |
+| attachment_batches | batch_id；(host, app, thread, chat, sender) 的 open 唯一 | 草稿/封存状态、revision、来源 receipt、首条消息 |
+| attachment_events | app_id + message_id；receipt 唯一 | 原消息与附件批次关联 |
+| attachment_parts | part_id；batch_id + ordinal 唯一 | text/image/file、资源 key、顺序、下载状态、大小、摘要、文件 ID |
 
 动作令牌可额外独立表，也可和 action_receipts 合并；必须支持未执行令牌的授权、有效期与版本校验。不要将“按钮当前不可点”当数据库约束。
 
@@ -74,6 +85,8 @@ prepared 且能证明从未进入发送阶段的操作可以执行；dispatching
 服务启动先获取部署锁，打开并迁移数据库，加载绑定与规则，再建立两侧连接。正常新事件可持久接收；对一个尚未核验的会话暂停冲突写操作。已确认绑定可以同步补齐，不能因重连重新建群。
 
 恢复器按会话串行完成：重新加入 → 读取完整原生队列 → 分页用户历史和公开回复 → 对照 clientId/远程 ID → 修正收据 → 补齐 outbox。先登记事件与镜像 outbox，再推进内容水位，避免“水位已过但消息未记”。
+
+附件恢复先恢复租约和可验证的已发布文件，再按批次状态推进下载；封存但仍 `collecting` 的提交挡住同线程后来的普通输入，全部 ready 后才进入原生提交，整体 failed 后释放队列。队列快照优先读取只含 ID/client ID 的 metadata DTO，避免把图片数据 URL 留在本地收据；历史和事件仍按完整资源引用核验。
 
 原生 cursor 不是可靠的永久事件位点。持久水位基于 thread/turn/item 标识；每次补齐保留一个重叠窗口，对旧 item upsert。长断线根据上次已确认历史继续分页，不能只查最近一页。
 
@@ -103,3 +116,4 @@ prepared 且能证明从未进入发送阶段的操作可以执行；dispatching
 4. 历史超过一页、断线超过重叠窗口，补齐没有漏项；已投递 item 更新原卡。
 5. SQLite 磁盘满 / 锁超时，未持久化成功的操作不发 RPC；卡片明确接收失败。
 6. 两个 serve 进程争用同一部署，第二个退出并报锁持有者，不抢占或删除锁文件。
+7. schema 26 的附件草稿、封存批次、下载恢复和清理不越过 host/app/thread/chat/sender 隔离，不删除 queued/unknown 仍引用的资源。

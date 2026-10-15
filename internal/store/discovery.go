@@ -43,11 +43,17 @@ func (s *Store) PendingObservations(ctx context.Context, host string) ([]Observa
 	return result, rows.Err()
 }
 
-type Binding struct{ HostID, ThreadID, IntentID, ChatID string }
+type Binding struct {
+	HostID, ThreadID, IntentID, ChatID string
+	// Empty FollowMode is the legacy group mode.
+	FollowMode, RootMessageID, PlatformThreadID string
+	RepairRequired                              bool
+	RepairReason                                string
+}
 
 func (s *Store) Binding(ctx context.Context, host, thread string) (Binding, error) {
 	b := Binding{HostID: host, ThreadID: thread}
-	err := s.DB.QueryRowContext(ctx, "SELECT intent_id,chat_id FROM bindings WHERE host_id=? AND thread_id=?", host, thread).Scan(&b.IntentID, &b.ChatID)
+	err := scanBinding(s.DB.QueryRowContext(ctx, "SELECT "+bindingColumns+" FROM bindings WHERE host_id=? AND thread_id=?", host, thread), &b)
 	return b, err
 }
 

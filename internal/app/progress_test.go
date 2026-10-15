@@ -135,7 +135,7 @@ func TestReactionLifecycleAndAmbiguousWriteDoNotRetry(t *testing.T) {
 	turn.Status = "completed"
 	m.syncReaction(ctx, r, turn)
 	m.syncReaction(ctx, r, turn)
-	if strings.Join(g.added, ",") != "Get,THINKING,OnIt,CheckMark" || len(g.deleted) != 3 {
+	if strings.Join(g.added, ",") != "Get,OneSecond,OnIt,CheckMark" || len(g.deleted) != 3 {
 		t.Fatalf("wrong lifecycle %v %v", g.added, g.deleted)
 	}
 	g.reactionErr = &feishu.Unknown{Operation: "POST reaction"}

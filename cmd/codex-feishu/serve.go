@@ -73,6 +73,15 @@ func runServe(ctx context.Context, args []string) int {
 			return 3
 		}
 	}
+	var preview *previewHTTP
+	if cfg.FilePreview.Enabled {
+		preview, err = startFilePreview(cfg)
+		if err != nil {
+			emit(output{Command: "serve", State: "file-preview-unavailable", Checks: []check{{"file_preview", "fail", true, err.Error()}}})
+			return 3
+		}
+		defer preview.Close()
+	}
 	secret, err := cfg.Secret()
 	if err != nil {
 		emit(output{Command: "serve", State: "secret-unavailable"})
@@ -109,7 +118,12 @@ func runServe(ctx context.Context, args []string) int {
 		return 7
 	}
 	defer pairManager.Close()
-	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Pairing: pairManager, Connect: serveNativeConnect(cfg.Codex.CLIPath, codexclient.Discover, codexclient.Connect)}
+	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Pairing: pairManager, Connect: serveNativeConnect(cfg.Codex.CLIPath, codexclient.Discover, codexclient.Connect, cfg.Creation.Enabled)}
+	if preview != nil {
+		service.PreparePublic = func(ctx context.Context, _ string, body string) (string, error) {
+			return preview.preview.Rewrite(ctx, body)
+		}
+	}
 	var noticeMu sync.Mutex
 	last := map[string]time.Time{}
 	service.Notice = func(code string) {
@@ -176,10 +190,14 @@ func runServe(ctx context.Context, args []string) int {
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	var workers sync.WaitGroup
-	results := make(chan error, 2)
+	results := make(chan error, 3)
 	workers.Add(2)
 	go func() { defer workers.Done(); results <- service.Run(runCtx) }()
 	go func() { defer workers.Done(); results <- server.Serve(runCtx) }()
+	if preview != nil {
+		workers.Add(1)
+		go func() { defer workers.Done(); results <- preview.Serve(runCtx) }()
+	}
 	emit(output{Command: "serve", State: "starting", Data: map[string]any{"host_id": cfg.Host.ID, "store_schema": store.SchemaVersion, "phase1_released": phase1Released, "candidate_test_deployment": *candidate, "control_endpoint": endpoint}})
 	err = <-results
 	stop()
@@ -216,7 +234,7 @@ func validateLockedServeConfig(path string, identity string) (config.Config, err
 // Each generation rechecks the existing daemon before opening its native
 // connection. The injected calls are the same production discovery and dial
 // operations; tests can exercise this boundary without a shared daemon.
-func serveNativeConnect(cli string, discover func(context.Context, string) (codexclient.Daemon, error), connect func(context.Context, string) (*codexclient.Client, error)) func(context.Context) (app.ServiceNative, error) {
+func serveNativeConnect(cli string, discover func(context.Context, string) (codexclient.Daemon, error), connect func(context.Context, string) (*codexclient.Client, error), creationEnabled ...bool) func(context.Context) (app.ServiceNative, error) {
 	return func(ctx context.Context) (app.ServiceNative, error) {
 		inspectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -226,6 +244,9 @@ func serveNativeConnect(cli string, discover func(context.Context, string) (code
 		}
 		if !compat.VerifiedCodexVersion(daemon.AppServerVersion) {
 			return nil, errors.New("native version is not in the verified compatibility list")
+		}
+		if len(creationEnabled) > 0 && creationEnabled[0] && !compat.VerifiedCreationCodexVersion(daemon.AppServerVersion) {
+			return nil, errors.New("native creation protocol version is not verified")
 		}
 		return connect(ctx, daemon.SocketPath)
 	}

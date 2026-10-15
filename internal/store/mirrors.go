@@ -28,6 +28,7 @@ type Watermark struct {
 }
 
 type MirrorAttempt struct {
+	FollowMode, RootMessageID, PlatformThreadID           string
 	ID, HostID, ThreadID, Key, Operation                  string
 	ChatID, ParentMessageID, TargetMessageID, Card, State string
 	RemoteID                                              string
@@ -289,7 +290,12 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 		return a, false, err
 	}
 	a.ChatID = ""
-	err = tx.QueryRowContext(ctx, `SELECT chat_id FROM bindings WHERE host_id=? AND thread_id=?`, host, thread).Scan(&a.ChatID)
+	var binding Binding
+	err = scanBinding(tx.QueryRowContext(ctx, `SELECT `+bindingColumns+` FROM bindings WHERE host_id=? AND thread_id=?`, host, thread), &binding)
+	a.ChatID = binding.ChatID
+	if err == nil && binding.RepairRequired {
+		return a, false, ErrTargetRepair
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return MirrorAttempt{}, false, nil
 	}
@@ -330,11 +336,18 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	default:
 		a.Operation = "reply"
 	}
+	if binding.FollowMode == "topic" {
+		a.FollowMode, a.RootMessageID, a.PlatformThreadID = "topic", binding.RootMessageID, binding.PlatformThreadID
+		if a.Operation != "update" {
+			a.Operation = "reply"
+			a.ParentMessageID = binding.RootMessageID
+		}
+	}
 	mentionIDs, err := prepareMirrorMentions(ctx, tx, m, &a, mentions)
 	if err != nil {
 		return MirrorAttempt{}, false, err
 	}
-	err = mirrorWriteOne(ctx, tx, `INSERT INTO outbound_attempts(attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching')`, a.ID, host, thread, key, a.Revision, a.Operation, a.ChatID, a.ParentMessageID, a.TargetMessageID, a.Card, nowMS)
+	err = mirrorWriteOne(ctx, tx, `INSERT INTO outbound_attempts(attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,follow_mode,root_message_id,platform_thread_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching',?,?,?)`, a.ID, host, thread, key, a.Revision, a.Operation, a.ChatID, a.ParentMessageID, a.TargetMessageID, a.Card, nowMS, a.FollowMode, a.RootMessageID, a.PlatformThreadID)
 	if err == nil {
 		err = freezeMirrorRequestMarker(ctx, tx, &a)
 	}
@@ -354,10 +367,10 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	return a, err == nil, err
 }
 
-const attemptColumns = `attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,remote_id`
+const attemptColumns = `attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,remote_id,follow_mode,root_message_id,platform_thread_id`
 
 func scanAttempt(row rowScanner) (a MirrorAttempt, err error) {
-	err = row.Scan(&a.ID, &a.HostID, &a.ThreadID, &a.Key, &a.Revision, &a.Operation, &a.ChatID, &a.ParentMessageID, &a.TargetMessageID, &a.Card, &a.CreatedAtMS, &a.State, &a.RemoteID)
+	err = row.Scan(&a.ID, &a.HostID, &a.ThreadID, &a.Key, &a.Revision, &a.Operation, &a.ChatID, &a.ParentMessageID, &a.TargetMessageID, &a.Card, &a.CreatedAtMS, &a.State, &a.RemoteID, &a.FollowMode, &a.RootMessageID, &a.PlatformThreadID)
 	return
 }
 

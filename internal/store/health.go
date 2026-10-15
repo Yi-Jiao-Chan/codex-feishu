@@ -26,6 +26,10 @@ type PersistentHealth struct {
 	TaskClaims       map[string]int64 `json:"task_claims"`
 	Requests         map[string]int64 `json:"requests"`
 	ReminderAttempts map[string]int64 `json:"reminder_attempts"`
+	CreationDrafts   map[string]int64 `json:"creation_drafts"`
+	CreationIntents  map[string]int64 `json:"creation_intents"`
+	CreationAttempts map[string]int64 `json:"creation_attempts"`
+	FollowTargets    map[string]int64 `json:"follow_targets"`
 }
 
 // Health returns aggregate durable facts only, never bodies, card documents,
@@ -33,7 +37,7 @@ type PersistentHealth struct {
 func (s *Store) Health(ctx context.Context, schema int, host, app string) (PersistentHealth, error) {
 	h := PersistentHealth{Schema: schema, LegacyM0: schema == 1,
 		Inputs: map[string]int64{}, Outbound: map[string]int64{}, OutboundAttempts: map[string]int64{}, NativeActions: map[string]int64{}, NativeAttempts: map[string]int64{},
-		CommandAttempts: map[string]int64{}, CommandReplies: map[string]int64{}, Reactions: map[string]int64{}, GroupAttempts: map[string]int64{}, GroupIntents: map[string]int64{}, GroupNames: map[string]int64{}, TaskControls: map[string]int64{}, TaskClaims: map[string]int64{}, Requests: map[string]int64{}, ReminderAttempts: map[string]int64{}}
+		CommandAttempts: map[string]int64{}, CommandReplies: map[string]int64{}, Reactions: map[string]int64{}, GroupAttempts: map[string]int64{}, GroupIntents: map[string]int64{}, GroupNames: map[string]int64{}, TaskControls: map[string]int64{}, TaskClaims: map[string]int64{}, Requests: map[string]int64{}, ReminderAttempts: map[string]int64{}, CreationDrafts: map[string]int64{}, CreationIntents: map[string]int64{}, CreationAttempts: map[string]int64{}, FollowTargets: map[string]int64{}}
 	count := func(query string, args ...any) (int64, error) {
 		var n int64
 		err := s.DB.QueryRowContext(ctx, query, args...).Scan(&n)
@@ -64,7 +68,7 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 			return h, errors.New("group name health unavailable")
 		}
 	}
-	for _, state := range []string{"received", "submitting", "accepted", "queued", "consumed", "steering", "steered", "removing", "removed", "unknown", "failed"} {
+	for _, state := range []string{"draft", "collecting", "received", "submitting", "accepted", "queued", "consumed", "steering", "steered", "removing", "removed", "unknown", "failed"} {
 		if schema == 1 {
 			h.Inputs[state], err = count(`SELECT COUNT(*) FROM m0_receipts WHERE app_id=? AND state=?`, app, state)
 		} else {
@@ -213,6 +217,27 @@ func (s *Store) Health(ctx context.Context, schema int, host, app string) (Persi
 		h.Requests["reminder_readback_available"], err = count(`SELECT COUNT(*) FROM request_reminder_attempts a JOIN card_request_markers k ON k.kind='reminder' AND k.attempt_id=a.attempt_id JOIN app_requests r USING(host_id,app_id,thread_id,request_key) WHERE a.host_id=? AND a.app_id=? AND a.state='unknown' AND r.reminder_state='unknown'`, host, app)
 		if err != nil {
 			return h, errors.New("reminder readback health unavailable")
+		}
+	}
+	if schema >= 28 {
+		if err := countStates(h.CreationDrafts, []string{"draft", "creating", "created", "canceled", "expired"}, `SELECT COUNT(*) FROM creation_drafts WHERE host_id=? AND app_id=? AND state=?`, host, app); err != nil {
+			return h, errors.New("creation draft health unavailable")
+		}
+		if err := countStates(h.CreationIntents, []string{"ready", "working", "unknown", "rejected", "confirmed"}, `SELECT COUNT(*) FROM creation_workflows WHERE host_id=? AND app_id=? AND state=?`, host, app); err != nil {
+			return h, errors.New("creation intent health unavailable")
+		}
+		if err := countStates(h.CreationAttempts, []string{"prepared", "dispatching", "unknown", "rejected", "confirmed"}, `SELECT COUNT(*) FROM creation_attempts a JOIN creation_drafts d ON d.draft_id=a.draft_id WHERE d.host_id=? AND d.app_id=? AND a.state=?`, host, app); err != nil {
+			return h, errors.New("creation attempt health unavailable")
+		}
+		for key, query := range map[string]string{
+			"group":           `SELECT COUNT(*) FROM bindings b JOIN deployment d ON d.host_id=b.host_id WHERE b.host_id=? AND d.app_id=? AND b.follow_mode='group'`,
+			"topic":           `SELECT COUNT(*) FROM bindings b JOIN deployment d ON d.host_id=b.host_id WHERE b.host_id=? AND d.app_id=? AND b.follow_mode='topic'`,
+			"repair_required": `SELECT COUNT(*) FROM bindings b JOIN deployment d ON d.host_id=b.host_id WHERE b.host_id=? AND d.app_id=? AND b.repair_required=1`,
+		} {
+			h.FollowTargets[key], err = count(query, host, app)
+			if err != nil {
+				return h, errors.New("follow target health unavailable")
+			}
 		}
 	}
 	return h, nil

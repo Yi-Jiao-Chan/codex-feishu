@@ -46,7 +46,8 @@ func (s *Store) StageDisconnectedCards(ctx context.Context, scope SubmissionScop
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := submissionBinding(ctx, tx, scope); err != nil {
+	chat, err := submissionBinding(ctx, tx, scope)
+	if err != nil {
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT `+mirrorColumns+` FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? AND m.kind='progress' AND m.retired=0`, scope.HostID, scope.ThreadID)
@@ -77,17 +78,47 @@ func (s *Store) StageDisconnectedCards(ctx context.Context, scope SubmissionScop
 	card := cards.Progress(status, "重新连接后恢复同步；当前操作暂不可用。")
 	for _, m := range selected {
 		overlay := card
+		var input *Submission
 		if strings.HasPrefix(m.Key, "ui:queue:") {
 			n, err := readSubmission(ctx, tx, scope, strings.TrimPrefix(m.Key, "ui:queue:"))
 			if err != nil {
 				return err
 			}
-			localPending, err := localPendingSubmission(ctx, tx, scope, n)
+			input = &n
+		} else if strings.HasPrefix(m.Key, "ui:attachments:") {
+			b, err := scanAttachmentBatch(tx.QueryRowContext(ctx, `SELECT `+attachmentBatchColumns+` FROM attachment_batches WHERE batch_id=? AND host_id=? AND app_id=? AND thread_id=? AND chat_id=?`, strings.TrimPrefix(m.Key, "ui:attachments:"), scope.HostID, scope.AppID, scope.ThreadID, chat))
+			if err != nil {
+				return err
+			}
+			if b.State != "sealed" {
+				continue
+			} // Local draft/download actions remain usable offline.
+			n, err := readSubmission(ctx, tx, scope, b.ReceiptID)
+			if err != nil {
+				return err
+			}
+			if n.State == "collecting" || n.State == "draft" {
+				continue
+			}
+			identity, err := submissionCardIdentityTx(ctx, tx, scope, n)
+			if err != nil {
+				return err
+			}
+			if identity.key != m.Key {
+				continue
+			} // A historical separate queue card still owns native controls.
+			if !validSubmissionCard(m, identity) {
+				return ErrConflict
+			}
+			input = &n
+		}
+		if input != nil {
+			localPending, err := localPendingSubmission(ctx, tx, scope, *input)
 			if err != nil {
 				return err
 			}
 			if localPending {
-				overlay = cards.QueueInputView(cards.QueueView{State: n.State, Token: n.ActionToken, Revision: n.Revision, LocalPending: true})
+				overlay = cards.QueueInputView(cards.QueueView{State: input.State, Token: input.ActionToken, Revision: input.Revision, LocalPending: true})
 			}
 		}
 		if m.Card == overlay {

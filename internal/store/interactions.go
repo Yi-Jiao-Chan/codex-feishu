@@ -265,7 +265,7 @@ func (s *Store) StageInteractionCard(ctx context.Context, r InteractionRequest, 
 				// Async-only turns may have no progress/final document. A
 				// Feishu-origin input is deliberately not mirrored, so use its
 				// exact hydrated-history link instead of inventing a plain send.
-				err = tx.QueryRowContext(ctx, `SELECT '',r.message_id FROM input_history_links l JOIN m0_receipts r ON r.id=l.receipt_id WHERE l.host_id=? AND l.thread_id=? AND l.turn_id=? AND r.app_id=? AND r.thread_id=l.thread_id ORDER BY l.rowid LIMIT 1`, r.HostID, r.ThreadID, r.TurnID, r.AppID).Scan(&actual.ParentKey, &actual.ParentMessageID)
+				err = tx.QueryRowContext(ctx, `SELECT '',CASE WHEN r.reply_message_id<>'' THEN r.reply_message_id ELSE r.message_id END FROM input_history_links l JOIN m0_receipts r ON r.id=l.receipt_id WHERE l.host_id=? AND l.thread_id=? AND l.turn_id=? AND r.app_id=? AND r.thread_id=l.thread_id ORDER BY l.rowid LIMIT 1`, r.HostID, r.ThreadID, r.TurnID, r.AppID).Scan(&actual.ParentKey, &actual.ParentMessageID)
 				if errors.Is(err, sql.ErrNoRows) {
 					return nil
 				}
