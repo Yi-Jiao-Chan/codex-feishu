@@ -17,8 +17,8 @@ type UserPresentation struct {
 	Attachments []AttachmentReference
 }
 
-// UserPresentation separates the App's known attachment envelope from the
-// actual user request. PublicText remains the original native text for adoption.
+// UserPresentation renders known App attachment and question-answer envelopes.
+// PublicText remains the original native text for adoption and native identity.
 func (i Item) UserPresentation() UserPresentation {
 	if i.Type != "userMessage" {
 		return UserPresentation{}
@@ -57,6 +57,13 @@ func (i Item) UserPresentation() UserPresentation {
 	if ok {
 		presentation.Text = text
 		referencesByContent[firstText] = wrapped
+	}
+	if replies, ok := ParseAsyncQuestionReplies(presentation.Text); ok {
+		parts := make([]string, 0, len(replies))
+		for _, reply := range replies {
+			parts = append(parts, "问题：\n\n"+reply.Question+"\n\n回答：\n\n"+reply.Answer)
+		}
+		presentation.Text = strings.Join(parts, "\n\n")
 	}
 	// Retain encounter order, replacing weaker wrapper metadata in place when
 	// a native reference confirms the same identity.

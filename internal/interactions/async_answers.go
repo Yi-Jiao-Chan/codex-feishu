@@ -3,21 +3,13 @@ package interactions
 import (
 	"context"
 	"encoding/json"
-	"strconv"
-	"strings"
 
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/store"
 )
 
-type asyncReply struct {
-	QuestionItemID string `json:"questionItemId"`
-	Question       string `json:"question"`
-	Answer         string `json:"answer"`
-}
-
 type observedAsyncReply struct {
-	asyncReply
+	codexclient.AsyncQuestionReply
 	position int
 }
 
@@ -47,31 +39,15 @@ func (c *Controller) closeAnsweredAsync(ctx context.Context, rows []store.Intera
 			if item.Type != "userMessage" {
 				continue
 			}
-			text := strings.TrimSpace(item.PublicText())
-			const open, close = "<send_user_message_question_reply>", "</send_user_message_question_reply>"
-			if !strings.HasPrefix(text, open) || !strings.HasSuffix(text, close) {
-				continue
-			}
-			body := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, open), close))
-			var replies []asyncReply
-			if json.Unmarshal([]byte(body), &replies) != nil {
+			replies, ok := codexclient.ParseAsyncQuestionReplies(item.PublicText())
+			if !ok {
 				continue
 			}
 			for _, reply := range replies {
-				var identity []json.RawMessage
-				var tool, callID string
-				if strings.TrimSpace(reply.Answer) == "" || json.Unmarshal([]byte(reply.QuestionItemID), &identity) != nil || len(identity) != 3 || json.Unmarshal(identity[0], &tool) != nil || tool != "request_user_input_async" || json.Unmarshal(identity[1], &callID) != nil || callID == "" {
-					continue
+				if answers[reply.CallID] == nil {
+					answers[reply.CallID] = map[int][]observedAsyncReply{}
 				}
-				indexText := strings.TrimSpace(string(identity[2]))
-				index, err := strconv.Atoi(indexText)
-				if err != nil || index < 0 || strconv.Itoa(index) != indexText {
-					continue
-				}
-				if answers[callID] == nil {
-					answers[callID] = map[int][]observedAsyncReply{}
-				}
-				answers[callID][index] = append(answers[callID][index], observedAsyncReply{reply, position})
+				answers[reply.CallID][reply.QuestionIndex] = append(answers[reply.CallID][reply.QuestionIndex], observedAsyncReply{reply, position})
 			}
 		}
 	}
