@@ -9,7 +9,15 @@ import (
 
 // threadGroupTitle keeps the App's title behind one recognizable bot marker.
 func threadGroupTitle(meta codexclient.Thread, turns []codexclient.Turn) string {
-	return bindings.WithRobotPrefix(threadDisplayTitle(meta, turns))
+	return threadGroupTitleWithPin(meta, turns, false)
+}
+
+func threadGroupTitleWithPin(meta codexclient.Thread, turns []codexclient.Turn, pinned bool) string {
+	title := bindings.WithRobotPrefix(threadDisplayTitle(meta, turns))
+	if pinned {
+		return "📌 " + title
+	}
+	return title
 }
 
 // Preview and the first actual request are draft fallbacks for the App name.

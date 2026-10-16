@@ -109,7 +109,7 @@ func TestFixtureArchiveHasOnlyAllowlistedContentAndVerifiableHashes(t *testing.T
 			t.Fatalf("secret leaked into archive: %s", name)
 		}
 	}
-	for _, name := range []string{"README.md", "artifact.json", "SHA256SUMS", "bin/codex-feishu", "compat/codex.json", "compat/feishu-permissions.json", "docs/codex-feishu/AGENT-SETUP.md", "docs/codex-feishu/examples/codex-feishu.service.template"} {
+	for _, name := range []string{"README.md", "artifact.json", "SHA256SUMS", "bin/codex-feishu", "compat/codex.json", "compat/feishu-permissions.json", "compat/codex-pinning.json", "docs/codex-feishu/AGENT-SETUP.md", "docs/codex-feishu/examples/codex-feishu.service.template"} {
 		if _, ok := files[name]; !ok {
 			t.Fatalf("missing archive member %s", name)
 		}

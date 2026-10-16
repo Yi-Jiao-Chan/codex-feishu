@@ -30,6 +30,7 @@ var sourceAllowlist = []sourceSpec{
 	{source: "docs/codex-feishu/examples/setup-input.example.json", dest: "docs/codex-feishu/examples/setup-input.example.json"},
 	{source: "docs/codex-feishu/examples/acceptance-report.template.json", dest: "docs/codex-feishu/examples/acceptance-report.template.json"},
 	{source: "compat/feishu-permissions.json", dest: "compat/feishu-permissions.json"},
+	{source: "compat/codex-pinning.json", dest: "compat/codex-pinning.json"},
 	{source: "docs/codex-feishu/examples/codex-feishu.service.template", dest: "docs/codex-feishu/examples/codex-feishu.service.template"},
 }
 

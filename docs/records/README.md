@@ -9,6 +9,7 @@
 | 文档 | 日期 / 版本 |
 | --- | --- |
 | [Codex 0.162.1 候选部署兼容性](codex-0.162.1-compatibility-2026-10-13.md) | 2026-10-13 |
+| [置顶群名、近期发现窗口与空闲降频](pinned-group-names-and-windowed-discovery-2026-10-16.md) | 2026-10-16 |
 | [飞书创建 Codex 会话：实施与验收记录](feishu-create-codex-session-implementation-2026-10-15.md) | 2026-10-15 |
 | [飞书入站图片、文件与多附件：实施记录](feishu-inbound-attachments-implementation-2026-10-15.md) | 2026-10-15 |
 | [本地文件网页预览：实施与本机验证](feishu-local-file-preview-implementation-2026-10-15.md) | 2026-10-15 |

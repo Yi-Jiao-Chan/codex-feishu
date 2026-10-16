@@ -18,6 +18,8 @@
 | 用途 | 原生方法 / 注意事项 |
 | --- | --- |
 | 发现 / 元数据 | thread/list、thread/read；本地不传非空 originators 过滤 |
+| 近期发现 | thread/list 按 updated_at 降序分页，跨过固定 24 小时边界即停止；没有 updated_since 参数 |
+| 置顶集合 | threadSection/list 定位分区；thread/list(sectionId, section_position) 分页读取完整集合，覆盖普通及归档、全部 sourceKinds |
 | 观察加入 | thread/resume(excludeTurns=true)；复用当前执行器 |
 | 分页补齐 | thread/turns/list、thread/items/list；分页 cursor 是不透明字符串 |
 | 原生队列 | thread/queue/list、add、delete、start |
@@ -33,6 +35,8 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 ## 事件适配
 
 最低覆盖 thread/started、线程状态变化、turn 开始/完成、item 开始/完成、公开 agentMessage 增量、thread/queue/changed。具体 method 名与 payload 从已验收的生成协议绑定，避免按口头命名猜事件。
+
+0.162.1 的置顶由 `Thread.section` 表示：实际 App 置顶使会话进入 `Pinned` 分区，取消后 section 为空；该版本没有独立的 `isPinned` 字段或置顶通知。桥每主机约 15 秒查询一次完整置顶集合，仅唤醒有变化的已绑定会话，再用其最新授权元数据计算群名；不为每条历史会话新增置顶 RPC。分区与近期分页适配拒绝缺失/null data 和重复 cursor，读取失败不能伪装为空集合。[兼容能力清单](../../compat/codex-pinning.json)、[实施与真实只读证据](../records/pinned-group-names-and-windowed-discovery-2026-10-16.md)。
 
 服务端审批/用户输入请求独立于普通通知：M0 记录请求类型，转任务为“待用户处理”，提示回 App。未经真实双客户端验证，不在飞书生成允许/拒绝或问答提交按钮。
 

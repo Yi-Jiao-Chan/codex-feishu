@@ -97,6 +97,9 @@ func TestBaselineKeepsLiveBirthAndBlankDraftButIgnoresOldResume(t *testing.T) {
 	n.turns[old] = append(n.turns[old], userTurn("continued-old-input")...)
 	delete(n.errors, draft)
 	n.turns[draft] = userTurn("draft-first-input")
+	// Materialized drafts become visible in the active listing; history alone
+	// cannot establish that a candidate is unarchived.
+	n.active = append(n.active, n.metadata[draft])
 	if err := e.Scan(ctx); err != nil {
 		t.Fatal(err)
 	}

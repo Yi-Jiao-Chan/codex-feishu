@@ -14,6 +14,7 @@ type Thread struct {
 	Path           *string         `json:"path"`
 	CWD            string          `json:"cwd"`
 	Name           *string         `json:"name"`
+	Section        *ThreadSection  `json:"section"`
 	Preview        string          `json:"preview"`
 	CreatedAt      int64           `json:"createdAt"`
 	UpdatedAt      int64           `json:"updatedAt"`
@@ -29,6 +30,12 @@ type Thread struct {
 	} `json:"status"`
 	Turns []Turn `json:"turns"`
 }
+
+type ThreadSection struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type Turn struct {
 	ID          string `json:"id"`
 	Status      string `json:"status"`

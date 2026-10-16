@@ -12,6 +12,8 @@ schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输�
 
 ## SQLite 结构
 
+2026-10-16 的发现覆盖检查点和置顶快照复用 `m0_operations` 的独立 kind（`codex.discovery_checkpoint`、`codex.pinned_snapshot`），不新增 schema 迁移。键按 host/app 分开，保存前核验 deployment；发现的 last scan/full 时间不改变 baseline 出生 fence。置顶仅在完整读取成功后原子保存分区 ID、完整会话 ID 集合和观察时间，失败不覆盖旧集合。ID 集合是私有恢复数据，不进入普通日志或 status 诊断。服务重连先恢复已绑定 actor 和最后确认分区，再独立更新快照，不能将首次未知身份当成未置顶。
+
 schema 29 为创建草稿保存 `workspace_mode` / `base_branch`，为创建 workflow 冻结基准 commit、Git 根/common-dir 与工作树路径。旧草稿和 workflow 保持 local，既有正文、远程 ID、收据和 attempt 不变。工作树同样使用 prepared / dispatching / unknown / rejected / confirmed 日志，只有明确 rejected 才能显式 retry；unknown 只核验既有完整检出。Materialize 必须有匹配目标路径的 confirmed 工作树收据，cwd 使用最终执行路径。详见 [09 新建工作树](09-feishu-task-creation.md#新建工作树)。
 
 schema 11 新增 `legacy_adoptions`。schema 1 须经显式接管，不能由普通启动自动升级；库存摘要、旧绑定与 confirmed 消息 ID 和正式表在同一事务保存，原日志保留。存储基础与纯历史 mapper 已通过隔离测试，迁移 CLI、一致备份及锁已通过隔离测试，真实切换仍待验收，见[M0 接管进展](../records/m3-legacy-adoption-2026-10-12.md)。
