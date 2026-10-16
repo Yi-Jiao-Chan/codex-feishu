@@ -203,11 +203,19 @@ func (e *Engine) Snapshot(ctx context.Context) error {
 	return e.Store.CompleteBaseline(ctx, e.HostID, historical)
 }
 
-// Scan includes archived IDs for coverage but never activates them while archived.
-// Normal native UUIDv7 IDs provide conditional compensation for missed/offline
-// births; recency/preview/createdAt alone never promote old IDs. Repeated full
-// scans avoid silently skipping delayed projections behind a recency watermark.
+// Scan retains the full compensation path. Normal polling uses ScanSince;
+// archived IDs, loaded drafts and persisted pending candidates remain covered.
 func (e *Engine) Scan(ctx context.Context) error {
+	return e.ScanSince(ctx, 0)
+}
+
+type recentNative interface {
+	ListArchiveSince(context.Context, bool, int64) ([]codexclient.Thread, error)
+}
+
+// ScanSince limits ordinary listings to a fixed Unix-second cutoff. A zero
+// cutoff is a full compensation scan; time alone never proves a new birth.
+func (e *Engine) ScanSince(ctx context.Context, since int64) error {
 	fence, complete, err := e.Store.BaselineFence(ctx, e.HostID)
 	if err != nil {
 		return err
@@ -215,11 +223,17 @@ func (e *Engine) Scan(ctx context.Context) error {
 	if !complete {
 		return errors.New("discovery baseline incomplete")
 	}
-	active, err := e.Native.ListArchive(ctx, false)
+	list := func(archived bool) ([]codexclient.Thread, error) {
+		if recent, ok := e.Native.(recentNative); ok && since > 0 {
+			return recent.ListArchiveSince(ctx, archived, since)
+		}
+		return e.Native.ListArchive(ctx, archived)
+	}
+	active, err := list(false)
 	if err != nil {
 		return err
 	}
-	archived, err := e.Native.ListArchive(ctx, true)
+	archived, err := list(true)
 	if err != nil {
 		return err
 	}
@@ -228,10 +242,12 @@ func (e *Engine) Scan(ctx context.Context) error {
 		return err
 	}
 	ids := map[string]bool{}
+	activeIDs := map[string]bool{}
 	archivedIDs := map[string]bool{}
 	archivedMetadata := map[string]codexclient.Thread{}
 	for _, t := range active {
 		ids[t.ID] = true
+		activeIDs[t.ID] = true
 	}
 	for _, t := range archived {
 		ids[t.ID] = true
@@ -264,7 +280,7 @@ func (e *Engine) Scan(ctx context.Context) error {
 			}
 			continue
 		}
-		if err = e.Check(ctx, id, fence); err != nil {
+		if err = e.check(ctx, id, fence, activeIDs[id]); err != nil {
 			var candidate *CandidateError
 			if errors.As(err, &candidate) {
 				if err = e.Store.NotePending(ctx, e.HostID, id, candidate.Stage+"_unavailable"); err != nil {
@@ -280,12 +296,26 @@ func (e *Engine) Scan(ctx context.Context) error {
 }
 
 func (e *Engine) Check(ctx context.Context, id string, fence int64) error {
+	return e.check(ctx, id, fence, false)
+}
+
+func (e *Engine) check(ctx context.Context, id string, fence int64, observedActive bool) error {
 	o, err := e.Store.Observation(ctx, e.HostID, id)
 	if err == nil && (o.State == "ignored" || o.State == "excluded") {
 		return nil
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
+	}
+	if o.ExclusionReason == "archived" {
+		// An absent window row is not proof of unarchive. Metadata has no
+		// archive flag, so pending/draft/event checks must preserve the hold.
+		if !observedActive {
+			return nil
+		}
+		if err := e.Store.NotePending(ctx, e.HostID, id, ""); err != nil {
+			return err
+		}
 	}
 	if _, err = e.Store.Binding(ctx, e.HostID, id); err == nil {
 		return nil
@@ -294,6 +324,14 @@ func (e *Engine) Check(ctx context.Context, id string, fence int64) error {
 	}
 	if err = e.Store.ObserveCandidate(ctx, e.HostID, id, o.CWD, o.CreatedAt, "ambiguous"); err != nil {
 		return err
+	}
+	if !observedActive {
+		// Readable metadata/history and loaded/event IDs do not prove a thread
+		// is unarchived. Demote stale eligibility before any fallible reads;
+		// only a positive active listing may permit automatic group creation.
+		if err = e.Store.HoldCandidate(ctx, e.HostID, id, "active_unconfirmed"); err != nil {
+			return err
+		}
 	}
 	t, err := e.Native.Metadata(ctx, id)
 	if err != nil {
@@ -351,7 +389,7 @@ func (e *Engine) Check(ctx context.Context, id string, fence int64) error {
 	if input == "" {
 		return e.Store.ObserveCandidate(ctx, e.HostID, id, t.CWD, t.CreatedAt, "draft")
 	}
-	if o.Origin != "new" {
+	if o.Origin != "new" || !observedActive {
 		return nil
 	}
 	return e.Store.MarkEligible(ctx, e.HostID, id, input, scope.CWD, scope.ProjectRoot)

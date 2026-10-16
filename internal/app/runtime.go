@@ -44,6 +44,10 @@ type Runtime struct {
 	DiscoveryEnabled           bool
 	DirectoryRules             func(context.Context) ([]rules.DirectoryRule, error)
 	ScanInterval, PollInterval time.Duration
+	PinScanInterval            time.Duration
+	FullScanInterval           time.Duration
+	IdlePollInterval           time.Duration
+	IdleHistoryInterval        time.Duration
 	MinProgressIntervalMS      int64
 	SuppressAsyncQuestions     bool
 	AsyncQuestionsSinceMS      int64
@@ -67,13 +71,16 @@ type Runtime struct {
 	EventObservedContext       func(context.Context, codexclient.Event) error
 	RenderProgress             func(string, string, string, cards.ProgressView) string
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
-	Notice      func(string)
-	Now         func() time.Time
-	mu          sync.Mutex
-	actors      map[string]*threadActor
-	running     bool
-	checks      chan string
-	activations chan string
+	Notice       func(string)
+	Now          func() time.Time
+	mu           sync.Mutex
+	actors       map[string]*threadActor
+	running      bool
+	checks       chan string
+	activations  chan string
+	pinSupported bool
+	pinKnown     bool
+	pinSectionID string
 }
 
 type threadActor struct {
@@ -203,6 +210,7 @@ func (r *Runtime) Run(parent context.Context) error {
 	r.checks = make(chan string, 256)
 	r.activations = make(chan string, 256)
 	r.running = true
+	r.pinSupported, r.pinKnown, r.pinSectionID = false, false, ""
 	r.mu.Unlock()
 	ctx, cancel := context.WithCancel(parent)
 	var workers sync.WaitGroup
@@ -234,6 +242,7 @@ func (r *Runtime) Run(parent context.Context) error {
 	if err != nil {
 		return err
 	}
+	pinNative, previousPins, pinsSupported := r.preparePinning(ctx)
 	startActor := func(id string, replay, boundOnly bool) {
 		r.mu.Lock()
 		if r.actors[id] != nil {
@@ -249,6 +258,10 @@ func (r *Runtime) Run(parent context.Context) error {
 	}
 	for _, b := range bounds {
 		startActor(b.ThreadID, true, false)
+	}
+	if pinsSupported {
+		workers.Add(1)
+		go func() { defer workers.Done(); r.runPins(ctx, pinNative, previousPins) }()
 	}
 	// Persisted eligible candidates may have accumulated content while offline.
 	initial, err := r.Store.PendingObservations(ctx, r.HostID)
@@ -366,17 +379,17 @@ func (r *Runtime) runDiscovery(ctx context.Context, e *discovery.Engine, done ch
 		default:
 		}
 	}
-	fullScan := func() {
+	scan := func() {
 		if err := e.Snapshot(ctx); err != nil {
 			r.notice("discovery.baseline_pending")
 		} else {
-			if err := e.Scan(ctx); err != nil {
+			if err := r.scanDiscovery(ctx, e); err != nil {
 				r.notice("discovery.scan_pending")
 			}
 			notify()
 		}
 	}
-	fullScan()
+	scan()
 	for {
 		select {
 		case <-ctx.Done():
@@ -390,7 +403,7 @@ func (r *Runtime) runDiscovery(ctx context.Context, e *discovery.Engine, done ch
 				notify()
 			}
 		case <-timer.C:
-			fullScan()
+			scan()
 		}
 	}
 }
@@ -402,6 +415,29 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	}
 	timer := time.NewTicker(interval)
 	defer timer.Stop()
+	idlePoll := r.IdlePollInterval
+	if idlePoll <= 0 {
+		idlePoll = 15 * time.Second
+	}
+	if idlePoll < interval {
+		idlePoll = interval
+	}
+	idleHistory := r.IdleHistoryInterval
+	if idleHistory <= 0 {
+		idleHistory = 5 * time.Minute
+	}
+	cold, tickInterval := false, interval
+	setCold := func(value bool) {
+		cold = value
+		next := interval
+		if cold {
+			next = idlePoll
+		}
+		if next != tickInterval {
+			timer.Reset(next)
+			tickInterval = next
+		}
+	}
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
 	engine.PrepareHuman = r.PrepareHuman
 	engine.PreparePublic = r.PreparePublic
@@ -415,13 +451,16 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	if reader, ok := r.Messages.(messages.MessageReadbackGateway); ok {
 		outbound.Readback = reader
 	}
+	deliveryPending := false
 	deliver := func(b store.Binding, turns []codexclient.Turn, historyOK bool) {
+		deliveryPending = false
 		if r.ready() && (r.CanDeliver == nil || r.CanDeliver(ctx, b) == nil) {
 			// Bounded batch prevents one long answer from monopolizing
 			// shutdown; every segment has its own pre-RPC journal.
 			for i := 0; i < 16 && ctx.Err() == nil; i++ {
 				result, err := outbound.DispatchOne(ctx, r.HostID, a.thread, r.now().UnixMilli())
 				if err != nil {
+					deliveryPending = true
 					r.notice("delivery.commit_pending")
 					break
 				}
@@ -429,24 +468,30 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 					break
 				}
 				if result.State == "deferred" {
+					deliveryPending = true
 					r.notice("delivery.rate_limited")
 					continue // Independent final or queue cards may still deliver.
 				}
 				if result.State != "confirmed" {
+					deliveryPending = true
 					r.notice("delivery.verification_required")
 					break
 				}
 			}
 			if r.AfterDelivery != nil {
 				if err := r.AfterDelivery(ctx, a.thread, turns); err != nil {
+					deliveryPending = true
 					r.notice("feedback.reconcile_pending")
 				}
 			}
 			if r.WaitingReminder != nil && historyOK {
 				if _, err := r.WaitingReminder(ctx, a.thread); err != nil {
+					deliveryPending = true
 					r.notice("request.reminder_pending")
 				}
 			}
+		} else {
+			deliveryPending = true
 		}
 	}
 	members := []string{r.OwnerID}
@@ -469,10 +514,11 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	var latestTurns []codexclient.Turn
 	latestHistoryOK := false
 	title := "Codex"
+	nameStateKnown := false
 	syncedTitle := ""
 	var nextNameSyncAtMS int64
 	syncName := func(b store.Binding) {
-		if b.FollowMode == "topic" || r.SyncGroupName == nil || syncedTitle == title || r.now().UnixMilli() < nextNameSyncAtMS || !r.ready() ||
+		if !nameStateKnown || b.FollowMode == "topic" || r.SyncGroupName == nil || syncedTitle == title || r.now().UnixMilli() < nextNameSyncAtMS || !r.ready() ||
 			(r.CanDeliver != nil && r.CanDeliver(ctx, b) != nil) {
 			return
 		}
@@ -500,8 +546,13 @@ actorLoop:
 			groupRetryAtMS = 0
 			dirty = true
 		}
-		readHistory := dirty || r.now().Sub(lastRead) >= 15*time.Second
+		historyInterval := 15 * time.Second
+		if cold {
+			historyInterval = idleHistory
+		}
+		readHistory := dirty || r.now().Sub(lastRead) >= historyInterval
 		if readHistory {
+			setCold(false)
 			dirty = false
 			lastRead = r.now()
 			if !attached {
@@ -527,6 +578,7 @@ actorLoop:
 				cancel()
 			}
 			if attached {
+				tickPending := false
 				deliveryAuthorized = false
 				readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				meta, err := r.Native.Metadata(readCtx, a.thread)
@@ -544,10 +596,11 @@ actorLoop:
 				deliveryAuthorized = true
 				// Name is the App's user-facing title. Refresh it from every
 				// authorized metadata read, including name-update wakeups.
-				title = threadGroupTitle(meta, latestTurns)
+				title, nameStateKnown = r.groupTitle(meta, latestTurns)
 				if r.ActorTick != nil {
 					if _, err := r.Store.Binding(readCtx, r.HostID, a.thread); err == nil {
 						if err := r.ActorTick(readCtx, a.thread); err != nil {
+							tickPending = true
 							r.notice("input.reconcile_pending")
 						}
 					}
@@ -561,7 +614,7 @@ actorLoop:
 					turns, err = nil, nil
 				}
 				if err == nil {
-					title = threadGroupTitle(meta, turns)
+					title, nameStateKnown = r.groupTitle(meta, turns)
 					if r.HistoryPreparing != nil {
 						err = r.HistoryPreparing(readCtx, a.thread, turns)
 					}
@@ -593,6 +646,18 @@ actorLoop:
 				if bindingErr == nil {
 					deliver(b, turns, err == nil)
 					syncName(b)
+					mayIdle := err == nil && !tickPending && !deliveryPending && !groupRunning && groupRetryAtMS == 0 &&
+						idleThread(meta, turns, r.now()) && (!nameStateKnown || b.FollowMode == "topic" || r.SyncGroupName == nil || syncedTitle == title)
+					if mayIdle {
+						// An unknown native write can return nil while awaiting
+						// readback. It still needs the normal controller cadence.
+						blocked, pendingErr := r.Store.SubmissionBlocked(ctx, store.SubmissionScope{HostID: r.HostID, AppID: r.AppID, ThreadID: a.thread})
+						mayIdle = pendingErr == nil && !blocked
+						if pendingErr != nil {
+							r.notice("input.reconcile_pending")
+						}
+					}
+					setCold(mayIdle)
 				} else if !errors.Is(bindingErr, sql.ErrNoRows) {
 					r.notice("binding.read_pending")
 				} else if hydrated && !a.boundOnly && !verificationHandled && r.DiscoveryEnabled && r.ready() && !groupRunning && !groupBlocked && r.now().UnixMilli() >= groupRetryAtMS {
@@ -619,9 +684,15 @@ actorLoop:
 			due, err := r.Store.HasDueMirrors(ctx, r.HostID, a.thread, r.now().UnixMilli(), r.MinProgressIntervalMS)
 			if err != nil {
 				r.notice("delivery.selection_pending")
-			} else if due {
+			} else if due || cold {
+				// Cold ticks still reconcile unknown readbacks, deferred
+				// reactions and reminders. They need no native history read;
+				// a nil/empty dispatch does not prove durable work is complete.
 				if b, err := r.Store.Binding(ctx, r.HostID, a.thread); err == nil {
 					deliver(b, latestTurns, latestHistoryOK)
+					if deliveryPending {
+						setCold(false)
+					}
 				} else if !errors.Is(err, sql.ErrNoRows) {
 					r.notice("binding.read_pending")
 				}
@@ -636,6 +707,12 @@ actorLoop:
 			case <-a.wake:
 				// Coalesce token and status events until the next actor tick.
 				dirty = true
+				if cold {
+					// A new native/Feishu event bypasses the cold timer and
+					// reauthorizes metadata before any thread work resumes.
+					setCold(false)
+					continue actorLoop
+				}
 			case err := <-groupDone:
 				groupRunning = false
 				groupBlocked = errors.Is(err, bindings.ErrGroupUnknown) || errors.Is(err, bindings.ErrGroupRejected)

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "schema_baseline": "0.162.0",
+  "schema_compatible_versions": ["0.162.0", "0.162.1"],
+  "app_pin_state_verified_versions": ["0.162.1"],
+  "schema_digest": "4248c44d68df2d0d55be53b15fffbb24d8c8cf41cb9993a1f79d5d03d3d2b5da",
+  "methods": {
+    "threadSection/list": ["cursor", "limit"],
+    "thread/list": ["cursor", "limit", "archived", "modelProviders", "sourceKinds", "sectionId", "sortKey", "sortDirection", "useStateDbOnly"],
+    "thread/read": ["threadId", "includeTurns"]
+  },
+  "thread_fields": ["id", "updatedAt", "section.id", "section.name"],
+  "sort_keys": ["updated_at", "section_position"],
+  "pin_mapping": "persist the uniquely discovered Pinned section identity; compare current thread.section.id",
+  "dedicated_pin_notification": false,
+  "feishu_group_name_ui": "pending",
+  "evidence": "docs/records/pinned-group-names-and-windowed-discovery-2026-10-16.md"
+}
