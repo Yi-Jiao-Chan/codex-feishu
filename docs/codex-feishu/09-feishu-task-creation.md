@@ -2,7 +2,7 @@
 
 负责 `internal/creation/`，扩展目录选择、topic binding 和相应卡片。依赖一期通过验收的 01–08；phase1 默认 creation.enabled=false。
 
-目录选择、群聊/话题流程、跨群首条消息的引用锚点、原生创建恢复及验收的完整设计见[飞书新建 Codex 会话技术方案](../research/feishu-create-codex-session-plan-2026-10-15.md)。当前持久化创建、配置范围和 group/topic 存储已有开发实现，功能默认关闭并处于验收中；详细方案和[实施记录](../research/feishu-create-codex-session-implementation-2026-10-15.md)不代表真实飞书 UI 已通过。
+目录选择、群聊/话题流程、跨群首条消息的引用锚点、原生创建恢复及验收的完整设计见[飞书新建 Codex 会话技术方案](../plans/feishu-create-codex-session-plan-2026-10-15.md)。当前持久化创建、配置范围和 group/topic 存储已有开发实现，功能默认关闭并处于验收中；详细方案和[实施记录](../records/feishu-create-codex-session-implementation-2026-10-15.md)不代表真实飞书 UI 已通过。
 
 ## 当前实现与验收状态（2026-10-15）
 
@@ -10,7 +10,7 @@
 
 配置默认关闭 creation。启用时必须显式给出允许目录并通过真实路径边界校验；入口群、工作群和常用目录各自保持范围，不能由 discovery 根隐式代替。计划和 doctor 只展示安全计数，不输出正文、目录、消息 / thread / attempt ID、payload 或凭据。本机候选已更新并按用户授权开启联调，范围根为 `/`；实际选择目录重新核验 R/W/X。构建身份和未完成 UI 项见实施记录，不据此宣布正式发布。
 
-共享 daemon 0.162.1 的持久线程已验证首条 queue/history、另一连接 resume 和用户在真实 App 中查看、打开、发送续接；`thread/list` 的 threadSource 仍可能为 `null`，恢复使用逐线程 metadata 与最小 `ReadCreation` 核验。该证据证明原生持久线程可续接，不等于入口卡、真实群、话题或手机布局通过。自动测试和真实 App 观察的分层记录见[飞书创建 Codex 会话实施记录](../research/feishu-create-codex-session-implementation-2026-10-15.md)。
+共享 daemon 0.162.1 的持久线程已验证首条 queue/history、另一连接 resume 和用户在真实 App 中查看、打开、发送续接；`thread/list` 的 threadSource 仍可能为 `null`，恢复使用逐线程 metadata 与最小 `ReadCreation` 核验。该证据证明原生持久线程可续接，不等于入口卡、真实群、话题或手机布局通过。自动测试和真实 App 观察的分层记录见[飞书创建 Codex 会话实施记录](../records/feishu-create-codex-session-implementation-2026-10-15.md)。
 
 创建与目录表单已通过真实平台校验，双话题 API 身份隔离和根撤回 GET 护栏已验证；进程内确认恢复、草稿公平领取和 Runtime 补偿专项测试通过。用户已确认私聊创建卡、目录选择、新专属群回复及 App 打开续接的功能测试通过，同时不认可目前交互，尤其目录选择。用户已选择组合[速选、搜索和目录面板](../research/feishu-create-directory-ux-research-2026-10-15.md)，并要求复用长连接、无需域名；随后选择浏览优先，新版候选已部署；主卡、20/50/100 项目录和原布局等待卡通过真实 API 校验，用户已确认浏览优先功能及随后紧凑样式可用；手机布局、双话题客户端观察及根失效显示仍分别为 pending。完成前保持 `phase1_released=false`，不把自动测试或 App 观察写成完整飞书验收。
 
@@ -39,7 +39,7 @@ draft 保存 creator、入口 message ID、任务文本、host、selected_direct
 
 目录面板复用既有长连接回调和原卡更新，无需域名、HTTPS 或 OAuth。单层扫描仍有 4096 项上限，候选批量改为最多 100，实际返回还受完整 JSON 字节预算限制；查找在分页前覆盖整层。明确显示载入范围和总数，只在容量超限时提供继续加载，不再固定 10 项翻页。目录进入与查询不附带无关的项目目录或工作群 RPC，选择和执行前仍核验真实目录与项目。
 
-操作持久领取后唤醒处理器；卡片以同一有序更新出口呈现正在打开、查找、保存及结果。处理中不可提交冲突操作；未知卡片写先读回，不让迟到的 busy 覆盖结果，也不盲重发。所有回调沿用实际卡片、创建者、deployment、token、revision 与期限校验。设计依据及证据边界见[重设计方案](../research/feishu-create-directory-ui-redesign-2026-10-15.md)；真实飞书手机布局和更新时延仍须单独验收。
+操作持久领取后唤醒处理器；卡片以同一有序更新出口呈现正在打开、查找、保存及结果。处理中不可提交冲突操作；未知卡片写先读回，不让迟到的 busy 覆盖结果，也不盲重发。所有回调沿用实际卡片、创建者、deployment、token、revision 与期限校验。设计依据及证据边界见[重设计方案](../design/feishu-create-directory-ui-redesign-2026-10-15.md)；真实飞书手机布局和更新时延仍须单独验收。
 
 其他目录选择卡允许在配置范围内浏览目录或输入绝对路径，所有校验发生在远程执行主机：真实路径、目录存在、可读写、允许范围、projectId 是否与目录匹配。worktree 和项目原路径沿用 07 的规范化函数。项目关系无法验证时可以无 projectId 创建，但卡片明确“独立目录”，不伪造项目归属。
 

@@ -63,7 +63,7 @@ App 可见性验收分两步：忙时出现在 App 原生队列；执行或引�
 
 原消息 reaction 状态采用飞书官方 emoji_type：Get=接收，OneSecond（稍等）=排队，THINKING=附件收取中或等待用户处理，OnIt=执行，CheckMark=完成且最终结果已投递，CrossMark=失败；移除 / 停止清理本机器人临时状态。不删除其他人的 reaction。reaction 缺权限或请求结果未知只影响反馈，不能造成 Codex 输入重试；未知响应不盲重试。
 
-受控验收绑定的卡片、reaction、命令确认和提醒已接入逐次发送授权与资源上下文，领取前拒绝不会生成 attempt，领取后取消保持保守恢复。reaction 的已确认删除与尚未 journal 的添加可凭本地证据继续，不能重复删除或据远程缺失猜测重试。管理绑定入口已接入；真实服务部署与 UI 重验仍 pending，见[投递上下文进展](../research/m3-verification-delivery-guards-2026-10-12.md)和[管理绑定组件](../research/m3-managed-binding-2026-10-12.md)。
+受控验收绑定的卡片、reaction、命令确认和提醒已接入逐次发送授权与资源上下文，领取前拒绝不会生成 attempt，领取后取消保持保守恢复。reaction 的已确认删除与尚未 journal 的添加可凭本地证据继续，不能重复删除或据远程缺失猜测重试。管理绑定入口已接入；真实服务部署与 UI 重验仍 pending，见[投递上下文进展](../records/m3-verification-delivery-guards-2026-10-12.md)和[管理绑定组件](../records/m3-managed-binding-2026-10-12.md)。
 
 ## 初次绑定与断线补齐
 
@@ -88,4 +88,4 @@ Codex 断开：任务卡显示最近已知状态及时间，禁用实时引导/�
 5. 不公开 reasoning；回 App 审批不改变原权限。
 6. 断线跨多轮、重启后正确补齐，旧历史没有批量 @。
 
-受控绑定的实际 Service.Run / 原接收器 / actor / 管理 socket 隔离整合测试已覆盖：同一 owner 输入重放只 add 一次；进度更新原卡，最终结果独立引用原输入；最终发送确认之前没有完成 reaction；所有 reaction 指向原消息；飞书输入、reasoning、完整工具输出不镜像。原生与飞书网关均为测试替身，这份证据不提升真实 UI 或完整 P1，见[正式消息闭环](../research/m3-managed-roundtrip-2026-10-12.md)。
+受控绑定的实际 Service.Run / 原接收器 / actor / 管理 socket 隔离整合测试已覆盖：同一 owner 输入重放只 add 一次；进度更新原卡，最终结果独立引用原输入；最终发送确认之前没有完成 reaction；所有 reaction 指向原消息；飞书输入、reasoning、完整工具输出不镜像。原生与飞书网关均为测试替身，这份证据不提升真实 UI 或完整 P1，见[正式消息闭环](../records/m3-managed-roundtrip-2026-10-12.md)。

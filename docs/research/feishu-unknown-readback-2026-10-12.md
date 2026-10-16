@@ -84,7 +84,7 @@ delete 按已知 message/reaction ID，只能删自己添加且真实存在的�
 
 ## 本次证据与未决事项
 
-- 阅读 README、02/03 及仓库约束；CodeGraph 状态与索引均缺失后使用直接读取，未主动建索引。
+- 阅读 README、02/03 及仓库约束，直接读取相关源码。
 - 官方页面 HTML 的 `rel=alternate` 提供 `.md`，通过这些公开官方 URL 获取完整字段，而不是引用第三方复刻。HTML-only web 提取为空不等于文档不可得。
 - 本地 module cache 的 v3.12.0 `model.go`、`resource.go` 与官方 tag raw 文件逐字节相同，SHA-256 分别为 `978002449250a0d8e08bee36450d24c222caff7d2e1ab97963148ef6c6d10008`、`3dc9d125d1d286ad447ba27797d742fbe5612faba961f42b32ea9c959bb24cb3`。[官方 pinned model](https://raw.githubusercontent.com/larksuite/oapi-sdk-go/v3.12.0/service/im/v1/model.go)、[官方 pinned resource](https://raw.githubusercontent.com/larksuite/oapi-sdk-go/v3.12.0/service/im/v1/resource.go)
 - GET 当前卡片格式/element_id round-trip、平台读一致性、原响应丢失后的可信 ID 来源均未通过真实探针，不能写 pass。当前无需密钥才能落实严格 reader、分页与证据类型；自动将既有 unknown 提升为原 attempt accepted 仍受上述关联缺口阻断。

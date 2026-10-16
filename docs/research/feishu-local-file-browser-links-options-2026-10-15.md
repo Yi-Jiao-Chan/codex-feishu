@@ -85,7 +85,7 @@ IM 文件消息适合“把附件发给用户”，但上传得到的 `file_key`
 
 ## 当前仓库依据
 
-以下为实施前的代码读取与 Git 状态证据，当时尚未实现预览能力。后续用户选择 IP 直连的受控预览，实施情况见[实施记录](feishu-local-file-preview-implementation-2026-10-15.md)。
+以下为实施前的代码读取与 Git 状态证据，当时尚未实现预览能力。后续用户选择 IP 直连的受控预览，实施情况见[实施记录](../records/feishu-local-file-preview-implementation-2026-10-15.md)。
 
 - [`public_markdown.go:245`](../../internal/cards/public_markdown.go#L245) 匹配本地绝对路径引用；`:247–323` 的 `publicCodeReferences` / `publicCodeLinkLabels` 只为带行列的标签补充行号，保留原目标，不生成网页地址。
 - [`engine.go:291`](../../internal/sync/engine.go#L291) 的最终回复路径进入 `cards.SplitMessage`；当前没有本地文件链接登记和公开 URL 转换步骤。

@@ -2,7 +2,7 @@
 
 整理日期：2026-10-15。来源：最初确认的双向同步方案中“第二期飞书创建”部分，以及模块 09 开发手册。本文将其整理为可独立交接的技术方案，并纳入后来确认的群名前缀、卡片、引用回复及原生审批/问答约定。
 
-状态：第二期技术设计，已进入候选实现与联调，详见[实施与验收记录](feishu-create-codex-session-implementation-2026-10-15.md)，完整真实客户端验收仍待完成。复用当前远程主机上的共享 Codex App Server 和既有桥接服务；`creation.enabled` 默认关闭，本机候选按用户授权开启联调。附件输入是另一项增量，见[附件方案](feishu-inbound-attachments-plan-2026-10-15.md)，不混淆两者的完成状态。
+状态：第二期技术设计，已进入候选实现与联调，详见[实施与验收记录](../records/feishu-create-codex-session-implementation-2026-10-15.md)，完整真实客户端验收仍待完成。复用当前远程主机上的共享 Codex App Server 和既有桥接服务；`creation.enabled` 默认关闭，本机候选按用户授权开启联调。附件输入是另一项增量，见[附件方案](feishu-inbound-attachments-plan-2026-10-15.md)，不混淆两者的完成状态。
 
 ## 1. 交付目标
 

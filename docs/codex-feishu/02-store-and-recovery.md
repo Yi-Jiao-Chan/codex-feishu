@@ -6,17 +6,17 @@
 
 schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输入与飞书收据关联、完整历史扫描水位的事务保存。待建群的 eligible 会话可以先入库，绑定及父消息确认后才领取发送；过程更新合并到最新版本，终态不回退，同一线程只允许一个 dispatching 写请求。send / reply / PATCH 都在调用网关前落账，启动时把遗留 dispatching 转为 unknown，不自动重发。通知规则按 app/user 持久保存，以 revision 防止并发修改丢失；重新初始化默认值不覆盖已有设置。
 
-完整历史到公开镜像的转换已实现，并通过真实 daemon 只读探针，后续已接入正式 `serve` 的开发实现。现有 M0 listener 未切换到这些新表；未知请求的远程核验和完整一期真实部署仍待完成，不能据此认定一期已支持生产恢复。基础验证记录见[投递基础](../research/m1-mirror-outbox-foundation-2026-10-12.md)、[历史同步与规则](../research/m1-history-sync-and-rules-2026-10-12.md)。
+完整历史到公开镜像的转换已实现，并通过真实 daemon 只读探针，后续已接入正式 `serve` 的开发实现。现有 M0 listener 未切换到这些新表；未知请求的远程核验和完整一期真实部署仍待完成，不能据此认定一期已支持生产恢复。基础验证记录见[投递基础](../records/m1-mirror-outbox-foundation-2026-10-12.md)、[历史同步与规则](../records/m1-history-sync-and-rules-2026-10-12.md)。
 
-后续整合状态：正式 serve、通知安排与投递决策已有开发实现；schema 10 新增 `outbound_throttles`，为正式镜像、过程、队列卡的明确限流拒绝记录持久等待下限及退避次数。拒绝 attempt 保持不可变，下一次 claim 使用最新正文并重新核验提醒；unknown 不进入重发路径。该机制已通过隔离故障测试，现有 M0 未迁移；App 待处理提醒的限流已有下述隔离实现，unknown 读回核验仍待补齐，详见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)。
+后续整合状态：正式 serve、通知安排与投递决策已有开发实现；schema 10 新增 `outbound_throttles`，为正式镜像、过程、队列卡的明确限流拒绝记录持久等待下限及退避次数。拒绝 attempt 保持不可变，下一次 claim 使用最新正文并重新核验提醒；unknown 不进入重发路径。该机制已通过隔离故障测试，现有 M0 未迁移；App 待处理提醒的限流已有下述隔离实现，unknown 读回核验仍待补齐，详见[限流投递进展](../records/m3-rate-limit-delivery-2026-10-12.md)。
 
 ## SQLite 结构
 
 schema 29 为创建草稿保存 `workspace_mode` / `base_branch`，为创建 workflow 冻结基准 commit、Git 根/common-dir 与工作树路径。旧草稿和 workflow 保持 local，既有正文、远程 ID、收据和 attempt 不变。工作树同样使用 prepared / dispatching / unknown / rejected / confirmed 日志，只有明确 rejected 才能显式 retry；unknown 只核验既有完整检出。Materialize 必须有匹配目标路径的 confirmed 工作树收据，cwd 使用最终执行路径。详见 [09 新建工作树](09-feishu-task-creation.md#新建工作树)。
 
-schema 11 新增 `legacy_adoptions`。schema 1 须经显式接管，不能由普通启动自动升级；库存摘要、旧绑定与 confirmed 消息 ID 和正式表在同一事务保存，原日志保留。存储基础与纯历史 mapper 已通过隔离测试，迁移 CLI、一致备份及锁已通过隔离测试，真实切换仍待验收，见[M0 接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
+schema 11 新增 `legacy_adoptions`。schema 1 须经显式接管，不能由普通启动自动升级；库存摘要、旧绑定与 confirmed 消息 ID 和正式表在同一事务保存，原日志保留。存储基础与纯历史 mapper 已通过隔离测试，迁移 CLI、一致备份及锁已通过隔离测试，真实切换仍待验收，见[M0 接管进展](../records/m3-legacy-adoption-2026-10-12.md)。
 
-schema 12 新增 `reaction_throttles`：reaction 的明确限流拒绝保存原操作日志和等待时间，下一 revision 依据最新输入状态领取。旧 reaction 的成功删除与 ID 清除在同一事务确认，后续 add 被拒绝时不再删除旧 ID。changing/unknown 不进入重试，reaction 失败不触发原生输入重试；status 的 `reactions.deferred` 表示等待或到期尚未完成的反馈。详见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)。
+schema 12 新增 `reaction_throttles`：reaction 的明确限流拒绝保存原操作日志和等待时间，下一 revision 依据最新输入状态领取。旧 reaction 的成功删除与 ID 清除在同一事务确认，后续 add 被拒绝时不再删除旧 ID。changing/unknown 不进入重试，reaction 失败不触发原生输入重试；status 的 `reactions.deferred` 表示等待或到期尚未完成的反馈。详见[限流投递进展](../records/m3-rate-limit-delivery-2026-10-12.md)。
 
 schema 13 新增 `group_attempts` 与 `group_throttles`：建群请求引用原意图中冻结的名称、owner 和成员。每次领取记录独立 attempt，平台 UUID 沿用 intent ID；明确限流在同一事务保存 rejected attempt 和等待后 ready。未知请求不重发，旧 schema 的未决意图也不补造请求证据。到期重新核验目录/分类并领取，保存 confirmed chat ID 后再单独绑定；诊断提供 `group_intents.deferred` 和 `group_attempts` 聚合计数。
 
@@ -32,9 +32,9 @@ schema 18 新增 `verification_cards`，保存同一管理实例内显式授权�
 
 schema 19 新增 `verification_groups`：固定 owner 的名称、成员 JSON、UUID、commit / 运行二进制 SHA-256 与有效期在创建前保存，ready CAS 领取，未决不重建。创建与成员 GET / owner 群 @ 观察独立保存；只有原 confirmed chat 才能记录入站，不生成线程 binding 或输入收据。成员观察的首次时间不被重放延长，私有结构不输出成员名单 / UUID。只读查询不触发成员 GET，两个组件均通过也不提升 P1。
 
-schema 20 新增 `verification_native`：内部隔离创建步骤冻结受限制请求与构建摘要，调用前单次领取并记录 generation 和每连接随机身份。重启后的相同数值 generation 不构成同连接证明；unknown / dispatching / rejected / confirmed 不重新创建。确定响应保存原出生历史，不代表新连接已附着。私有请求不输出，完整 verify、绑定与真实 UI 仍待完成，见[创建日志进展](../research/m3-native-verification-journal-2026-10-12.md)。
+schema 20 新增 `verification_native`：内部隔离创建步骤冻结受限制请求与构建摘要，调用前单次领取并记录 generation 和每连接随机身份。重启后的相同数值 generation 不构成同连接证明；unknown / dispatching / rejected / confirmed 不重新创建。确定响应保存原出生历史，不代表新连接已附着。私有请求不输出，完整 verify、绑定与真实 UI 仍待完成，见[创建日志进展](../records/m3-native-verification-journal-2026-10-12.md)。
 
-schema 21 新增私有 `verification_bindings`：仅将同一请求中已确认的验收群和验收线程原子登记到 observation、原意图与普通绑定表。记录构建、原目标和两个组件有效期的交集；重放不延长窗口，不覆盖其他绑定，也不修复缺失的派生记录。验收 observation 仍 excluded，不伪造首条输入。登记管理器已接入 CLI / 原 runtime 激活与 owner 输入，所有原生及飞书写阶段核验原组件 / 资源 / 窗口。原 ID 查询新增只读输入证据快照，不增加 schema，不回写收据或恢复 unknown；登记 / 本地证据不代表真实 UI 或完整验收，见[绑定基础](../research/m3-verification-binding-foundation-2026-10-12.md)、[管理绑定](../research/m3-managed-binding-2026-10-12.md)与[输入证据](../research/m3-managed-input-evidence-2026-10-12.md)。
+schema 21 新增私有 `verification_bindings`：仅将同一请求中已确认的验收群和验收线程原子登记到 observation、原意图与普通绑定表。记录构建、原目标和两个组件有效期的交集；重放不延长窗口，不覆盖其他绑定，也不修复缺失的派生记录。验收 observation 仍 excluded，不伪造首条输入。登记管理器已接入 CLI / 原 runtime 激活与 owner 输入，所有原生及飞书写阶段核验原组件 / 资源 / 窗口。原 ID 查询新增只读输入证据快照，不增加 schema，不回写收据或恢复 unknown；登记 / 本地证据不代表真实 UI 或完整验收，见[绑定基础](../records/m3-verification-binding-foundation-2026-10-12.md)、[管理绑定](../records/m3-managed-binding-2026-10-12.md)与[输入证据](../records/m3-managed-input-evidence-2026-10-12.md)。
 
 以下是逻辑表，不要求通用 ORM。使用迁移版本、外键、busy timeout；单写入器配合短事务。数据库含对话与身份数据，目录 0700、文件 0600。
 

@@ -39,7 +39,7 @@
 
 post 的正文只选 `content` 或回退 `content_v2` 一份表示；同条消息的文件另在顶层 `files` 数组中，以 `file_key`、`file_name`、`is_folder` 表达。必须将文件按数组顺序追加到正文资源之后，不能把只含正文节点的消息当成纯文本成功提交。无效文件项或文件夹使整条消息明确失败，不静默丢资源。
 
-入站资源保留原消息 ID、resource key、顺序和发送者，按 `(host, app, thread, chat, sender)` 隔离草稿；附件说明和资源在封存时原子成批，管理命令不消费草稿。`enabled=false` 时不接收新附件，已封存批次仍按本地状态完成。新增附件能力的权限检查只在对应开关启用时提升 required；关闭安装保持原 required/recommended 基线不变。当前本机候选已升级并开启附件，两项新增权限检查已通过；真实飞书/App UI 验收仍待完成，见[附件实施记录](../research/feishu-inbound-attachments-implementation-2026-10-15.md)。
+入站资源保留原消息 ID、resource key、顺序和发送者，按 `(host, app, thread, chat, sender)` 隔离草稿；附件说明和资源在封存时原子成批，管理命令不消费草稿。`enabled=false` 时不接收新附件，已封存批次仍按本地状态完成。新增附件能力的权限检查只在对应开关启用时提升 required；关闭安装保持原 required/recommended 基线不变。当前本机候选已升级并开启附件，两项新增权限检查已通过；真实飞书/App UI 验收仍待完成，见[附件实施记录](../records/feishu-inbound-attachments-implementation-2026-10-15.md)。
 
 ## 出站接口与幂等
 
@@ -73,7 +73,7 @@ FollowTarget 为 topic 时，所有镜像、排队卡、通知、错误和操作
 4. 真实发送超时、创建群超时、更新被限流各走对应核验/重试路径。
 5. 二期根消息失效时，没有一条话题内容落入主群。
 
-App 待处理提醒的明确限流恢复已接入开发版：等待期不读群成员，到期读取实际成员后再冻结新提醒卡与 UUID，始终 reply 原输入。未知响应不重发；完整等待区间内出现免打扰或请求解决则终止旧提醒。schema 15 隔离证据见[限流投递进展](../research/m3-rate-limit-delivery-2026-10-12.md)，真实 M0 尚未迁移。
+App 待处理提醒的明确限流恢复已接入开发版：等待期不读群成员，到期读取实际成员后再冻结新提醒卡与 UUID，始终 reply 原输入。未知响应不重发；完整等待区间内出现免打扰或请求解决则终止旧提醒。schema 15 隔离证据见[限流投递进展](../records/m3-rate-limit-delivery-2026-10-12.md)，真实 M0 尚未迁移。
 
 镜像未知结果的只读 reader 已接入开发版：GET/List 明确请求 `user_card_content`，sender 使用 app_id 核验而非 bot open_id，缺 deleted / 父关系等必要证明仍保守处理。普通群分页至多 20 页、总计 5 秒，截断、分页失败或多 marker 候选不确认。旧无标记请求不追认；命令 / App 待处理卡已接入下述共用核验，建群 / reaction 的 unknown 仍需各自证据契约。官方界限与新标记协议见[远端核验研究](../research/feishu-unknown-readback-2026-10-12.md)；真实 marker 读回和 UI 尚待验收。
 
