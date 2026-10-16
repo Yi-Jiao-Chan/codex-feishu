@@ -103,11 +103,12 @@ Agent 按指南在 0700 私有目录保存 0600 报告与脱敏证据，填写�
 
 ## 2026-10-16 置顶群名与扫描降频增量
 
-本增量已实现但未部署，不改写上面的历史构建、P1 状态或正式发布结论。行为和验证见[置顶群名、近期发现窗口与空闲降频](../records/pinned-group-names-and-windowed-discovery-2026-10-16.md)。
+本增量经独立审查、修复并复审后，已通过 PR #4 合入 main，按用户授权更新现有本地候选服务；构建身份 `0c7f2e2373aa97b3ddb7fce5136fe60a0f232c01`。不改写上面的历史构建、P1 状态或正式发布结论。行为、测试与部署核验见[置顶群名、近期发现窗口与空闲降频](../records/pinned-group-names-and-windowed-discovery-2026-10-16.md)。
 
 | 覆盖 | 当前证据与状态 |
 | --- | --- |
 | App 置顶与取消 | verified：用户在同一真实 App 会话操作，远端 section 空 → Pinned → 空 |
 | 0.162.1 分区只读查询 | verified：沿用现有 daemon，分区目录、普通/归档及全 sourceKinds 分页接受，未执行原生或飞书写操作 |
-| 飞书群名图标和 App 改标题 | pending：待部署后确认添加、移除及置顶中改标题 |
-| 新增恢复与限流 UI | pending：待实际服务重启、平台限流与 topic 共享群名核验 |
+| 本地候选部署 | 已更新：配置与 schema 29 保持，进程摘要/提交匹配，systemd active/enabled，两侧连接正常；整体恢复仍 pending |
+| 飞书群名图标和 App 改标题 | 平台已读回确认 4 个绑定置顶群名前缀；客户端添加、移除及置顶中改标题仍 pending |
+| 新增恢复与限流 UI | pending：服务已重启，仍待完整恢复、平台限流与 topic 共享群名核验；历史 6 条出站 unknown 保留，status 仍为 reconciling |

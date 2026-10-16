@@ -1,6 +1,6 @@
 # 置顶群名、近期发现窗口与空闲降频
 
-日期：2026-10-16。状态：implemented；当前 CLI / 共享 daemon 0.162.1。App 置顶状态与只读协议已 verified，飞书群名 UI、部署和重启联调 pending。本次没有启动替代 app-server、修改全局配置、切换运行桥或修改真实飞书群名。
+日期：2026-10-16。状态：deployed-development；当前 CLI / 共享 daemon 0.162.1。App 置顶状态与只读协议已 verified；独立审查后按用户授权更新现有本地候选服务，4 个绑定置顶群名已有平台读回确认，真实飞书 UI 与完整恢复验收仍 pending。沿用原共享 daemon、配置和数据库。
 
 ## 行为与恢复
 
@@ -39,6 +39,15 @@
 
 独立 SubAgent 针对修复复审，原问题已消除，未发现新的阻塞。修复后 `timeout 30s go test -race ./internal/discovery -timeout 25s` 通过（14.903 秒），`timeout 10s go test ./internal/app -run '^(TestRuntime(Persists|Routes|Mute)|TestDiscovery)' -count=1 -timeout 8s` 通过（0.532 秒）。上述完整业务回归及其他 race 结果取得于此次门控修复之前；修复后补跑受影响的发现与运行时回归。
 
+## 本地部署核验
+
+- 代码通过 [PR #4](https://github.com/Yi-Jiao-Chan/codex-feishu/pull/4) 合入 main，源提交 `be054a70d31453d56e9f3a8c35deb2c2f13ef338`，合并提交及部署构建身份为 `0c7f2e2373aa97b3ddb7fce5136fe60a0f232c01`。
+- 从干净 main 构建 `cmd/codex-feishu`，继承 Go 缓存，耗时 1.617 秒；二进制 SHA-256 为 `7a88950351c2a7bd1d9e8fa3ff2498afe21ee5b0483b7dc6158a0a88ea81deea`。运行进程的可执行文件摘要与构建一致，version 与 live health 均报告该合并提交。
+- 使用原 CLI 停止准确的既有服务，保存私有 unit、配置与 SQLite 一致备份，再由新 CLI 执行候选 install/start；两步均退出 0。配置字节保持一致、数据库仍为 schema 29，无迁移；原二进制与私有备份保留。
+- systemd 用户服务 active/running、enabled，观察时 NRestarts=0；Codex 与飞书两侧连接正常。完整 P1 发布标志仍为 false。
+- 置顶分区快照与发现覆盖检查点已确认落盘，随后扫描持续推进；观察到 6 个置顶会话，其中已有绑定的 4 个群名均由现有 PUT/GET 流程确认 `📌 🤖 ` 前缀，其他绑定群的已确认名称无多出前缀。这是平台证据，未代替客户端观察。
+- 部署前整体 status/doctor 已返回 pending：46 个绑定中 40 个完成当前代际恢复、6 条出站 unknown。部署后观察为 39/46、unknown 仍为 6；旧进程已有 attach、authorization 和 history 待协调诊断。现有恢复记录保留，整体 status 仍为 reconciling / 退出 5，doctor 仍为 diagnostics-pending / 退出 5，不能记作全部健康。
+
 ## 尚待真实联调
 
-部署后仍需确认飞书群名实际添加/移除图标、置顶中 App 改标题、服务重启恢复、平台限流后的最终名称，以及 topic 工作群名保持。当前只读状态核验和自动测试不提升这些 UI 项，也不提升 phase1_released。
+仍需在飞书客户端确认图标添加/移除、置顶中 App 改标题、完整服务重启恢复、平台限流后的最终名称，以及 topic 工作群名保持。平台读回、本地服务更新和自动测试不提升这些 UI 项，也不提升 phase1_released。
