@@ -61,7 +61,7 @@
 
 收到普通审批 / 原生问答时，用既有引用过程卡显示“等待你在 Codex App 中处理”；原消息执行 reaction 暂变 THINKING。重复 resume 的请求不重复新增卡片，只有对应 generation/request ID 的 resolved 或该轮终态消除等待。桥始终不回答这些请求、不返回“不支持方法”。状态与 ID 关联由本地测试覆盖；真实 App 等待卡与审批 UI 尚未验收。特殊 MCP UserVerification 不套用此普通请求路径。
 
-审批定位：隔离的打印命令探针在 55 秒内停于 `permissionRequest` hook running，未出现 hook/completed 或原生 requestApproval，未证实命令审批路由。准确版本源码表明 hook 先于 Guardian/User，可直接消费 Allow/Deny；本次不是自动审批明确拒绝的证据。保留该项 pending，不关闭全局或 managed hooks，不改用户会话策略。独立问答的首次失败则因 Default 模式 gate 默认关闭，尽管工具已 advertised；仅自有 fixture 开启 `features.default_mode_request_user_input` 后通过。[路由与定位依据](approval-routing-0.162.0.md)
+审批定位：隔离的打印命令探针在 55 秒内停于 `permissionRequest` hook running，未出现 hook/completed 或原生 requestApproval，未证实命令审批路由。准确版本源码表明 hook 先于 Guardian/User，可直接消费 Allow/Deny；本次不是自动审批明确拒绝的证据。保留该项 pending，不关闭全局或 managed hooks，不改用户会话策略。独立问答的首次失败则因 Default 模式 gate 默认关闭，尽管工具已 advertised；仅自有 fixture 开启 `features.default_mode_request_user_input` 后通过。[路由与定位依据](../research/approval-routing-0.162.0.md)
 
 出站操作先落 journal。网络丢响应保持 unknown，不盲重发；reaction 失败作为辅助反馈记录，不阻断 Codex 输入。M0 对未知操作保持冻结，完整恢复 worker / outbox 在 M1–M2 实现。当前最终长文本沿用3500字符分片，还需补段落 / 代码边界及 JSON 字节上限，不能把短文本通过当作长代码验收。
 
@@ -77,7 +77,7 @@ bin/codex-feishu m0-listen --config /absolute/path/to/config.toml --thread APP_T
 
 ## 仍需完成的门槛
 
-1. 真实 App 分类已于 2026-10-12 补验通过，见[脱敏证据](m0-app-classification-2026-10-12.json)。实际 fork 为 `01a12bb4-59ae-7100-9db0-58b6dac81c66`，子代理为 `01a12bb4-de40-7772-b1ad-31d66991a503`。工作树不在原目录物理前缀内，但已注册且同仓库；M1 将按仓库身份及子目录范围落实 worktree 授权。App/CLI 仍不能仅凭 source 区分。
+1. 真实 App 分类已于 2026-10-12 补验通过，见[脱敏证据](evidence/m0-app-classification-2026-10-12.json)。实际 fork 为 `01a12bb4-59ae-7100-9db0-58b6dac81c66`，子代理为 `01a12bb4-de40-7772-b1ad-31d66991a503`。工作树不在原目录物理前缀内，但已注册且同仓库；M1 将按仓库身份及子目录范围落实 worktree 授权。App/CLI 仍不能仅凭 source 区分。
 
    分类维护检查覆盖活跃及归档谱系，支持显式 App 样本 ID。实际 thread/list 的 fork 血缘为空，thread/read 才得到 forkedFromId；因此发现器必须按候选读详情，不能用列表字段代替分类。原会话 7 个用户项，新会话继承后新增测试输入共 8 项；父子标记均读回最终 agentMessage。只读验证不 resume 归档线程，不输出标题或正文。此前无样本的结果已由本次真实操作补齐。
 
@@ -95,6 +95,6 @@ bin/codex-feishu m0-listen --config /absolute/path/to/config.toml --thread APP_T
 
 继续验证时，`CODEX_FEISHU_NATIVE_TEST=1` 启用已通过的独立队列 / fork / 问答 fixture。命令审批探针单独由 `CODEX_FEISHU_APPROVAL_TEST=1` 启用，当前在本机保留 pending，普通测试跳过不表示已通过；不要为了获得绿灯关闭 hooks。所有 fixture 使用既有 daemon，只调整自己新建的测试线程，结束后归档。
 
-权限选择详见[精确权限研究](feishu-m0-permissions-2026-10-10.md)。
+权限选择详见[精确权限研究](../research/feishu-m0-permissions-2026-10-10.md)。
 
-M0 协议成功或用户确认局部界面不免除剩余发布门槛。参见[集成验收](../codex-feishu/11-integration-and-acceptance.md)、[过程卡与 reaction 的一手来源研究](progress-cards-reactions-2026-10-10.md)。
+M0 协议成功或用户确认局部界面不免除剩余发布门槛。参见[集成验收](../codex-feishu/11-integration-and-acceptance.md)、[过程卡与 reaction 的一手来源研究](../research/progress-cards-reactions-2026-10-10.md)。

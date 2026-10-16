@@ -1,125 +1,53 @@
-# Codex × 飞书开发手册
+# Codex × 飞书模块手册
 
-更新：2026-10-15。本文是开发规格。M0 真实可行性联调已通过，M1–M3 已整合到候选服务并实际部署；核心交互、独立 Agent 配置与私聊配对已有真实验证，完整一期发布仍待剩余验收。当前构建和证据范围见[集中验收记录](12-live-acceptance-handoff.md)。
+本目录描述模块接口、行为约束和验收要求。安装从 [AGENT-SETUP](AGENT-SETUP.md) 开始，开发与提交按 [CONTRIBUTING](../../CONTRIBUTING.md) 执行；其他方案、调研和实施记录从 [文档总览](../README.md) 查找。
 
-第一期交付你的常用流程：在 Codex App 的远程机器上发起任务，自动建飞书群，两端持续对话。执行中补充消息默认进入 Codex 原生队列；点击卡片“追加引导”才进入当前轮。第二期交付飞书内新建任务、目录选择、专属群或话题跟进。CLI 界面的外部输入回显不在两期范围内。2026-10-12 用户调整：fork 跟进暂缓，代码留 TODO；普通 App 和注册工作树仍继续实现。
+## 阅读与证据边界
 
-## 从哪里开始
+开发先读 00 公共契约，再读本次涉及的模块；跨模块变更同时核对依赖模块。M0 的真实 App / 飞书可行性联调已通过，完整一期发布仍以 [11 验收要求](11-integration-and-acceptance.md) 和 [12 集中清单](12-live-acceptance-handoff.md) 为准。
 
-| 用途 | 文档 |
-| --- | --- |
-| 开发入口、接口和目录约定 | [00 公共契约](00-contracts-and-layout.md) |
-| 接入共享 Codex 服务 | [01 Codex 客户端](01-codex-client.md) |
-| 持久化、幂等、断线恢复 | [02 存储与恢复](02-store-and-recovery.md) |
-| 飞书事件、API、权限、群和话题 | [03 飞书网关](03-feishu-gateway.md) |
-| App 会话发现、自动建群和绑定 | [04 发现与绑定](04-discovery-and-bindings.md) |
-| 人类/AI 双向同步 | [05 消息同步](05-message-sync.md) |
-| 本地文件浏览器链接 | [14 受控网页预览](14-file-preview.md) |
-| 飞书图片、文件与多附件输入 | [实施方案](../research/feishu-inbound-attachments-plan-2026-10-15.md)、[实施记录](../research/feishu-inbound-attachments-implementation-2026-10-15.md)、[接口调研](../research/feishu-inbound-resources-2026-10-15.md) |
-| 默认排队、追加引导、停止与恢复 | [06 输入队列与引导](06-queue-and-steering.md) |
-| 目录 mute、@ 与免打扰 | [07 规则与通知](07-rules-and-notifications.md) |
-| 原生卡片和操作回调 | [08 卡片与操作](08-cards-and-actions.md) |
-| 第二期飞书新建任务 | [09 任务创建](09-feishu-task-creation.md)、[详细技术方案](../research/feishu-create-codex-session-plan-2026-10-15.md)、[实施记录](../research/feishu-create-codex-session-implementation-2026-10-15.md) |
-| CLI、安装、配置与诊断 | [10 CLI 与配置](10-cli-and-setup.md) |
-| 实施顺序、联调和发布门槛 | [11 集成与验收](11-integration-and-acceptance.md) |
-| M0 后的新版集中联调 | [12 集中验收清单](12-live-acceptance-handoff.md) |
-| 飞书直接处理审批与问答（已实现，验收中） | [13 审批与问答](13-feishu-approvals-and-questions.md) |
-| 交给 Agent 自动配置 | [Agent 一键配置指南](AGENT-SETUP.md) |
+模块中的日期化进展只描述当时版本，不能据此推导新版本或其他客户端已通过。实际命令和能力结合当前代码、version 输出和 compat 清单核对；按日期记录的实施过程统一见 [records](../records/README.md)。`pending` 不因代码合并、mock 或平台 API 返回成功而提升为 `pass`。
 
-开发文档是功能与验收契约；当前实现以各模块说明、实际 CLI 输出和验证证据为准。真实可用的软件必须完成相应验收，不能因为文档中出现了命令就声称安装成功。配置指南为自包含执行说明；给配置 Agent 单独提供它即可，开发 Agent 则从本手册开始。
+## 模块索引
 
-## 已固定的产品行为
-
-| 能力 | 行为 | 阶段 / 模块 |
+| 编号 | 手册 | 主要代码与职责 |
 | --- | --- | --- |
-| 自动建群 | 第一条实际输入后，一条主会话对应一个专属群；首次安装不扫历史批量建群 | 一期 / 04 |
-| 群名与目录 | 群名跟随 App 的会话显示标题及改名；实际工作目录写入群描述 | 一期 / 04 |
-| 双向上下文 | Codex 端人类输入、AI 公开回复镜像到飞书；飞书输入进入同一会话 | 一期 / 05、06 |
-| 执行中补充 | 普通输入统一调用原生 queue/add；引导必须点击按钮 | 一期 / 06、08 |
-| 过程与结果 | 每轮一张过程卡持续更新，完成后单独发最终回复；飞书输入不重复镜像 | 一期 / 05、08 |
-| 原消息反馈 | 飞书原消息 reaction 跟随接收 / 排队 / 执行 / 完成状态 | 一期 / 03、05 |
-| 操作反馈 | 未确认的请求显示“正在核验”，不先显示“成功” | 一期 / 02、06、08 |
-| 目录 mute | 精确目录或递归子孙；仅影响未来自动建群；已绑定任务继续同步 | 一期 / 04、07 |
-| @ 提醒 | 最终结果、失败、待用户处理时提醒配置用户；休息时继续同步正文 | 一期 / 07 |
-| 飞书创建 | /new、机器人单聊普通消息、入口群 @ 消息均可发起 | 二期 / 09 |
-| 工作位置 | 默认当前目录；Git 仓库可选择新建独立工作树及基准分支（已提交内容） | 二期 / 09 |
-| 跟进位置 | 默认专属群；可选择工作群中的话题；话题内容严格留在话题 | 二期 / 03、09 |
-| 权限与审批 | 沿用原 App 会话策略；未启用类型提示回 App，按类型开关启用飞书卡片处理 | 一期扩展 / 01、08、13 |
-| 附件输入 | 默认关闭；绑定任务群中的图片/文件可进入隔离草稿，封存后按完整原生输入排队、引导或恢复 | 一期扩展 / 02、03、05、06、10 |
+| 00 | [公共契约与工程布局](00-contracts-and-layout.md) | 标识、接口、unknown 语义和跨模块边界 |
+| 01 | [共享 Codex 客户端](01-codex-client.md) | internal/codexclient、compat：共享 daemon、协议与原生队列 |
+| 02 | [存储与恢复](02-store-and-recovery.md) | internal/store：迁移、收据、attempt 与 outbox |
+| 03 | [飞书网关](03-feishu-gateway.md) | internal/feishu：消息、权限、长连接与群 / 话题 API |
+| 04 | [发现与绑定](04-discovery-and-bindings.md) | internal/discovery、internal/bindings：基线、创建意图与目标映射 |
+| 05 | [消息同步](05-message-sync.md) | internal/sync：公开历史、附件展示与投递 |
+| 06 | [输入队列与引导](06-queue-and-steering.md) | internal/submissions：排队、显式 steer 与恢复 |
+| 07 | [规则与通知](07-rules-and-notifications.md) | internal/rules：目录、mute 与 @ 策略 |
+| 08 | [卡片与动作](08-cards-and-actions.md) | internal/cards：视图、操作令牌、回调和反馈 |
+| 09 | [飞书创建任务](09-feishu-task-creation.md) | internal/creation：目录、工作树、群 / 话题与创建恢复 |
+| 10 | [CLI、配置与安装](10-cli-and-setup.md) | cmd/codex-feishu、config、setup、userservice：配置与服务生命周期 |
+| 11 | [集成与验收](11-integration-and-acceptance.md) | 实施顺序、隔离边界、完整发布门槛 |
+| 12 | [集中验收清单](12-live-acceptance-handoff.md) | 当前构建、真实客户端确认与剩余项 |
+| 13 | [审批与用户问答](13-feishu-approvals-and-questions.md) | internal/interactions：原生请求、飞书处理与实际结果 |
+| 14 | [本地文件网页预览](14-file-preview.md) | internal/filepreview：受控文件登记、口令和浏览器展示 |
 
-单机、单远程系统用户部署。开发为独立 Go CLI 项目，不把工具接进当前邮件网关，也不沿用该仓库的旧版飞书 SDK。参考 code-anywhere 的建群、mute、关闭 @ 语义；卡片和后端结构按本手册重新实现。
+## 使用指南与样例
 
-## 依赖关系
+- [Agent 一键配置指南](AGENT-SETUP.md)：检查实际能力、身份、目录和提醒设置，生成配置计划并按授权应用。
+- [配置与消息样例](examples/README.md)：正式配置、向导输入、卡片、用户服务和验收报告模板。
+- [CLI 参考](10-cli-and-setup.md)：命令、副作用、退出码与候选安装边界。
 
-```mermaid
-flowchart TD
-  C[00 公共契约] --> X[01 Codex 客户端]
-  C --> S[02 存储与恢复]
-  C --> F[03 飞书网关]
-  X --> D[04 发现与绑定]
-  S --> D
-  F --> D
-  D --> Y[05 消息同步]
-  X --> Q[06 队列与引导]
-  S --> Q
-  F --> Q
-  S --> R[07 规则与通知]
-  R --> D
-  R --> Y
-  Y --> U[08 卡片与操作]
-  Q --> U
-  R --> U
-  D --> N[09 二期任务创建]
-  U --> N
-  C --> I[10 CLI 与配置]
-  I --> A[11 联调与发布验收]
-  U --> A
-  N --> A
-```
+`AGENT-SETUP.md` 与交付用 examples 文件被打包器明确引用；文档重组不改变这些交付路径。
 
-依赖图表达用例联调时的数据与能力依赖，不等同于 Go 包的 import 图。共享 DTO 放 domain，cards 不导入 sync/submissions，也不发 RPC。先交付最小真实链路，再按里程碑补齐恢复与边界；具体顺序见 11。
+## 重点功能的设计与记录
 
-## 证据与未完成项
+| 功能 | 方案 / 依据 | 实施记录 |
+| --- | --- | --- |
+| 双向同步 | [已确认实施方案](../plans/codex-feishu-implementation-proposal-2026-10-10.md) | [M0 联调](../records/m0-live-integration-2026-10-10.md)、[正式闭环](../records/m3-managed-roundtrip-2026-10-12.md) |
+| 图片与文件输入 | [附件方案](../plans/feishu-inbound-attachments-plan-2026-10-15.md)、[入站资源核验](../research/feishu-inbound-resources-2026-10-15.md) | [附件实施](../records/feishu-inbound-attachments-implementation-2026-10-15.md) |
+| 飞书创建与工作树 | [任务创建方案](../plans/feishu-create-codex-session-plan-2026-10-15.md)、[目录设计](../design/feishu-create-directory-ui-redesign-2026-10-15.md) | [创建实施与验收](../records/feishu-create-codex-session-implementation-2026-10-15.md) |
+| 网页预览 | [浏览器链接方案](../research/feishu-local-file-browser-links-options-2026-10-15.md) | [预览实施](../records/feishu-local-file-preview-implementation-2026-10-15.md) |
 
-已在本机 Codex CLI / 共享 App Server **0.162.0** 验证共享线程、事件、原生队列、引导、断线及空闲入口，共 27 项断言通过。测试使用本地模拟模型；这是协议证据，尚未证明真实 App 页面和飞书客户端的完整体验。
+## 跨模块约定
 
-M0 已在真实 App 看到飞书输入、AI 回复与原生排队；真实飞书私聊、群 @、建群、回调已通过。用户已确认每轮过程卡更新、单独最终回复、原消息 reaction 的新版交互。追加引导 UI 也已由用户确认，引用回复 parent_id 已实际读回验证；群成员权限、真实 @、手机长代码 fixture 与 UUID 即时重复已通过；真实 App fork/worktree/子代理分类已于 2026-10-12 补验通过；自动发现、故障恢复与一期发布矩阵仍需完成。详见[M0 进展](../research/m0-live-integration-2026-10-10.md)。原生实验接口按验收过的版本发布兼容清单，升级后不能跳过这些门槛。
-
-- [已确认实施方案](../research/codex-feishu-implementation-proposal-2026-10-10.md)
-- [开源调研](../research/codex-feishu-bridge-2026-10-10.md)
-- [飞书权限研究](../research/feishu-m0-permissions-2026-10-10.md)
-- [准确版本线程分类](../research/thread-classification-0.162.0.md)
-- [首装基线与草稿发现研究](../research/discovery-baseline-0.162.0.md)、[M1 基础实现进展](../research/m1-discovery-foundation-2026-10-12.md)
-- [运行时、持久输入与目录规则](../research/m1-runtime-and-m2-inputs-2026-10-12.md)
-- [正式服务、命令与任务控制整合进展](../research/m2-service-and-task-controls-2026-10-12.md)
-- [配置向导、用户服务与待处理提醒进展](../research/m3-setup-and-request-reminders-2026-10-12.md)
-- [受控绑定的只读投递证据](../research/m3-managed-delivery-evidence-2026-10-12.md)
-- [受控绑定的只读输入证据](../research/m3-managed-input-evidence-2026-10-12.md)
-- [受控忙时测试的本轮释放](../research/m3-managed-turn-release-2026-10-12.md)
-- [管理通道、状态核验与离线取消进展](../research/m3-control-and-offline-cancel-2026-10-12.md)
-- [只读诊断与内嵌权限清单](../research/m3-doctor-and-permissions-2026-10-12.md)
-- [私聊配对与 Agent 配置指引进展](../research/m3-pairing-2026-10-12.md)
-- [通知配置事务与恢复](../research/m3-policy-apply-2026-10-12.md)
-- [正式消息限流恢复](../research/m3-rate-limit-delivery-2026-10-12.md)
-- [飞书 unknown 的读回证据与隐藏标记](../research/feishu-unknown-readback-2026-10-12.md)
-- [旧 M0 原群与历史卡片接管](../research/m3-legacy-adoption-2026-10-12.md)
-- [验证命令与数据库保护](../research/m3-verify-safety-2026-10-12.md)
-- [准确版本审批与问答路由](../research/approval-routing-0.162.0.md)
-- [卡片组件研究](../research/codex-feishu-card-ux-2026-10-10.md)
-- [主链路验证](../research/codex-feishu-probes-2026-10-10/native-queue-probe-result.json)、[并发与边界](../research/codex-feishu-probes-2026-10-10/native-race-probe-result.json)、[空闲入口](../research/codex-feishu-probes-2026-10-10/native-idle-queue-probe-result.json)
-- [飞书附件输入实施记录](../research/feishu-inbound-attachments-implementation-2026-10-15.md)
-
-## 给开发 Agent 的任务格式
-
-```text
-请先读本仓库适用的 AGENTS.md，并执行其 CodeGraph 就绪检查。
-再读 docs/codex-feishu/README.md、00-contracts-and-layout.md 和指定模块文档。
-任务：实现模块 <编号> 的 <具体交付切片>，不要跨到后续阶段。
-代码仓库：<独立 codex-feishu 仓库绝对路径>。
-文件所有权：<包 / 文件>；你与其他开发者共享代码，保留他人的修改。
-依赖版本 / 已实现接口：<实际情况>。
-验收：<模块中的场景编号及本切片所需集成场景>。
-输出：变更、验证证据、未通过项；不得把未联调能力写成已完成。
-```
-
-一次任务应形成可评审的切片。涉及公共契约变更时先说明具体冲突，再同步更新相关模块；不要在一个模块里另造执行队列或绕过同会话约束。
+- 复用共享服务和原会话，普通输入 queue/add，显式引导才 steer；标识与返回分类以 00 为准。
+- 远程变更先记账，unknown 先核验；不要在 SQLite 事务中等待网络。
+- 目录与工作树校验复用 07 的规范化规则；卡片不绕过后端授权。
+- 真实客户端验收、原生协议实验、平台 API 核验和本地测试分开记录；新模块不以旧模块的验证替代自身证据。

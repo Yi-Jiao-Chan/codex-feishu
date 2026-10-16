@@ -60,7 +60,7 @@ e9cf5b90b6b169817b906bad9c1d6b9d5dcc38bfc8c07db23b01470477b95fb3
 
 ## 紧凑视觉修正（上一候选）
 
-用户已确认浏览优先功能可用，但实际截图中的样式仍不接受。本轮保持动作与后端不变，仅调整创建 renderer：所有常规与主要按钮改 medium，并放进明确 none / auto 内容宽度分栏；form 显式 8px 间距；主任务框默认两行；目录名突出，短父路径灰色显示并可展开完整路径与主机；更改/上一级位于对应目录右侧；最近/下一批和最终确认/取消各自紧凑横排。移除常驻主机 UUID 和“独立目录”技术标记，简化重复说明。具体对照见[视觉修正](feishu-create-directory-ui-redesign-2026-10-15.md#7-用户截图后的视觉修正2026-10-15)。
+用户已确认浏览优先功能可用，但实际截图中的样式仍不接受。本轮保持动作与后端不变，仅调整创建 renderer：所有常规与主要按钮改 medium，并放进明确 none / auto 内容宽度分栏；form 显式 8px 间距；主任务框默认两行；目录名突出，短父路径灰色显示并可展开完整路径与主机；更改/上一级位于对应目录右侧；最近/下一批和最终确认/取消各自紧凑横排。移除常驻主机 UUID 和“独立目录”技术标记，简化重复说明。具体对照见[视觉修正](../design/feishu-create-directory-ui-redesign-2026-10-15.md#7-用户截图后的视觉修正2026-10-15)。
 
 已部署原候选服务，构建 `f1b6acfb1ebf+creation-style-20261015`，二进制 `/data00/home/chenxiaoyu.lemon/.local/lib/codex-feishu/creation-style-20261015-1792062855/codex-feishu`，SHA-256：
 
@@ -100,7 +100,7 @@ a5731cd8db3104c153f8fd68894e03f5f039037fe4d96739119e0cfeb1ec26d5
 - 首次切换的即时进程身份检查未通过，自动恢复原 unit；改为有界等待进程启动后完成切换与身份复核。原配置和数据没有回退或覆盖。部署及回滚记录只存私有 `~/.local/share/codex-feishu/creation-browse-ui-20261015/`。
 - 配置、共享 Codex、飞书连接与 creation protocol 健康检查通过。doctor 整体仍为 `diagnostics-pending`，历史绑定与未知操作保持待核验；新版真实飞书 PC/手机操作与原双话题矩阵仍为 pending，`phase1_released=false`。
 
-详细设计和用户选择见[目录重设计](feishu-create-directory-ui-redesign-2026-10-15.md)。重新发送 `/new` 使用新草稿即可进入新版，旧卡片回调继续兼容；本轮不批量改写已发布历史卡片。
+详细设计和用户选择见[目录重设计](../design/feishu-create-directory-ui-redesign-2026-10-15.md)。重新发送 `/new` 使用新草稿即可进入新版，旧卡片回调继续兼容；本轮不批量改写已发布历史卡片。
 
 ## 先前候选：组合目录交互
 

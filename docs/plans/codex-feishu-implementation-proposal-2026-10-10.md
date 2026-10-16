@@ -29,13 +29,13 @@
 
 主链路 17 项、边界流程 6 项、空闲队列入口 4 项，共 27 项断言通过。测试使用模拟模型，证明共享执行器、事件、队列和历史的协议行为；不是飞书真实收发或 App 界面的完整验收。
 
-可复核文件：[主链路结果](/data00/home/chenxiaoyu.lemon/ai-tools/codex-feishu/docs/research/codex-feishu-probes-2026-10-10/native-queue-probe-result.json)、[边界结果](/data00/home/chenxiaoyu.lemon/ai-tools/codex-feishu/docs/research/codex-feishu-probes-2026-10-10/native-race-probe-result.json)、[空闲入口结果](/data00/home/chenxiaoyu.lemon/ai-tools/codex-feishu/docs/research/codex-feishu-probes-2026-10-10/native-idle-queue-probe-result.json)。同目录保留主链路与边界脚本；脚本会创建、归档测试会话，建议在开发验证时运行。
+可复核文件：[主链路结果](../records/probes/codex-feishu-probes-2026-10-10/native-queue-probe-result.json)、[边界结果](../records/probes/codex-feishu-probes-2026-10-10/native-race-probe-result.json)、[空闲入口结果](../records/probes/codex-feishu-probes-2026-10-10/native-idle-queue-probe-result.json)。同目录保留主链路与边界脚本；脚本会创建、归档测试会话，建议在开发验证时运行。
 
 实现前的剩余必过项：用真实新建的 App 远程会话核验自动发现；检查 App 界面实时显示外部输入及队列；在飞书测试应用中验证卡片、建群和回调。共享连接、普通输入和引导这条技术路线已有本机证据，余下联调作为一期第一个里程碑。
 
 ## 2 开源参考与实现选型
 
-现有飞书桥接项目可参考消息接入、目录和话题交互，但已核验版本没有直接覆盖本方案全部需求。原候选及源码证据在[开源调研](/data00/home/chenxiaoyu.lemon/ai-tools/codex-feishu/docs/research/codex-feishu-bridge-2026-10-10.md)。
+现有飞书桥接项目可参考消息接入、目录和话题交互，但已核验版本没有直接覆盖本方案全部需求。原候选及源码证据在[开源调研](../research/codex-feishu-bridge-2026-10-10.md)。
 
 补充发现的 [codex-tg](https://github.com/Arslan223/codex-tg/blob/4fddf7705b355dedd214493b4bff632a88f3873e/README.md) 是更接近目标的 Telegram 镜像参考：Go、SQLite、队列、引导、双向事件及远程 App 接入。其文档限定 0.148.0-alpha.15，使用启动 shim/broker，目标为 Telegram 话题；当前 0.162.0 本机已有共享 daemon，可直接接入。建议借鉴其持久化与事件组织，不把旧版本接入结构直接移植。许可证为 Apache-2.0。
 
@@ -176,7 +176,7 @@ CLI 入口：`setup` 配置机器人和目录；`doctor` 检查共享连接、�
 
 ## 6 卡片设计
 
-采用 [assistant-ui 队列组件](https://www.assistant-ui.com/docs/api-reference/primitives/queue-item) 的显式 Steer/Remove 语义，以及 [AI Elements Task](https://elements.ai-sdk.dev/components/task) 与 [Message](https://elements.ai-sdk.dev/components/message) 的内容、状态、详情分层。React、Tailwind 等 Web 组件只作交互参考，卡片用飞书原生实现。取证与组件约束见[卡片研究](/data00/home/chenxiaoyu.lemon/ai-tools/codex-feishu/docs/research/codex-feishu-card-ux-2026-10-10.md)。
+采用 [assistant-ui 队列组件](https://www.assistant-ui.com/docs/api-reference/primitives/queue-item) 的显式 Steer/Remove 语义，以及 [AI Elements Task](https://elements.ai-sdk.dev/components/task) 与 [Message](https://elements.ai-sdk.dev/components/message) 的内容、状态、详情分层。React、Tailwind 等 Web 组件只作交互参考，卡片用飞书原生实现。取证与组件约束见[卡片研究](../research/codex-feishu-card-ux-2026-10-10.md)。
 
 | 卡片 | 首屏信息 | 操作和变化 |
 | --- | --- | --- |

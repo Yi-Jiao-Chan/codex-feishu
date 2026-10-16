@@ -4,7 +4,7 @@
 
 **建议：第一类需求可先试 Agent Bot 或 modelzen/feishu-codex-bridge；两类需求都要满足时，优先开发一个连接 Codex App 原共享服务的飞书桥。已核验的六个项目中，未发现覆盖全部要求的稳定即用方案。**
 
-后续已在当前 Codex 0.162.0 共享 daemon 的独立测试会话验证双客户端事件、原生队列消费、运行中 steer 和 App 会话接口读取；27 项断言通过。最新两期范围、完整证据与剩余联调项见[实施方案](/data00/home/chenxiaoyu.lemon/ai-tools/codex-feishu/docs/research/codex-feishu-implementation-proposal-2026-10-10.md)。下文保留初轮候选取证及只读探测记录；其中当时未验证的能力请以新方案的验证表为准。
+后续已在当前 Codex 0.162.0 共享 daemon 的独立测试会话验证双客户端事件、原生队列消费、运行中 steer 和 App 会话接口读取；27 项断言通过。最新两期范围、完整证据与剩余联调项见[实施方案](../plans/codex-feishu-implementation-proposal-2026-10-10.md)。下文保留初轮候选取证及只读探测记录；其中当时未验证的能力请以新方案的验证表为准。
 
 本报告的“建议设计”是基于证据提出的实现路线，不代表桥接产品已经安装或交付。候选项目未运行；初轮本机探测为只读。后续测试使用临时目录和本地模拟模型，测试线程已归档，未发送飞书消息、修改全局配置、重启 daemon 或读取其他用户聊天内容。
 

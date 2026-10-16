@@ -4,12 +4,11 @@
 
 ## 工程边界
 
-建议新建独立仓库 `codex-feishu`，复制本手册到该仓库 docs。当前工作区是文档承载位置，不修改邮件服务的 go.mod、数据库、RPC 或运行配置。
+本仓库是独立 Go CLI 项目，入口为 `cmd/codex-feishu/`，不依赖或修改其他业务仓库。依赖与最低 Go 版本以根目录 `go.mod` 为准。
 
 ```text
 cmd/codex-feishu/             CLI 入口
 internal/config/             配置解析与校验
-internal/domain/             最少量共享 DTO、标识和状态
 internal/codexclient/         Unix WebSocket JSON-RPC 与协议适配
 internal/store/              SQLite、迁移、收据与 outbox
 internal/feishu/              官方 SDK、原始事件和出站 API
@@ -23,9 +22,10 @@ internal/creation/            二期创建草稿
 internal/setup/               配置计划、应用、配对、服务安装
 internal/app/                 组合根与生命周期
 compat/                      验收版本和权限能力清单
-testdata/                    脱敏协议录制、卡片及故障样例
 docs/                        手册、配置指南和版本证据
 ```
+
+合成样例主要随各模块测试维护，配置和消息模板见 [examples](examples/README.md)。
 
 Go 版本按所选 SDK 的最低要求确定并固定；SQLite 驱动优先纯 Go，Unix WebSocket 使用能注入 Unix dialer 的维护中 Go 库。M0 记录具体依赖版本和构建结果，再提交 go.mod / go.sum。正常继承 GOCACHE、GOMODCACHE，不在测试脚本中覆盖或清理它们。
 

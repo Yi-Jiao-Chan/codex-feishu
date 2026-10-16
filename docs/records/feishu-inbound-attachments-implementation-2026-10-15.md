@@ -118,4 +118,4 @@ doctor 总状态仍为 `diagnostics-pending`：原有 `instance.bindings_reconci
 | pending | draft/queue 重启 | 草稿、collecting 批次、排队资源和恢复输入经桥重启后不丢、不重发，unknown 保持核验。 |
 | pending | 大图、手机和内存 | 接近 hard cap 的图片/批次在真实 App、手机和运行内存中可控；超限明确失败，不以 tiny PNG 探针替代。 |
 
-参考：[实施方案](feishu-inbound-attachments-plan-2026-10-15.md)、[接口调研](feishu-inbound-resources-2026-10-15.md)、[02 存储与恢复](../codex-feishu/02-store-and-recovery.md)、[03 飞书网关](../codex-feishu/03-feishu-gateway.md)、[06 输入队列与引导](../codex-feishu/06-queue-and-steering.md)。
+参考：[实施方案](../plans/feishu-inbound-attachments-plan-2026-10-15.md)、[接口调研](../research/feishu-inbound-resources-2026-10-15.md)、[02 存储与恢复](../codex-feishu/02-store-and-recovery.md)、[03 飞书网关](../codex-feishu/03-feishu-gateway.md)、[06 输入队列与引导](../codex-feishu/06-queue-and-steering.md)。

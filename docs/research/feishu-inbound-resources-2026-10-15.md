@@ -6,7 +6,7 @@
 
 飞书提供用户消息附件下载接口，可以接收 `image`、`file`，也可从 `post` 提取文字和多图。现有“群消息必须结构化 @ 当前机器人”约束可直接用于同条含 @ 和图片的富文本；不能假设普通图片或文件消息可以同时包含结构化 @。[接收内容结构](https://open.feishu.cn/document/server-docs/im-v1/message-content-description/message_content.md)
 
-主方案拟采用一个明确的群 @ 例外：**仅在已绑定的专属任务群内，接收 operator 发送的独立 `image/file` 到附件暂存流程**，明确申请 `im:message.group_msg` 加资源基础读取权限；普通文字与 post 图片仍要求结构化 @。接收附件不等于已提交原生队列，整批发送交互见[实施方案](feishu-inbound-attachments-plan-2026-10-15.md)。这是产品规则变更建议，尚未实现。最小权限备选是只支持同条 @ 图文，不申请全群读取，但无法完整覆盖群内纯文件输入。
+主方案拟采用一个明确的群 @ 例外：**仅在已绑定的专属任务群内，接收 operator 发送的独立 `image/file` 到附件暂存流程**，明确申请 `im:message.group_msg` 加资源基础读取权限；普通文字与 post 图片仍要求结构化 @。接收附件不等于已提交原生队列，整批发送交互见[实施方案](../plans/feishu-inbound-attachments-plan-2026-10-15.md)。这是产品规则变更建议，尚未实现。最小权限备选是只支持同条 @ 图文，不申请全群读取，但无法完整覆盖群内纯文件输入。
 
 另一个备选入口是对附件作普通引用回复并 @ 机器人，然后补读原消息；官方对应用身份补读群消息要求 `im:message.group_msg`，且话题内 `parent_id` 可能只指向根消息。不能承诺“仅有群 @ 权限就能引用任意附件”；本期不扩展话题附件引用。[读取指定消息](https://open.feishu.cn/document/server-docs/im-v1/message/get.md)、[消息关系](https://open.feishu.cn/document/server-docs/im-v1/message/intro.md)
 
@@ -121,4 +121,4 @@ Authorization: Bearer <tenant_access_token>
 
 ## 实施估算口径
 
-本附录用于接口事实和风险核验，不单独叠加工作量。当前 Agent 的基础版本执行估算统一见[附件输入方案](feishu-inbound-attachments-plan-2026-10-15.md)：预计 4–8 小时有效工作时间，权限发布与等待联调另计。引用补读、话题附件、Range 大文件与通用文档解析属于独立增强，启用时另行估算。
+本附录用于接口事实和风险核验，不单独叠加工作量。当前 Agent 的基础版本执行估算统一见[附件输入方案](../plans/feishu-inbound-attachments-plan-2026-10-15.md)：预计 4–8 小时有效工作时间，权限发布与等待联调另计。引用补读、话题附件、Range 大文件与通用文档解析属于独立增强，启用时另行估算。

@@ -266,6 +266,6 @@ schema 24 新增 `interaction_requests` / `interaction_attempts` 与索引，sch
 
 - [OpenAI App Server](https://learn.chatgpt.com/docs/app-server)：请求类型、决定、permissions/answers 及 resolved 生命周期。
 - [准确版本审批路由](../research/approval-routing-0.162.0.md)：共享 callback、replay、异步问答与 UserVerification 例外；0.162.1 行为仍按本方案第一步重验。
-- [本机 0.162.1 兼容核验](../research/codex-0.162.1-compatibility-2026-10-13.md)：既有队列/引导与版本基线，不构成本扩展已通过的证据。
+- [本机 0.162.1 兼容核验](../records/codex-0.162.1-compatibility-2026-10-13.md)：既有队列/引导与版本基线，不构成本扩展已通过的证据。
 - [飞书卡片研究](../research/feishu-interactive-requests-2026-10-14.md)：12 个官方主源、表单/回调/共享限制和待实测事项。
 - [原生客户端手册](01-codex-client.md)、[卡片手册](08-cards-and-actions.md)：现有已实现契约；本提案批准并验收后再同步修订。

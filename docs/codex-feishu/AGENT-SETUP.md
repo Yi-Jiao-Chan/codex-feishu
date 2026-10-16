@@ -49,7 +49,7 @@ Agent 分别检查退出码和 JSON，不能把 shell 输出当一条成功链�
 5. 用户级服务管理器与 SSH 注销后的常驻条件。无 user manager/linger 时具体报告，不自行 sudo 或改系统级服务。
 6. 目标主机可出站连接飞书；长连接不需要公网回调 URL，不开放 Codex 端口。
 
-若要读取源码仓库或构建已提供的源码，先遵循该仓库 AGENTS.md 和 CodeGraph 就绪检查；普通安装配置无需扫描源码。
+若要读取源码仓库或构建已提供的源码，先遵循该仓库 AGENTS.md 和 CONTRIBUTING.md；普通安装配置无需扫描源码。
 
 ### 收到归档包时
 
@@ -233,7 +233,7 @@ start 成功后，管理端点和历史基线可能仍在恢复；实际首次�
 
 已有配置的 unit 若处于 inactive/disabled，先核验它的部署身份、二进制摘要和配置与本次目标一致，再沿用同一 CLI 的 install/start 恢复 enabled/running。此路径已实际验证，原配置、绑定和规则保持一致；它不需要重新 apply 或更换数据库。活动 unit 的身份不符仍按冲突处理。
 
-重配已有部署时，先读 plan 的现有通知规则与独立差异。省略 quiet / timezone 保留有效规则；只有用户明确要求清除免打扰时才传 `quiet_hours: ""`。更新仅影响 owner 的明确字段，保留关闭 @ 与 snooze，其他接收者保持原值。已有规则更新需当前 schema 21；旧 M0 数据库不能由配置任务顺手迁移。普通启动也会拒绝未接管的 schema 1。迁移命令、备份和中断恢复已有隔离测试，但开发版拒绝真实迁移；不要改 user_version、清空日志或启动新实例绕过该边界，见[接管进展](../research/m3-legacy-adoption-2026-10-12.md)。
+重配已有部署时，先读 plan 的现有通知规则与独立差异。省略 quiet / timezone 保留有效规则；只有用户明确要求清除免打扰时才传 `quiet_hours: ""`。更新仅影响 owner 的明确字段，保留关闭 @ 与 snooze，其他接收者保持原值。已有规则更新要求当前二进制的数据库 schema，以 `version --json` 中的 `database_schema` 为准；旧 M0 数据库不能由配置任务顺手迁移。普通启动也会拒绝未接管的 schema 1。迁移命令、备份和中断恢复已有隔离测试，但开发版拒绝真实迁移；不要改 user_version、清空日志或启动新实例绕过该边界，见[接管进展](../records/m3-legacy-adoption-2026-10-12.md)。
 
 **检测到旧 M0 schema 1 时：**先检查 `capabilities.setup_migrate` 和 `phase1_released`。开发版最多做迁移预览，报告 `migration-plan-needs-release`；不能为配置任务切换现有桥。发布版且用户已授权迁移时，使用原配置绝对路径：
 
