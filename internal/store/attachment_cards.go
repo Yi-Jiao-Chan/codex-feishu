@@ -11,6 +11,17 @@ import (
 func AttachmentCardKey(id string) string { return "ui:attachments:" + id }
 
 func stageAttachmentCardTx(ctx context.Context, tx *sql.Tx, b AttachmentBatch) error {
+	if b.ReceiptID != "" {
+		var initial int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM creation_workflows WHERE receipt_id=?`, b.ReceiptID).Scan(&initial); err != nil {
+			return err
+		}
+		if initial != 0 {
+			// The entry creation card owns collection and explicit retry until
+			// the initial input is accepted. Queue feedback takes over afterward.
+			return nil
+		}
+	}
 	state := b.State
 	if b.State == "sealed" {
 		n, err := readSubmission(ctx, tx, b.Scope, b.ReceiptID)

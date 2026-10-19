@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -98,7 +99,7 @@ func TestMarkBindingRepairRequeuesSyncedTopicCreationOnce(t *testing.T) {
 	if repaired.State != "created" || repaired.ErrorCode != "target-root" || repaired.Revision != first.Revision+1 || repaired.CardRevision != first.CardRevision {
 		t.Fatalf("repair did not requeue the created card without changing state/card identity: before=%+v after=%+v", first, repaired)
 	}
-	if unchanged != second {
+	if !reflect.DeepEqual(unchanged, second) {
 		t.Fatalf("repair changed another creation draft: before=%+v after=%+v", second, unchanged)
 	}
 	selected, err := s.CreationDrafts(ctx, creationTestHost, creationTestApp, 2000)
@@ -149,7 +150,7 @@ BEGIN SELECT RAISE(FAIL,'injected creation repair failure'); END`); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterDraft != draft {
+	if !reflect.DeepEqual(afterDraft, draft) {
 		t.Fatalf("draft mutation escaped failed repair transaction: before=%+v after=%+v", draft, afterDraft)
 	}
 	if afterBinding != binding {

@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 29
+const SchemaVersion = 30
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -418,6 +418,20 @@ ALTER TABLE outbound_attempts ADD COLUMN platform_thread_id TEXT NOT NULL DEFAUL
 			return err
 		}
 		if _, err = tx.Exec("PRAGMA user_version=29"); err != nil {
+			return err
+		}
+	}
+	if version < 30 {
+		var present int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('creation_drafts') WHERE name='attachments_json'`).Scan(&present); err != nil {
+			return err
+		}
+		if present == 0 {
+			if _, err = tx.Exec(`ALTER TABLE creation_drafts ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.Exec("PRAGMA user_version=30"); err != nil {
 			return err
 		}
 	}
