@@ -79,8 +79,8 @@ func (c Config) ValidateFilePreview() error {
 			return errors.New("file preview allowed roots must be absolute directories")
 		}
 		physical, err := filepath.EvalSymlinks(root)
-		if err != nil || physical == string(filepath.Separator) {
-			return errors.New("file preview allowed directory is unavailable or too broad")
+		if err != nil {
+			return errors.New("file preview allowed directory is unavailable")
 		}
 		info, err := os.Stat(physical)
 		if err != nil || !info.IsDir() {

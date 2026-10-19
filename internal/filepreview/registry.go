@@ -260,7 +260,7 @@ func textName(name string) bool {
 		".rs", ".java", ".c", ".h", ".hpp", ".cpp", ".cc", ".sh", ".bash", ".zsh", ".fish", ".toml", ".yaml", ".yml",
 		".json", ".jsonc", ".ini", ".cfg", ".conf", ".css", ".scss", ".sql", ".proto", ".graphql", ".gql", ".rb", ".php",
 		".swift", ".kt", ".kts", ".scala", ".lua", ".r", ".ex", ".exs", ".erl", ".hrl", ".pl", ".pm", ".ps1",
-		".html", ".htm", ".xml", ".csv", ".tsv", ".diff", ".patch":
+		".html", ".htm", ".xhtml", ".xml", ".csv", ".tsv", ".diff", ".patch":
 		return true
 	}
 	return false

@@ -13,18 +13,41 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 )
 
-const pageStyle = `body{margin:0;color:#20252b;background:#f6f7f9;font:16px/1.65 system-ui,-apple-system,sans-serif}main{max-width:1040px;margin:24px auto;padding:24px;background:white;border:1px solid #e1e5eb;border-radius:10px}h1{font-size:1.4rem;overflow-wrap:anywhere}.meta{font-size:.85rem;color:#606a78}a{color:#1765bb}pre{overflow:auto;background:#f6f8fa;padding:14px;border-radius:6px;line-height:1.55}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.88rem}.code-line{display:block;min-height:1.55em;scroll-margin-top:16px}.code-line:target{background:#fff1aa}.line-no{display:inline-block;min-width:3.5em;margin-right:1.25em;text-align:right;color:#77818d;text-decoration:none;user-select:none}table{border-collapse:collapse;max-width:100%;display:block;overflow:auto}td,th{padding:5px 10px;border:1px solid #d8dee7}blockquote{margin-left:0;padding-left:14px;border-left:3px solid #d8dee7;color:#56616f}input[type=password]{display:block;box-sizing:border-box;width:100%;max-width:420px;padding:10px;font:inherit;margin:8px 0 16px}button{padding:9px 22px;background:#1765bb;border:0;border-radius:6px;color:white;font:inherit;cursor:pointer}.error{color:#a42121}.login{max-width:480px;margin:64px auto}details{margin-top:24px}summary{cursor:pointer}@media(max-width:650px){main{margin:0;padding:16px;border-radius:0;border:0}.login{margin:24px auto}pre{margin-left:-8px;margin-right:-8px;padding:10px}.line-no{min-width:2.5em;margin-right:.75em}}`
+var pageStyle = highlightCSS() + `
+:root{color-scheme:light}*{box-sizing:border-box}
+body{margin:0;color:#24292f;background:#f6f8fa;font:16px/1.7 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1120px;margin:32px auto;padding:32px 40px;background:#fff;border:1px solid #d8dee4;border-radius:12px}
+h1{font-size:1.5rem;line-height:1.35;overflow-wrap:anywhere;margin:0 0 12px}.meta{font-size:.85rem;color:#57606a;margin:0 0 28px}
+a{color:#0969da;text-underline-offset:3px}a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid #0969da;outline-offset:4px}
+.file-kind{display:inline-block;color:#57606a;font-size:.75rem;line-height:1.5;border:1px solid #d8dee4;border-radius:5px;padding:2px 7px;margin-bottom:12px}
+.html-preview{display:block;width:100%;height:70vh;min-height:360px;border:1px solid #d8dee4;border-radius:8px;background:#fff}.preview-note{font-size:.85rem;color:#57606a;margin:0 0 12px}
+pre{max-width:100%;overflow:auto;background:#f6f8fa;padding:18px 20px;border:1px solid #eaeef2;border-radius:8px;line-height:1.6;tab-size:4}
+code{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:.875rem}pre code{white-space:pre;overflow-wrap:normal}
+.chroma{background:#f6f8fa}.source{padding:16px 0}.code-line{display:block;min-height:1.6em;padding-right:20px;scroll-margin-top:24px}.code-line:target{background:#fff1b8;box-shadow:inset 3px 0 #bf8700}
+.line-no{display:inline-block;min-width:4em;padding:0 1em;text-align:right;color:#6e7781;text-decoration:none;user-select:none;font-variant-numeric:tabular-nums}
+.markdown-body{max-width:80ch;margin:0 auto;overflow-wrap:anywhere}.markdown-body h1,.markdown-body h2{padding-bottom:.4em;border-bottom:1px solid #d8dee4}.markdown-body h1{font-size:2rem}.markdown-body h2{font-size:1.45rem}.markdown-body h3{font-size:1.15rem}.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4{line-height:1.4;margin:1.7em 0 .7em}.markdown-body>:first-child{margin-top:0}
+.markdown-body p,.markdown-body ul,.markdown-body ol,.markdown-body blockquote,.markdown-body pre,.markdown-body table{margin-top:0;margin-bottom:1.2em}.markdown-body li+li{margin-top:.3em}.markdown-body li>p{margin-bottom:.5em}.markdown-body ul,.markdown-body ol{padding-left:1.6em}
+.markdown-body :not(pre)>code{padding:.15em .4em;background:#eff1f3;border-radius:4px;font-size:.875em}.markdown-body input[type=checkbox]{accent-color:#0969da;margin-right:.45em}
+table{border-collapse:collapse;max-width:100%;display:block;overflow:auto;font-size:.94rem}td,th{padding:9px 14px;border:1px solid #d8dee4}th{font-weight:600;background:#f6f8fa}tbody tr:nth-child(even){background:#f6f8fa}
+blockquote{margin-left:0;margin-right:0;padding:2px 18px;border-left:3px solid #d0d7de;color:#57606a}blockquote>:last-child{margin-bottom:0!important}hr{border:0;border-top:1px solid #d8dee4;margin:28px 0}
+input[type=password]{display:block;width:100%;max-width:420px;padding:10px;font:inherit;margin:8px 0 16px;border:1px solid #8c959f;border-radius:6px}button{padding:9px 22px;background:#0969da;border:0;border-radius:6px;color:white;font:inherit;cursor:pointer}.error{color:#a42121}.login{max-width:480px;margin:64px auto}
+details{margin-top:32px;border-top:1px solid #d8dee4;padding-top:20px}summary{cursor:pointer;color:#57606a;font-size:.9rem;width:fit-content}details[open]>summary{margin-bottom:16px}
+@media(max-width:650px){main{margin:0;padding:24px 16px;border-radius:0;border:0}.login{margin:24px auto}.markdown-body h1{font-size:1.65rem}pre{padding:14px 12px}.source{padding:12px 0}.line-no{min-width:3.2em;padding:0 .65em}.meta{margin-bottom:24px}}
+`
 
 var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>文件预览登录</title><style>` + pageStyle + `</style></head><body><main class="login"><h1>文件预览</h1><p>输入预览口令后打开已分享的文件。</p>{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}<form method="post" action=""><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}"><label for="password">预览口令</label><input type="password" id="password" name="password" autocomplete="current-password" maxlength="256" required autofocus><button type="submit">打开预览</button></form></main></body></html>`))
 
-var previewTemplate = template.Must(template.New("preview").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Name}} · 文件预览</title><style>` + pageStyle + `</style></head><body><main><h1>{{.Name}}</h1><p class="meta">当前文件内容 · 修改时间 {{.Modified}} · 每次打开读取最新内容</p>{{if .Markdown}}<article>{{.Markdown}}</article><details><summary>查看带行号源文</summary>{{.Source}}</details>{{else}}{{.Source}}{{end}}</main></body></html>`))
+var previewTemplate = template.Must(template.New("preview").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Name}} · 文件预览</title><style>` + pageStyle + `</style></head><body><main>{{if .IsMarkdown}}<span class="file-kind">Markdown 阅读</span>{{else if .IsHTML}}<span class="file-kind">HTML 静态预览</span>{{else if .Language}}<span class="file-kind">{{.Language}}</span>{{end}}<h1>{{.Name}}</h1><p class="meta">当前文件内容 · 修改时间 {{.Modified}} · 每次打开读取最新内容</p>{{if .IsMarkdown}}<article class="markdown-body">{{.Markdown}}</article><details><summary>查看 Markdown 源码 · 含行号</summary>{{.Source}}</details>{{else if .IsHTML}}{{if .HTMLDocument}}<p class="preview-note">支持 HTML 和内联 CSS；脚本、图片和外部资源不加载。</p><iframe class="html-preview" title="{{.Name}} 页面预览" sandbox="" referrerpolicy="no-referrer" srcdoc="{{.HTMLDocument}}"></iframe>{{else}}<p class="preview-note">无法生成 HTML 页面预览，请查看源码。</p>{{end}}<details{{if not .HTMLDocument}} open{{end}}><summary>查看 HTML 源码 · 含行号</summary>{{.Source}}</details>{{else}}{{.Source}}{{end}}</main></body></html>`))
 
 var messageTemplate = template.Must(template.New("message").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Title}}</title><style>` + pageStyle + `</style></head><body><main><h1>{{.Title}}</h1><p>{{.Message}}</p></main></body></html>`))
 
@@ -63,8 +86,12 @@ func writePage(w http.ResponseWriter, r *http.Request, status int, title, messag
 func renderPreview(file previewFile) ([]byte, error) {
 	var rendered bytes.Buffer
 	ext := strings.ToLower(filepath.Ext(file.name))
-	if ext == ".md" || ext == ".markdown" || ext == ".mdown" {
-		md := goldmark.New(goldmark.WithExtensions(extension.GFM)) // Raw HTML and unsafe URL rendering stay disabled.
+	isMarkdown := ext == ".md" || ext == ".markdown" || ext == ".mdown"
+	isHTML := ext == ".html" || ext == ".htm" || ext == ".xhtml"
+	if isMarkdown {
+		md := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithRendererOptions(
+			renderer.WithNodeRenderers(util.Prioritized(&codeHighlighter{remaining: highlightBytes}, 100)),
+		)) // Raw HTML and unsafe URL rendering stay disabled.
 		document := md.Parser().Parse(text.NewReader(file.content))
 		var images []*ast.Image
 		var unsafeAutolinks []*ast.AutoLink
@@ -112,11 +139,29 @@ func renderPreview(file previewFile) ([]byte, error) {
 		}
 	}
 	var body bytes.Buffer
+	var lexer chroma.Lexer
+	language := ""
+	if !isMarkdown {
+		lexer = lexers.Match(file.name)
+		if isHTML {
+			lexer = lexers.Get("html")
+		}
+		if lexer != nil {
+			language = lexer.Config().Name
+		}
+	}
 	data := struct {
-		Name, Modified   string
-		Markdown, Source template.HTML
-	}{Name: file.name, Modified: file.modified.UTC().Format(time.RFC3339),
-		Markdown: template.HTML(rendered.String()), Source: template.HTML(numberedSource(file.content))}
+		Name, Modified, Language string
+		// Keep HTMLDocument a string: html/template must escape the srcdoc
+		// attribute. Its markup only belongs in the sandboxed child document.
+		HTMLDocument       string
+		IsMarkdown, IsHTML bool
+		Markdown, Source   template.HTML
+	}{Name: file.name, Modified: file.modified.UTC().Format(time.RFC3339), Language: language, IsMarkdown: isMarkdown, IsHTML: isHTML,
+		Markdown: template.HTML(rendered.String()), Source: template.HTML(numberedCode(file.content, lexer))}
+	if isHTML {
+		data.HTMLDocument = staticHTMLDocument(file.content)
+	}
 	if previewTemplate.Execute(&body, data) != nil {
 		return nil, errRender
 	}
@@ -137,17 +182,26 @@ func safeRenderedLink(destination []byte) bool {
 	return err == nil && u.User == nil && (strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https")) && u.Host != ""
 }
 
-func numberedSource(content []byte) string {
-	lines := strings.Split(string(content), "\n")
-	if len(lines) > 1 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
+func numberedCode(content []byte, lexer chroma.Lexer) string {
+	highlighter := codeHighlighter{remaining: highlightBytes}
+	text := strings.ReplaceAll(string(content), "\r\n", "\n")
+	lines := chroma.SplitTokensIntoLines(highlighter.tokens(text, lexer))
+	if len(lines) == 0 {
+		lines = [][]chroma.Token{{{Type: chroma.Text}}}
 	}
 	var source strings.Builder
-	source.WriteString("<pre><code>")
+	source.WriteString(`<pre class="source chroma"><code>`)
 	for i, line := range lines {
 		n := strconv.Itoa(i + 1)
 		source.WriteString(`<span class="code-line" id="L` + n + `"><a class="line-no" href="#L` + n + `" aria-label="第 ` + n + ` 行">` + n + `</a>`)
-		source.WriteString(html.EscapeString(strings.TrimSuffix(line, "\r")))
+		for j := range line {
+			line[j].Value = strings.TrimSuffix(line[j].Value, "\n")
+		}
+		// A CR at the end of a line was also omitted by the plain source view.
+		if len(line) > 0 {
+			line[len(line)-1].Value = strings.TrimSuffix(line[len(line)-1].Value, "\r")
+		}
+		source.WriteString(tokenHTML(line))
 		source.WriteString("</span>")
 	}
 	source.WriteString("</code></pre>")

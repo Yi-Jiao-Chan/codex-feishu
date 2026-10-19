@@ -265,6 +265,70 @@ func TestWorktreeRejectsNonGitAndSymlinkStorage(t *testing.T) {
 	}
 }
 
+func TestWorktreeAvailabilityBeforeSwitchAndAfterDirectoryChange(t *testing.T) {
+	h := newManagerHarness(t)
+	buttonDisabled := func(card string) bool {
+		t.Helper()
+		var parsed any
+		if err := json.Unmarshal([]byte(card), &parsed); err != nil {
+			t.Fatal(err)
+		}
+		var find func(any) (bool, bool)
+		find = func(value any) (bool, bool) {
+			switch v := value.(type) {
+			case map[string]any:
+				if v["tag"] == "button" && v["name"] == "creation_worktree" {
+					return v["disabled"] == true, true
+				}
+				for _, child := range v {
+					if disabled, ok := find(child); ok {
+						return disabled, true
+					}
+				}
+			case []any:
+				for _, child := range v {
+					if disabled, ok := find(child); ok {
+						return disabled, true
+					}
+				}
+			}
+			return false, false
+		}
+		disabled, ok := find(parsed)
+		if !ok {
+			t.Fatal("creation card is missing the workspace mode button")
+		}
+		return disabled
+	}
+	d := h.receive("preflight-worktree", "/new preserve task while selecting a repository")
+	card := h.g.cards[d.CardID].Content
+	if !buttonDisabled(card) || !strings.Contains(card, creationErrorText("worktree-repository")) {
+		t.Fatal("non-Git directory was offered as a usable worktree before clicking")
+	}
+	if d.WorkspaceMode != "local" || d.ErrorCode != "" {
+		t.Fatal("display preflight changed the durable draft")
+	}
+	repo := directory(t, h.root, "actual-repository")
+	initWorktreeTestRepo(t, repo)
+	if err := h.action(d, "creation_path", map[string]any{"creation_path": repo}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick()
+	d = h.draft("preflight-worktree")
+	card = h.g.cards[d.CardID].Content
+	if d.Directory != repo || buttonDisabled(card) || strings.Contains(card, creationErrorText("worktree-repository")) {
+		t.Fatal("selecting a real repository did not restore worktree mode")
+	}
+	if err := h.action(d, "creation_worktree", map[string]any{"creation_body": "edited task"}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick()
+	d = h.draft("preflight-worktree")
+	if d.WorkspaceMode != "worktree" || d.BaseBranch != "refs/heads/main" || d.Body != "edited task" || len(h.n.starts) != 0 || h.g.groups != 0 {
+		t.Fatal("valid workspace switch lost edits or created resources before submission")
+	}
+}
+
 func TestWorktreeRequiresWholeRepositoryScope(t *testing.T) {
 	h := newManagerHarness(t)
 	initWorktreeTestRepo(t, h.root)

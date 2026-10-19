@@ -112,3 +112,34 @@ Agent 按指南在 0700 私有目录保存 0600 报告与脱敏证据，填写�
 | 本地候选部署 | 已更新：配置与 schema 29 保持，进程摘要/提交匹配，systemd active/enabled，两侧连接正常；整体恢复仍 pending |
 | 飞书群名图标和 App 改标题 | 平台已读回确认 4 个绑定置顶群名前缀；客户端添加、移除及置顶中改标题仍 pending |
 | 新增恢复与限流 UI | pending：服务已重启，仍待完整恢复、平台限流与 topic 共享群名核验；历史 6 条出站 unknown 保留，status 仍为 reconciling |
+
+## 2026-10-19 本地文件预览与工作树目录反馈增量
+
+按用户授权部署 `4bc4c9ff7c2e+preview-worktree-fix-20261019`，二进制 SHA-256 为 `42b14ea26a08af28d5729f2d1ff388d9e7af322ef27739318b898883f41919c9`。本次包含工作区尚未提交的修复，沿用原 schema 29 数据库、共享 daemon 和固定用户服务；只扩大预览目录范围，保留旧根与口令。完整备份和检查见[预览部署记录](../records/feishu-local-file-preview-implementation-2026-10-15.md#2026-10-19-全本地目录行号兼容与候选部署)。
+
+| 覆盖 | 当前证据与状态 |
+| --- | --- |
+| 本地候选部署 | 已更新：运行进程及稳定 CLI 匹配候选；两侧连接、发现基线及权限检查通过 |
+| 全本地目录与工作树预览 | 本机 HTTP 通过：原根外合成文本、两种工作树父目录、旧链接、登录与隐藏文件拒绝；飞书和用户浏览器点击仍 pending |
+| 本地链接行号 | 回归通过：`#L12` / `#L12C5` 转为预览行号，原历史和用户正文保留；本机登记检查通过 |
+| 非 Git 目录工作树入口 | cards / creation 回归和 race 通过：提前说明、禁用及有效目录恢复；真实新卡片操作 pending |
+| 全仓回归 | 有一项既有自动建群重试测试失败，原始基线重复复现；其他包通过，本次未将全仓结果记作 pass |
+| 整体恢复与发布 | 原 `bindings_reconciled` / `operations_known` pending 保留，doctor/status 退出 5，无新 required fail；完整 P1 与 `phase1_released=false` 保持 |
+
+### 代码高亮与 Markdown 阅读
+
+同日继续更新候选为 `4bc4c9ff7c2e+preview-reading-20261019`，二进制 SHA-256 `1a1cca259080b40e9756c62d1dcb294195385bce6a59da9965099fac983fde63`。配置、口令、授权根及 schema 29 保持，稳定 CLI 和实际进程均匹配新构建；[部署与浏览器记录](../records/feishu-local-file-preview-implementation-2026-10-15.md#2026-10-19-代码高亮与-markdown-阅读部署)保留独立身份和备份。
+
+filepreview 回归和 race 通过。真实本机 Chromium 已验证 GFM 阅读、代码文件 / 围栏高亮、源码 fragment 自动展开和手机尺寸无页面横向溢出；实际服务登录与旧链接继续可用，无外部资源请求。用户设备与飞书内置浏览器观察仍 pending。全仓保留上表的一条基线已有测试失败，原恢复诊断 pending 和完整 P1 / 发布结论保持。
+
+### HTML 静态页面预览
+
+当前候选进一步更新为 `4bc4c9ff7c2e+preview-html-20261019`，二进制 SHA-256 `e54d8c114ee3bdad7dabdfba232bf5d986ed41f84e4a1193256c48fc9e9f8058`。HTML 默认显示隔离静态页面与内联 CSS，原文仍可展开高亮源码及行号；脚本、外部资源、表单和跳转不可用。连接提示和嵌套文档在显示副本中移除，sandbox 与原 CSP 继续生效；[部署及隔离核验记录](../records/feishu-local-file-preview-implementation-2026-10-15.md#2026-10-19-html-静态页面预览部署)包含有正对照的预连接验证。
+
+filepreview 测试和 race、本机桌面/手机尺寸浏览器核验均通过，实际服务的 HTML、源码定位、登录及旧链接可用。配置、原口令、授权根及 schema 29 保持，备份完成，实际进程与稳定 CLI 匹配新构建；两侧连接和发现基线通过。全仓仍有同一条既有建群重试测试失败；原恢复诊断、用户设备和飞书内置浏览器观察 pending，完整 P1 与发布标志保持。
+
+### HTML 目录跳转修复
+
+用户实际目录操作暴露了 srcdoc 相对 fragment 错误加载外层预览地址的缺陷，现已修复并更新为 `4bc4c9ff7c2e+preview-html-anchors-20261019`，二进制 SHA-256 `d00a693787c1fddcc1311237e1ed400d5e96e01e9f02b9abf4e617c749535f23`。目录在子文档内跳转，原 HTML、源码、CSP 和 sandbox 保持；[修复及部署记录](../records/feishu-local-file-preview-implementation-2026-10-15.md#2026-10-19-html-目录锚点修复)记录复现与新增回归。
+
+filepreview 测试和 race 通过，本机 Chromium 已核验桌面/手机尺寸的目录、中文锚点和返回顶部，以及用户原链接的 9 个页内目标；跳转不重载文档，不产生导航请求。实际进程与稳定 CLI 匹配候选，配置和 schema 29 保持，备份完成；两侧连接及发现基线通过。用户随后确认原链接目录已恢复正常，并授权提交与推送；真实手机、飞书内置浏览器、原恢复诊断 pending 和发布状态保持，前次全仓既有失败未改写为通过。

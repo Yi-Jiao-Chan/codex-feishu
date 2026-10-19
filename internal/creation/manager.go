@@ -1164,13 +1164,17 @@ func (m *Manager) entryCard(ctx context.Context, n Native, d store.CreationDraft
 	}
 	if d.State == "draft" && d.View == "main" {
 		m.workgroupOptions(ctx, &v)
-		if d.WorkspaceMode == "worktree" {
+		if d.Directory != "" {
 			read, cancel := context.WithTimeout(ctx, 2*time.Second)
 			options, selected, err := worktreeBranches(read, d.Directory, d.BaseBranch, m.Config.Creation.AllowedRoots)
-			v.Branches, v.BaseBranch = options, selected
 			cancel()
-			if err != nil {
-				v.Error = creationErrorText(actionError(err))
+			if d.WorkspaceMode == "worktree" {
+				v.Branches, v.BaseBranch = options, selected
+				if err != nil {
+					v.Error = creationErrorText(actionError(err))
+				}
+			} else if err != nil {
+				v.WorktreeUnavailable = creationErrorText(actionError(err))
 			}
 		}
 	}

@@ -79,6 +79,7 @@ func TestRewriteUnicodeSpacesLocationsAndLocalURLRepair(t *testing.T) {
 		{"[实现](<" + path + ":12:4>)", "[实现 · L12](" + base + "#L12)"},
 		{"[实现 L12](<" + path + ":12>)", "[实现 L12](" + base + "#L12)"},
 		{"[实现 L120](<" + path + ":12>)", "[实现 L120 · L12](" + base + "#L12)"},
+		{"[实现](<" + path + "#L12C5>)", "[实现 · L12](" + base + "#L12)"},
 		{"[实现](<file://localhost" + path + ">)", "[实现](" + base + ")"},
 		{"[实现](<file://" + path + ">)", "[实现](" + base + ")"},
 		{"[实现](<http://" + strings.TrimPrefix(path, "/") + ">)", "[实现](" + base + ")"},
@@ -103,6 +104,42 @@ func TestRewriteUnicodeSpacesLocationsAndLocalURLRepair(t *testing.T) {
 	body := "[escaped](" + strings.ReplaceAll(strings.ReplaceAll(paren, "(", `\(`), ")", `\)`) + ")"
 	if got, err := f.s.Rewrite(context.Background(), body); err != nil || !strings.Contains(got, "/f/") {
 		t.Fatal("escaped destination punctuation was not parsed")
+	}
+}
+
+func TestRewriteLocalLineFragments(t *testing.T) {
+	f := newFixture(t)
+	path := writeFixture(t, f.root, "main.go", "package main\n")
+	base := registeredURL(t, f.s, path)
+	for _, target := range []string{path, "file://" + path, "http://" + strings.TrimPrefix(path, "/")} {
+		for _, fragment := range []string{"#L12", "#L12C5", "#L0012C05"} {
+			body := "[source](" + target + fragment + ")"
+			got, err := f.s.Rewrite(context.Background(), body)
+			if want := "[source · L12](" + base + "#L12)"; err != nil || got != want {
+				t.Fatalf("rewrite = %q, want %q, error %v", got, want, err)
+			}
+		}
+	}
+	local := "[source L12](" + path + "#L12C5)"
+	if got, err := f.s.Rewrite(context.Background(), local); err != nil || got != "[source L12]("+base+"#L12)" {
+		t.Fatalf("existing line label changed: %q (error %v)", got, err)
+	}
+	unchanged := []string{
+		"`" + local + "`", "```text\n" + local + "\n```", "    " + local,
+		"![source](" + path + "#L12)",
+		"[website](https://example.invalid" + path + "#L12)",
+		"[website](http://example.invalid" + path + "#L12C5)",
+		"[outside](" + writeFixture(t, t.TempDir(), "outside.go", "outside") + "#L12)",
+	}
+	for _, fragment := range []string{"#section", "#L0", "#L-1", "#L12C0", "#L12C", "#L12C5C6", "#L4294967296", "#L12C4294967296"} {
+		unchanged = append(unchanged, "[source]("+path+fragment+")")
+	}
+	// A destination with two different location syntaxes is ambiguous.
+	unchanged = append(unchanged, "[source]("+path+":8#L12)")
+	for _, body := range unchanged {
+		if got, err := f.s.Rewrite(context.Background(), body); err != nil || got != body {
+			t.Fatalf("ineligible fragment link changed: %q (error %v)", got, err)
+		}
 	}
 }
 

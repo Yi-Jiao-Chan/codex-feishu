@@ -29,6 +29,16 @@ func TestFilePreviewRequiresSeparateScopeAndValidOrigin(t *testing.T) {
 	}
 }
 
+func TestFilePreviewAllowsExplicitFilesystemRoot(t *testing.T) {
+	c := validTestConfig(t)
+	c.FilePreview.Enabled = true
+	c.FilePreview.BaseURL = "http://10.0.0.1:8787"
+	c.FilePreview.AllowedRoots = []string{"/"}
+	if err := c.ValidateFilePreview(); err != nil {
+		t.Fatal("explicit filesystem root rejected", err)
+	}
+}
+
 func TestFilePreviewSecretRemainsPrivateAndRejectsSymlinks(t *testing.T) {
 	c := validTestConfig(t)
 	path := c.FilePreviewLimits().SecretFile

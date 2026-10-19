@@ -68,3 +68,26 @@ func TestCreationWorktreeBranchesFitCardBudget(t *testing.T) {
 		t.Fatal("bounded worktree card cannot show pending feedback", err)
 	}
 }
+
+func TestCreationUnavailableWorktreeKeepsLocalCreationAndDirectorySelection(t *testing.T) {
+	v := creationView()
+	v.WorktreeUnavailable = "此目录不是可用的 Git 仓库，请更改目录。"
+	card := Creation(v)
+	if !strings.Contains(card, v.WorktreeUnavailable) {
+		t.Fatal("unavailable worktree has no visible explanation")
+	}
+	for _, node := range creationNodes(t, card) {
+		if action := creationAction(node); action != nil {
+			switch action["action"] {
+			case "creation_worktree":
+				if node["disabled"] != true {
+					t.Fatal("unavailable worktree remained clickable")
+				}
+			case "creation_submit", "creation_panel", "creation_local":
+				if node["disabled"] == true {
+					t.Fatal("worktree preflight blocked local creation or directory recovery")
+				}
+			}
+		}
+	}
+}
