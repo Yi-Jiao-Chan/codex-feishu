@@ -249,7 +249,7 @@ func labelHasLine(label, line string) bool {
 func localDestination(destination []byte) (path, line string, ok bool) {
 	value := html.UnescapeString(string(util.UnescapePunctuations(destination)))
 	u, err := url.Parse(value)
-	if err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Opaque != "" || u.Fragment != "" {
+	if err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Opaque != "" {
 		return "", "", false
 	}
 	switch strings.ToLower(u.Scheme) {
@@ -275,6 +275,19 @@ func localDestination(destination []byte) (path, line string, ok bool) {
 		return "", "", false
 	}
 	path, line = splitLocation(path)
+	if u.Fragment != "" {
+		// Codex also emits #L12 and #L12C5 locations. The preview has line
+		// anchors only; reject other fragments and mixed location syntaxes.
+		if line != "" || !strings.HasPrefix(u.Fragment, "L") {
+			return "", "", false
+		}
+		fragmentLine, column, hasColumn := strings.Cut(u.Fragment[1:], "C")
+		if !positiveLine(fragmentLine) || hasColumn && !positiveLine(column) {
+			return "", "", false
+		}
+		value, _ := strconv.ParseUint(fragmentLine, 10, 32)
+		line = strconv.FormatUint(value, 10)
+	}
 	if !filepath.IsAbs(path) || strings.ContainsAny(path, "\\\x00\r\n") {
 		return "", "", false
 	}

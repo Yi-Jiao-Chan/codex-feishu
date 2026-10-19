@@ -70,6 +70,106 @@ func registeredURL(t *testing.T, s *Service, path string) string {
 	return strings.TrimRight(target, ")")
 }
 
+func TestExplicitFilesystemRootKeepsFileAndAuthenticationGuards(t *testing.T) {
+	f := newFixture(t)
+	opts := f.opts
+	opts.AllowedRoots = []string{"/"}
+	s, err := New(opts)
+	if err != nil {
+		t.Fatal("explicit filesystem root rejected", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	path := writeFixture(t, t.TempDir(), "report.md", "# filesystem root fixture\n")
+	target := registeredURL(t, s, path)
+	if w := request(t, s, http.MethodGet, target, nil); w.Code != http.StatusUnauthorized || strings.Contains(w.Body.String(), "filesystem root fixture") {
+		t.Fatal("filesystem root bypassed authentication")
+	}
+	session := loggedIn(t, s)
+	if w := request(t, s, http.MethodGet, target, session); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "filesystem root fixture") {
+		t.Fatal("authorized local text was not previewed")
+	}
+	denied := []string{
+		writeFixture(t, f.root, ".private/report.md", "hidden"),
+		writeFixture(t, f.root, "credentials.json", "credential"),
+		writeFixture(t, f.root, "secrets/report.md", "secret directory"),
+		writeFixture(t, f.root, "binary.go", "binary\x00data"),
+		opts.SecretFile,
+	}
+	alias := filepath.Join(f.root, "alias.md")
+	if err := os.Symlink(path, alias); err != nil {
+		t.Fatal(err)
+	}
+	denied = append(denied, alias)
+	aliasDir := filepath.Join(f.root, "alias-dir")
+	if err := os.Symlink(filepath.Dir(path), aliasDir); err != nil {
+		t.Fatal(err)
+	}
+	denied = append(denied, filepath.Join(aliasDir, filepath.Base(path)))
+	for _, path := range denied {
+		body := "[file](" + path + ")"
+		if got, err := s.Rewrite(context.Background(), body); err != nil || got != body {
+			t.Fatalf("protected path was converted (error %v)", err)
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(denied[0], path); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(t, s, http.MethodGet, target, session); w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "hidden") {
+		t.Fatal("registered file replacement bypassed symlink protection")
+	}
+}
+
+func TestFilesystemRootNeedsExplicitHiddenWorkspaceRoot(t *testing.T) {
+	f := newFixture(t)
+	worktree := filepath.Join(f.root, ".codex", "worktrees", "fixture", "project")
+	path := writeFixture(t, worktree, "main.go", "package fixture\n")
+	opts := f.opts
+	opts.AllowedRoots = []string{"/"}
+	s, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	body := "[file](" + path + ")"
+	if got, err := s.Rewrite(context.Background(), body); err != nil || got != body {
+		t.Fatal("filesystem root bypassed hidden directory protection", err)
+	}
+	opts.AllowedRoots = append(opts.AllowedRoots, filepath.Join(f.root, ".codex", "worktrees"))
+	explicit, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = explicit.Close() })
+	registeredURL(t, explicit, path)
+	hidden := writeFixture(t, worktree, ".private/report.md", "hidden")
+	body = "[file](" + hidden + ")"
+	if got, err := explicit.Rewrite(context.Background(), body); err != nil || got != body {
+		t.Fatal("explicit workspace root bypassed hidden file protection", err)
+	}
+}
+
+func TestAddingFilesystemRootPreservesExistingLinks(t *testing.T) {
+	f := newFixture(t)
+	path := writeFixture(t, f.root, "report.md", "# stable link fixture\n")
+	target := registeredURL(t, f.s, path)
+	opts := f.opts
+	opts.AllowedRoots = append([]string{"/"}, opts.AllowedRoots...)
+	s, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if got := registeredURL(t, s, path); got != target {
+		t.Fatal("broader root changed the most specific root's existing link")
+	}
+	if w := request(t, s, http.MethodGet, target, loggedIn(t, s)); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "stable link fixture") {
+		t.Fatal("retained original root did not preserve the existing mapping")
+	}
+}
+
 func request(t *testing.T, s *Service, method, target string, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(method, target, nil)
@@ -177,7 +277,7 @@ func TestLoginSessionAndReadOnlyPreview(t *testing.T) {
 		t.Fatal("file route accepted a write method")
 	}
 	newTime := time.Unix(1728000000, 0)
-	if err := os.WriteFile(path, []byte("updated source\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("package fixture\n// updated source\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, newTime, newTime); err != nil {

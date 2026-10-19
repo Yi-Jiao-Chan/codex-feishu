@@ -3,16 +3,19 @@ module codex-feishu
 go 1.25.6
 
 require (
+	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/coder/websocket v1.8.15
 	github.com/larksuite/oapi-sdk-go/v3 v3.12.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/yuin/goldmark v1.8.6
 	golang.org/x/image v0.40.0
-	golang.org/x/sys v0.44.0
+	golang.org/x/net v0.58.0
+	golang.org/x/sys v0.47.0
 	modernc.org/sqlite v1.53.0
 )
 
 require (
+	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect

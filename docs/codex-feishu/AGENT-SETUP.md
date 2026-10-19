@@ -104,7 +104,7 @@ development 包的 `phase1_released=false` 和 pending 验收模板不能改成 
 
 ### 可选：本地文件网页预览
 
-仅在用户要求时启用 `file_preview`；这是桥自身的只读 HTTP 服务，无需云盘上传权限。必须单独取得具体项目目录的授权，不从 discovery 的广泛范围推断。先用 `file-preview init-secret --output /absolute/private/file-preview.key --json` 在已有私有目录创建口令；不要在配置聊天、argv 或普通诊断中输出口令。用户可自行运行 `file-preview show-secret --config PATH` 显式打印口令，该命令拒绝 JSON 模式；也可由部署所有者私聊机器人发送 `/preview` 取得口令，群内只提示转私聊。该敏感回复保存在私有命令 outbox 和飞书私聊中。
+仅在用户要求时启用 `file_preview`；这是桥自身的只读 HTTP 服务，无需云盘上传权限。预览目录必须单独授权，不从 discovery 的广泛范围推断；用户明确要求所有本地目录时可追加 `allowed_roots` 的 `/` 根。扩大范围时保留已有根，并另列隐藏目录下的工作树根；认证和敏感文件过滤仍生效，详见 [14 文件预览](14-file-preview.md)。先用 `file-preview init-secret --output /absolute/private/file-preview.key --json` 在已有私有目录创建口令；不要在配置聊天、argv 或普通诊断中输出口令。用户可自行运行 `file-preview show-secret --config PATH` 显式打印口令，该命令拒绝 JSON 模式；也可由部署所有者私聊机器人发送 `/preview` 取得口令，群内只提示转私聊。该敏感回复保存在私有命令 outbox 和飞书私聊中。
 
 setup 输入可提供 `file_preview` 对象：`enabled=true`、`base_url`（用户设备可访问的 HTTP/HTTPS origin）、`listen_address`（IP 加端口）、`allowed_roots`、`secret_file`；`directory` 默认数据库旁 `file-preview`，单文件上限默认 1 MiB。IP 直连需显式监听可达网卡，默认 `127.0.0.1:8787` 只可本机访问。HTTP 由所用网络承载口令与内容，需要传输加密时接 HTTPS。
 

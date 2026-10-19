@@ -115,7 +115,7 @@ func New(opts Options) (_ *Service, err error) {
 		}
 		alias := filepath.Clean(name)
 		canonical, e := filepath.EvalSymlinks(alias)
-		if e != nil || canonical == string(filepath.Separator) {
+		if e != nil {
 			return nil, errors.New("file preview: allowed root unavailable")
 		}
 		if existing := s.rootsByPath[canonical]; existing != nil {
@@ -243,6 +243,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-DNS-Prefetch-Control", "off")
 	// no-referrer makes a browser's ordinary form POST use Origin: null.
 	// Keep the origin for our own login while suppressing cross-origin referrers.
 	w.Header().Set("Referrer-Policy", "same-origin")

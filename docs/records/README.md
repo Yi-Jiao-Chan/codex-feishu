@@ -10,9 +10,9 @@
 | --- | --- |
 | [Codex 0.162.1 候选部署兼容性](codex-0.162.1-compatibility-2026-10-13.md) | 2026-10-13 |
 | [置顶群名、近期发现窗口与空闲降频](pinned-group-names-and-windowed-discovery-2026-10-16.md) | 2026-10-16 |
-| [飞书创建 Codex 会话：实施与验收记录](feishu-create-codex-session-implementation-2026-10-15.md) | 2026-10-15 |
+| [飞书创建 Codex 会话：实施与验收记录](feishu-create-codex-session-implementation-2026-10-15.md) | 2026-10-15；2026-10-19 目录预检增量 |
 | [飞书入站图片、文件与多附件：实施记录](feishu-inbound-attachments-implementation-2026-10-15.md) | 2026-10-15 |
-| [本地文件网页预览：实施与本机验证](feishu-local-file-preview-implementation-2026-10-15.md) | 2026-10-15 |
+| [本地文件网页预览：实施与本机验证](feishu-local-file-preview-implementation-2026-10-15.md) | 2026-10-15；2026-10-19 全目录、代码高亮与 HTML 阅读增量 |
 | [Controller 原生 Q2/Q3/Q9/Q10 opt-in 验证](native-controller-q2-q3-q9-q10-2026-10-13.md) | 2026-10-13 |
 | [Controller 原生 Q4–Q8 opt-in 验证](native-controller-q4-q8-2026-10-13.md) | 2026-10-13 |
 

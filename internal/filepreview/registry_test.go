@@ -260,7 +260,7 @@ func TestSelfPostingLoginPreservesFileRoute(t *testing.T) {
 	}
 }
 
-func TestConfigurationRejectsBroadRootsAndNonOrigins(t *testing.T) {
+func TestConfigurationRejectsNonOriginsAndInvalidSecrets(t *testing.T) {
 	f := newFixture(t)
 	for _, base := range []string{"http://user:pass@127.0.0.1:8427", "http://127.0.0.1:8427/prefix", "http://127.0.0.1:8427?", "http://127.0.0.1:8427#", "http://127.0.0.1:8427/#fragment", "file:///tmp", "http://127.0.0.1:0"} {
 		opts := f.opts
@@ -269,12 +269,6 @@ func TestConfigurationRejectsBroadRootsAndNonOrigins(t *testing.T) {
 			_ = service.Close()
 			t.Fatal("URL outside the origin-only contract was accepted")
 		}
-	}
-	opts := f.opts
-	opts.AllowedRoots = []string{"/"}
-	if service, err := New(opts); err == nil {
-		_ = service.Close()
-		t.Fatal("filesystem-wide allowed root was accepted")
 	}
 	for _, contents := range []string{"short", " " + testPassword, testPassword + " ", testPassword + "\n\n", testPassword + "\r", strings.Repeat("x", 257)} {
 		if err := os.WriteFile(f.opts.SecretFile, []byte(contents), 0600); err != nil {

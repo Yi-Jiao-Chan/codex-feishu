@@ -88,7 +88,7 @@ type CreationDirectoryPage struct {
 type CreationView struct {
 	State, Error, Host, Body, Directory, ProjectLabel, FollowMode, TargetChatID string
 	Token, ChatLink, ThreadID                                                   string
-	WorkspaceMode, BaseBranch                                                   string
+	WorkspaceMode, BaseBranch, WorktreeUnavailable                              string
 	Revision                                                                    int64
 	Images, Files                                                               int
 	TopicsEnabled                                                               bool
@@ -110,10 +110,13 @@ func creationWorkspace(v CreationView) []element {
 	}
 	useLocal := creationButton(v, local, "creation_local", nil, true)
 	useWorktree := creationButton(v, isolated, "creation_worktree", nil, true)
-	if v.Directory == "" {
+	if v.Directory == "" || v.WorktreeUnavailable != "" {
 		useWorktree["disabled"] = true
 	}
 	els := []element{creationText("工作方式", "notation"), creationRow(useLocal, useWorktree)}
+	if v.WorktreeUnavailable != "" {
+		els = append(els, creationText(creationLiteral(v.WorktreeUnavailable), "notation"))
+	}
 	if v.WorkspaceMode == "worktree" {
 		options := make([]element, 0, len(v.Branches))
 		for _, branch := range v.Branches {
