@@ -623,6 +623,10 @@ func (s *Store) RecoverExpiredAttachmentDownloads(ctx context.Context, host, app
 
 func (s *Store) HasCollectingAttachments(ctx context.Context, host, app string) (bool, error) {
 	var count int
-	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM attachment_batches b JOIN m0_receipts r ON r.id=b.receipt_id WHERE b.host_id=? AND b.app_id=? AND b.state='sealed' AND r.state='collecting'`, host, app).Scan(&count)
+	// A confirmed creation can still be waiting for its binding or an explicit
+	// local download retry. Keep the worker available when intake is disabled.
+	err := s.DB.QueryRowContext(ctx, `SELECT
+ (SELECT COUNT(*) FROM attachment_batches b JOIN m0_receipts r ON r.id=b.receipt_id WHERE b.host_id=? AND b.app_id=? AND b.state='sealed' AND r.state='collecting')+
+ (SELECT COUNT(*) FROM creation_drafts d WHERE d.host_id=? AND d.app_id=? AND d.state='creating' AND d.attachments_json<>'[]')`, host, app, host, app).Scan(&count)
 	return count != 0, err
 }

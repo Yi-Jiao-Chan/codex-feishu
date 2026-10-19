@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -119,6 +120,18 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 	if r.Config.Attachments.Enabled {
 		content, err = feishu.ParseInbound(msg, r.BotID)
 		text = strings.TrimSpace(content.Text)
+	} else if ptr(msg.MessageType) == "post" {
+		// Text-only parsing must not discard sibling file cards when the
+		// resource feature is disabled, including at the /new entrance.
+		var post struct {
+			Files json.RawMessage `json:"files"`
+		}
+		if json.Unmarshal([]byte(ptr(msg.Content)), &post) == nil && len(post.Files) > 0 {
+			var files []json.RawMessage
+			if json.Unmarshal(post.Files, &files) != nil || files == nil || len(files) > 0 {
+				err = feishu.ErrUnsupportedInbound
+			}
+		}
 	}
 	unsupported := err != nil
 	if unsupported {
@@ -181,13 +194,17 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 	}
 	fields := strings.Fields(text)
 	explicitNew := len(fields) > 0 && fields[0] == "/new"
-	if !unsupported && !hasResources && r.Create != nil && (topics == 0 || explicitNew) {
-		handled, err := r.Create(ctx, creation.Inbound{MessageID: ptr(msg.MessageId), ChatID: ptr(msg.ChatId), ChatType: chatType, UserID: user, Text: text, RootID: ptr(msg.RootId), PlatformThreadID: ptr(msg.ThreadId), Bound: bound, Topic: b.FollowMode == "topic" || !bound && ptr(msg.ThreadId) != ""})
-		if errors.Is(err, creation.ErrTaskTooLong) {
+	if !unsupported && (!hasResources || ptr(msg.MessageType) == "post") && r.Create != nil && (topics == 0 || explicitNew) {
+		handled, err := r.Create(ctx, creation.Inbound{MessageID: ptr(msg.MessageId), ChatID: ptr(msg.ChatId), ChatType: chatType, UserID: user, Text: text, Parts: content.Parts, RootID: ptr(msg.RootId), PlatformThreadID: ptr(msg.ThreadId), Bound: bound, Topic: b.FollowMode == "topic" || !bound && ptr(msg.ThreadId) != ""})
+		if errors.Is(err, creation.ErrTaskTooLong) || errors.Is(err, store.ErrAttachmentLimit) {
 			if r.Command == nil {
 				return nil
 			}
 			feedback := InboundCommand{MessageID: ptr(msg.MessageId), ChatID: ptr(msg.ChatId), ChatType: chatType, UserID: user, Text: "/help", SourceRootID: sourceRoot, SourceThreadID: sourceThread, RouteFeedback: fmt.Sprintf("任务正文最多支持 %d 字，请精简后重新发送 /new。", creation.MaxTaskRunes)}
+			if errors.Is(err, store.ErrAttachmentLimit) {
+				limits := r.Config.AttachmentLimits()
+				feedback.RouteFeedback = fmt.Sprintf("本条未创建任务：每批最多 %d 个附件、其中最多 %d 张图片。请减少附件后重新发送 /new。", limits.MaxResources, limits.MaxImages)
+			}
 			if bound {
 				feedback.ThreadID = b.ThreadID
 			}
