@@ -90,6 +90,7 @@ type CreationView struct {
 	Token, ChatLink, ThreadID                                                   string
 	WorkspaceMode, BaseBranch, WorktreeUnavailable                              string
 	Revision                                                                    int64
+	Images, Files                                                               int
 	TopicsEnabled                                                               bool
 	Workgroups                                                                  []CreationOption
 	Branches                                                                    []CreationOption
@@ -342,9 +343,10 @@ func creation(v CreationView) string {
 	status := map[string]string{
 		"draft": "新建 Codex 任务", "creating": "正在创建 · 请勿重复提交",
 		"ready": "创建请求已保存 · 等待处理", "working": "正在创建 · 请勿重复提交",
-		"rejected": "创建未完成 · 已确认该步骤未被接受",
-		"unknown":  "正在核验创建结果 · 请勿重复创建",
-		"created":  "任务已创建 · 首条输入已接收", "confirmed": "任务已创建 · 首条输入已接收",
+		"collecting": "正在收取附件 · 收齐后提交首条任务",
+		"rejected":   "创建未完成 · 已确认该步骤未被接受",
+		"unknown":    "正在核验创建结果 · 请勿重复创建",
+		"created":    "任务已创建 · 首条输入已接收", "confirmed": "任务已创建 · 首条输入已接收",
 		"canceled": "创建已取消", "expired": "草稿已过期 · 请重新发起",
 		"repair": "任务位置不可用 · 需要修复",
 	}[state]
@@ -352,6 +354,9 @@ func creation(v CreationView) string {
 		status = "创建状态待核验"
 	}
 	els := []element{creationText("**"+status+"**", "heading")}
+	if v.Images+v.Files > 0 {
+		els = append(els, creationText(fmt.Sprintf("已附带 %d 张图片、%d 个文件", v.Images, v.Files), "notation"))
+	}
 	if v.Error != "" {
 		els = append(els, creationText(creationLiteral(v.Error), "normal"))
 	}

@@ -271,6 +271,9 @@ func (c *Controller) SubmitInitial(ctx context.Context, receipt string) error {
 	if err != nil {
 		return err
 	}
+	if n.State == "collecting" || n.State == "failed" {
+		return nil
+	}
 	if n.State == "received" {
 		stage, err := c.Store.InitialCreationAddStage(ctx, c.HostID, c.AppID, c.ThreadID, receipt)
 		if err != nil {

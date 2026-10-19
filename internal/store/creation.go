@@ -84,6 +84,7 @@ type CreationDraft struct {
 	SourceRootID, SourceThreadID, Body, Directory, ProjectID, FollowMode, TargetChatID string
 	Token, State, View, BrowsePath, BrowseCursor, CardID, ErrorCode                    string
 	WorkspaceMode, BaseBranch                                                          string
+	Attachments                                                                        []CreationAttachment
 	Revision, ExpiresAtMS, CreatedAtMS, CardRevision                                   int64
 }
 
@@ -128,12 +129,19 @@ type CreationAction struct {
 	Revision, CreatedAtMS             int64
 }
 
-const creationDraftColumns = `draft_id,host_id,app_id,creator_id,source_message_id,source_chat_id,source_chat_type,source_root_id,source_thread_id,body,directory,project_id,follow_mode,target_chat_id,revision,token,expires_at_ms,created_at_ms,state,view,browse_path,browse_cursor,card_id,card_revision,error_code,workspace_mode,base_branch`
+const creationDraftColumns = `draft_id,host_id,app_id,creator_id,source_message_id,source_chat_id,source_chat_type,source_root_id,source_thread_id,body,directory,project_id,follow_mode,target_chat_id,revision,token,expires_at_ms,created_at_ms,state,view,browse_path,browse_cursor,card_id,card_revision,error_code,workspace_mode,base_branch,attachments_json`
 const creationIntentColumns = `intent_id,draft_id,host_id,app_id,creator_id,body,directory,project_id,follow_mode,target_chat_id,owner_id,members_json,name,state,chat_id,root_message_id,platform_thread_id,native_thread_id,receipt_id,created_at_ms,error_code,workspace_mode,base_branch,base_commit,git_root,git_common_dir,worktree_path`
 const creationAttemptColumns = `attempt_id,draft_id,step,params_json,state,remote_id,result_json,created_at_ms`
 
 func scanCreationDraft(row rowScanner) (d CreationDraft, err error) {
-	err = row.Scan(&d.ID, &d.HostID, &d.AppID, &d.CreatorID, &d.SourceMessageID, &d.SourceChatID, &d.SourceChatType, &d.SourceRootID, &d.SourceThreadID, &d.Body, &d.Directory, &d.ProjectID, &d.FollowMode, &d.TargetChatID, &d.Revision, &d.Token, &d.ExpiresAtMS, &d.CreatedAtMS, &d.State, &d.View, &d.BrowsePath, &d.BrowseCursor, &d.CardID, &d.CardRevision, &d.ErrorCode, &d.WorkspaceMode, &d.BaseBranch)
+	var attachments string
+	err = row.Scan(&d.ID, &d.HostID, &d.AppID, &d.CreatorID, &d.SourceMessageID, &d.SourceChatID, &d.SourceChatType, &d.SourceRootID, &d.SourceThreadID, &d.Body, &d.Directory, &d.ProjectID, &d.FollowMode, &d.TargetChatID, &d.Revision, &d.Token, &d.ExpiresAtMS, &d.CreatedAtMS, &d.State, &d.View, &d.BrowsePath, &d.BrowseCursor, &d.CardID, &d.CardRevision, &d.ErrorCode, &d.WorkspaceMode, &d.BaseBranch, &attachments)
+	if err == nil {
+		err = json.Unmarshal([]byte(attachments), &d.Attachments)
+		if len(d.Attachments) == 0 {
+			d.Attachments = nil
+		}
+	}
 	return
 }
 
@@ -171,8 +179,12 @@ func (s *Store) ReceiveCreationDraft(ctx context.Context, d CreationDraft) (Crea
 	if d.WorkspaceMode == "" {
 		d.WorkspaceMode = "local"
 	}
+	attachments, err := creationAttachmentsJSON(d.Attachments)
+	if err != nil {
+		return d, false, err
+	}
 	d.ID, d.Token = ID(), ID()
-	r, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO creation_drafts(draft_id,host_id,app_id,creator_id,source_message_id,source_chat_id,source_chat_type,source_root_id,source_thread_id,body,directory,project_id,follow_mode,target_chat_id,token,expires_at_ms,created_at_ms,workspace_mode,base_branch) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, d.ID, d.HostID, d.AppID, d.CreatorID, d.SourceMessageID, d.SourceChatID, d.SourceChatType, d.SourceRootID, d.SourceThreadID, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.Token, d.ExpiresAtMS, d.CreatedAtMS, d.WorkspaceMode, d.BaseBranch)
+	r, err := s.DB.ExecContext(ctx, `INSERT OR IGNORE INTO creation_drafts(draft_id,host_id,app_id,creator_id,source_message_id,source_chat_id,source_chat_type,source_root_id,source_thread_id,body,directory,project_id,follow_mode,target_chat_id,token,expires_at_ms,created_at_ms,workspace_mode,base_branch,attachments_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, d.ID, d.HostID, d.AppID, d.CreatorID, d.SourceMessageID, d.SourceChatID, d.SourceChatType, d.SourceRootID, d.SourceThreadID, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.Token, d.ExpiresAtMS, d.CreatedAtMS, d.WorkspaceMode, d.BaseBranch, attachments)
 	if err != nil {
 		return d, false, err
 	}
@@ -467,6 +479,11 @@ func (s *Store) RetryCreation(ctx context.Context, d CreationDraft) error {
 	if err = tx.QueryRowContext(ctx, `SELECT receipt_id,error_code FROM creation_workflows WHERE draft_id=?`, d.ID).Scan(&receipt, &code); err != nil {
 		return err
 	}
+	if code == "input-attachments" && receipt != "" {
+		if err = retryCreationAttachmentsTx(ctx, tx, receipt); err != nil {
+			return err
+		}
+	}
 	if code == "input-rejected" && receipt != "" {
 		var unknown, rejected int
 		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM submission_attempts WHERE receipt_id=? AND state IN ('unknown','dispatching')`, receipt).Scan(&unknown); err != nil {
@@ -516,11 +533,29 @@ func (s *Store) SetCreationInputState(ctx context.Context, draft, state string) 
 	if state != "unknown" && state != "rejected" {
 		return ErrConflict
 	}
-	_, err := s.DB.ExecContext(ctx, `UPDATE creation_workflows SET state=?,error_code=? WHERE draft_id=?`, state, "input-"+state, draft)
-	if err == nil {
-		err = s.SetCreationError(ctx, draft, "input-"+state)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	return err
+	defer tx.Rollback()
+	code := "input-" + state
+	if state == "rejected" {
+		var localFailure int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM creation_workflows i JOIN attachment_batches b ON b.receipt_id=i.receipt_id
+ WHERE i.draft_id=? AND b.state='failed' AND NOT EXISTS(SELECT 1 FROM submission_attempts a WHERE a.receipt_id=i.receipt_id)`, draft).Scan(&localFailure); err != nil {
+			return err
+		}
+		if localFailure == 1 {
+			code = "input-attachments"
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET state=?,error_code=? WHERE draft_id=?`, state, code, draft); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE creation_drafts SET error_code=?,revision=revision+1 WHERE draft_id=? AND error_code<>?`, code, draft, code); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SetCreationError(ctx context.Context, draft, code string) error {
@@ -609,8 +644,16 @@ func (s *Store) MaterializeCreation(ctx context.Context, draft string) (Binding,
 		return b, Receipt{}, ErrConflict
 	}
 	r := Receipt{ID: ID(), AppID: i.AppID, MessageID: d.SourceMessageID, ReplyMessageID: i.RootMessageID, ThreadID: i.NativeThreadID, ChatID: chat, Body: i.Body, ActionToken: ID(), State: "received"}
+	if len(d.Attachments) > 0 {
+		r.State = "collecting"
+	}
 	r.ClientID = "cfb-" + r.ID
-	if _, err = tx.ExecContext(ctx, `INSERT INTO m0_receipts(id,app_id,message_id,reply_message_id,thread_id,chat_id,body,client_id,state,action_token) VALUES(?,?,?,?,?,?,?,?,'received',?) ON CONFLICT(app_id,message_id) DO NOTHING`, r.ID, r.AppID, r.MessageID, r.ReplyMessageID, r.ThreadID, r.ChatID, r.Body, r.ClientID, r.ActionToken); err != nil {
+	insert, err := tx.ExecContext(ctx, `INSERT INTO m0_receipts(id,app_id,message_id,reply_message_id,thread_id,chat_id,body,client_id,state,action_token) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(app_id,message_id) DO NOTHING`, r.ID, r.AppID, r.MessageID, r.ReplyMessageID, r.ThreadID, r.ChatID, r.Body, r.ClientID, r.State, r.ActionToken)
+	if err != nil {
+		return b, r, err
+	}
+	fresh, err := insert.RowsAffected()
+	if err != nil {
 		return b, r, err
 	}
 	if err = tx.QueryRowContext(ctx, `SELECT id,client_id,action_token,state,thread_id,chat_id,reply_message_id FROM m0_receipts WHERE app_id=? AND message_id=?`, i.AppID, d.SourceMessageID).Scan(&r.ID, &r.ClientID, &r.ActionToken, &r.State, &r.ThreadID, &r.ChatID, &r.ReplyMessageID); err != nil {
@@ -621,6 +664,11 @@ func (s *Store) MaterializeCreation(ctx context.Context, draft string) (Binding,
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET receipt_id=? WHERE intent_id=? AND (receipt_id='' OR receipt_id=?)`, r.ID, i.ID, r.ID); err != nil {
 		return b, r, err
+	}
+	if fresh == 1 && len(d.Attachments) > 0 {
+		if err = materializeCreationAttachmentsTx(ctx, tx, d, i, r); err != nil {
+			return b, r, err
+		}
 	}
 	return b, r, tx.Commit()
 }

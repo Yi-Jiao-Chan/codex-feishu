@@ -42,6 +42,7 @@ type Gateway interface {
 
 type Inbound struct {
 	MessageID, ChatID, ChatType, UserID, Text, RootID, PlatformThreadID string
+	Parts                                                               []feishu.InboundPart
 	Bound                                                               bool
 	Topic                                                               bool
 }
@@ -49,6 +50,7 @@ type Inbound struct {
 const MaxTaskRunes = 4000
 
 var ErrTaskTooLong = errors.New("creation task exceeds supported text length")
+var ErrAttachmentsDisabled = errors.New("creation attachments are disabled")
 
 type actionPayload struct {
 	Form  map[string]any `json:"form"`
@@ -126,6 +128,18 @@ func (m *Manager) Receive(ctx context.Context, in Inbound) (bool, error) {
 	if utf8.RuneCountInString(text) > MaxTaskRunes {
 		return true, ErrTaskTooLong
 	}
+	var resources []store.CreationAttachment
+	for _, part := range in.Parts {
+		if part.Type == "image" || part.Type == "file" {
+			resources = append(resources, store.CreationAttachment{Kind: part.Type, ResourceKey: part.ResourceKey, Name: part.Name})
+		}
+	}
+	if err := m.validateAttachments(resources); err != nil {
+		return true, err
+	}
+	if text == "" && len(resources) > 0 {
+		text = "请查看附件。"
+	}
 	mode := m.Config.Creation.DefaultFollowMode
 	if mode == "" {
 		mode = "group"
@@ -135,6 +149,7 @@ func (m *Manager) Receive(ctx context.Context, in Inbound) (bool, error) {
 		target = in.ChatID
 	}
 	d := store.CreationDraft{HostID: m.Config.Host.ID, AppID: m.Config.Feishu.AppID, CreatorID: in.UserID, SourceMessageID: in.MessageID, SourceChatID: in.ChatID, SourceChatType: in.ChatType, Body: text, FollowMode: mode, TargetChatID: target, CreatedAtMS: m.now().UnixMilli(), ExpiresAtMS: m.now().Add(m.Config.CreationTTL()).UnixMilli()}
+	d.Attachments = resources
 	if in.Topic {
 		d.SourceRootID, d.SourceThreadID = in.RootID, in.PlatformThreadID
 	}
@@ -153,6 +168,26 @@ func (m *Manager) Receive(ctx context.Context, in Inbound) (bool, error) {
 		m.signalUI()
 	}
 	return true, err
+}
+
+func (m *Manager) validateAttachments(resources []store.CreationAttachment) error {
+	if len(resources) == 0 {
+		return nil
+	}
+	if !m.Config.Attachments.Enabled {
+		return ErrAttachmentsDisabled
+	}
+	images := 0
+	for _, part := range resources {
+		if part.Kind == "image" {
+			images++
+		}
+	}
+	limits := m.Config.AttachmentLimits()
+	if len(resources) > limits.MaxResources || images > limits.MaxImages {
+		return store.ErrAttachmentLimit
+	}
+	return nil
 }
 
 func (m *Manager) Action(ctx context.Context, user, chat, message, token string, revision int64, kind string, value, form map[string]any) error {
@@ -346,6 +381,12 @@ func (m *Manager) tickUI(ctx context.Context) error {
 }
 
 func actionError(err error) string {
+	if errors.Is(err, ErrAttachmentsDisabled) {
+		return "attachments-disabled"
+	}
+	if errors.Is(err, store.ErrAttachmentLimit) {
+		return "attachments-limit"
+	}
 	if errors.Is(err, ErrWorktreeScope) {
 		return "worktree-scope"
 	}
@@ -586,6 +627,9 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 		}
 		resetDirectoryView(&d, choice)
 	case "creation_submit":
+		if err := m.validateAttachments(d.Attachments); err != nil {
+			return err
+		}
 		if n == nil {
 			return errors.New("creation requires native connection")
 		}
@@ -776,6 +820,9 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 	b, r, err := m.Store.MaterializeCreation(ctx, d.ID)
 	if err != nil {
 		return err
+	}
+	if r.State == "collecting" {
+		return m.Store.SetCreationError(ctx, d.ID, "input-collecting")
 	}
 	if m.controllers == nil || m.controllerNative != n {
 		m.controllers = map[string]*submissions.Controller{}
@@ -1140,6 +1187,13 @@ func (m *Manager) entryCard(ctx context.Context, n Native, d store.CreationDraft
 		return nil
 	}
 	v := cards.CreationView{State: d.State, Error: creationErrorText(d.ErrorCode), Host: d.HostID, Body: d.Body, Directory: d.Directory, ProjectLabel: "独立目录", FollowMode: d.FollowMode, TargetChatID: d.TargetChatID, Token: d.Token, Revision: d.Revision, TopicsEnabled: m.Config.Creation.TopicsEnabled, WorkspaceMode: d.WorkspaceMode, BaseBranch: d.BaseBranch}
+	for _, part := range d.Attachments {
+		if part.Kind == "image" {
+			v.Images++
+		} else {
+			v.Files++
+		}
+	}
 	if d.State == "draft" && d.View == "search" {
 		read, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
@@ -1203,6 +1257,9 @@ func (m *Manager) entryCard(ctx context.Context, n Native, d store.CreationDraft
 			return err
 		}
 		v.State = i.State
+		if d.ErrorCode == "input-collecting" {
+			v.State = "collecting"
+		}
 		v.ThreadID = i.NativeThreadID
 		v.Directory = i.ExecutionDirectory()
 		if d.State == "created" {
@@ -1258,8 +1315,14 @@ func creationErrorText(code string) string {
 		return "独立工作树目录不可用，请检查磁盘和目录权限后继续。"
 	case "worktree-unknown":
 		return "正在核验工作树创建结果，请勿重复创建。"
-	case "":
+	case "", "input-collecting":
 		return ""
+	case "attachments-disabled":
+		return "附件接收已关闭，请重新启用后创建；任务和附件仍保留在草稿中。"
+	case "attachments-limit":
+		return "附件数量超过当前限额，请调整限额或减少附件后重新发起 /new。"
+	case "input-attachments":
+		return "首条任务的附件未收齐，尚未提交 Codex。请检查附件和存储后点击继续创建；会沿用原会话。"
 	case "task-length":
 		return fmt.Sprintf("任务正文最多支持 %d 字，请精简后重新发起 /new。", MaxTaskRunes)
 	case "directory", "directory-scope":
