@@ -36,9 +36,10 @@ quiet_hours = ""
 card_update_min_interval_ms = 800
 
 [interactions]
-# 完成对应类型的真实双端验收后，才显式开启；不修改 Codex 的权限策略。
-enabled = false
-enabled_types = []
+# 同步与异步问答默认开启；设为 false 可关闭全部飞书交互。
+enabled = true
+enabled_types = ["question", "async_question"]
+# 显式类型清单覆盖默认值；审批须按已验收类型另行加入，不修改 Codex 的权限策略。
 # 可选类型：command、file、network、permissions、question、async_question。
 
 [attachments]

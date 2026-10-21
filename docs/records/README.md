@@ -8,6 +8,7 @@
 
 | 文档 | 日期 / 版本 |
 | --- | --- |
+| [异步问答联调与默认配置](feishu-async-question-defaults-2026-10-21.md) | 2026-10-21 |
 | [Codex 0.162.1 候选部署兼容性](codex-0.162.1-compatibility-2026-10-13.md) | 2026-10-13 |
 | [置顶群名、近期发现窗口与空闲降频](pinned-group-names-and-windowed-discovery-2026-10-16.md) | 2026-10-16 |
 | [飞书创建 Codex 会话：实施与验收记录](feishu-create-codex-session-implementation-2026-10-15.md) | 2026-10-15；2026-10-19 目录预检增量 |

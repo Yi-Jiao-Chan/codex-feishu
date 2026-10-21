@@ -199,7 +199,7 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 		plan.ServiceMode = "systemd-user"
 	}
 	oldBytes, err := regularFile(paths.ConfigFile, false)
-	var c config.Config
+	c := config.Default()
 	if err == nil {
 		c, err = config.Load(paths.ConfigFile)
 		if err != nil {
