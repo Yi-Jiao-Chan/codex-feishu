@@ -37,29 +37,38 @@ func QueueInputView(v QueueView) string {
 		label = "已收到 · 尚未提交，可取消本地待提交消息"
 	}
 	els := []element{{"tag": "markdown", "content": label, "text_size": "notation"}}
+	els = append(els, queueControls(v)...)
+	return render(els)
+}
+
+// queueControls renders the existing native queue actions for a verified
+// queue projection. Callers supply the authoritative state and credentials;
+// this helper only exposes actions that the projection proves are safe.
+func queueControls(v QueueView) []element {
+	if v.Token == "" || v.Revision <= 0 {
+		return nil
+	}
 	button := func(label, action string) element {
 		b := Button(label, action, v.Token)
 		b["behaviors"] = []element{{"type": "callback", "value": element{"action": action, "token": v.Token, "queue_id": v.QueueID, "revision": v.Revision}}}
 		return b
 	}
 	var buttons []element
-	if v.Token != "" && v.Revision > 0 {
-		if v.State == "queued" && v.QueueID != "" {
-			if v.Active && !v.Stopped {
-				buttons = append(buttons, button("追加引导", "steer"))
-			}
-			buttons = append(buttons, button("移除", "remove"))
+	if v.State == "queued" && v.QueueID != "" {
+		if v.Active && !v.Stopped {
+			buttons = append(buttons, button("追加引导", "steer"))
 		}
-		if v.State == "received" && v.LocalPending && v.QueueID == "" {
-			buttons = append(buttons, button("取消待提交", "cancel_pending"))
-		}
+		buttons = append(buttons, button("移除", "remove"))
 	}
-	if len(buttons) > 0 {
-		columns := make([]element, 0, len(buttons))
-		for _, b := range buttons {
-			columns = append(columns, element{"tag": "column", "width": "auto", "elements": []element{b}})
-		}
-		els = append(els, element{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "8px", "columns": columns})
+	if v.State == "received" && v.LocalPending && v.QueueID == "" {
+		buttons = append(buttons, button("取消待提交", "cancel_pending"))
 	}
-	return render(els)
+	if len(buttons) == 0 {
+		return nil
+	}
+	columns := make([]element, 0, len(buttons))
+	for _, b := range buttons {
+		columns = append(columns, element{"tag": "column", "width": "auto", "elements": []element{b}})
+	}
+	return []element{{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "8px", "columns": columns}}
 }

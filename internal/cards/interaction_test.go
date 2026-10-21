@@ -133,6 +133,79 @@ func TestInteractionControlsRequirePendingAndAllCredentials(t *testing.T) {
 	}
 }
 
+func TestInteractionAsyncQueuedReusesQueueControls(t *testing.T) {
+	card := Interaction(InteractionView{
+		Kind:   "async_question",
+		State:  "queued",
+		Reason: "回答已保存",
+		Queue:  &QueueView{State: "queued", Token: "queue-token", QueueID: "native-q", Revision: 17, QueueOrdinal: 3, Active: true},
+	})
+	if !strings.Contains(card, "回答已排队") || !strings.Contains(card, "第 3 条") {
+		t.Fatalf("queued async status lost queue ordinal: %s", card)
+	}
+	doc := decodeInteraction(t, card)
+	callbacks := interactionQueueCallbacks(t, doc)
+	if len(callbacks) != 2 {
+		t.Fatalf("queued async controls = %#v", callbacks)
+	}
+	seen := map[string]bool{}
+	for _, callback := range callbacks {
+		action, _ := callback["action"].(string)
+		seen[action] = true
+		if callback["token"] != "queue-token" || callback["queue_id"] != "native-q" || callback["revision"] != float64(17) {
+			t.Fatalf("queue callback identity = %#v", callback)
+		}
+	}
+	if !seen["steer"] || !seen["remove"] {
+		t.Fatalf("queue callbacks = %#v", seen)
+	}
+}
+
+func TestInteractionAsyncQueueControlsRequireLiveCredentials(t *testing.T) {
+	card := Interaction(InteractionView{
+		Kind:  "async_question",
+		State: "queued",
+		Queue: &QueueView{State: "queued", QueueID: "native-q", Revision: 17, Active: false},
+	})
+	if strings.Contains(card, `"tag":"button"`) || strings.Contains(card, `"tag":"form"`) {
+		t.Fatalf("offline/inactive async queue gained controls: %s", card)
+	}
+}
+
+func TestInteractionAsyncQueueControlsDisappearForTerminalOrUnknownQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name, state string
+		queue       *QueueView
+	}{
+		{name: "answered", state: "resolved"},
+		{name: "removed", state: "removed", queue: &QueueView{State: "removed", Token: "queue-token", QueueID: "native-q", Revision: 17}},
+		{name: "unknown", state: "unknown", queue: &QueueView{State: "unknown", Token: "queue-token", QueueID: "native-q", Revision: 17}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			card := Interaction(InteractionView{Kind: "async_question", State: tc.state, Queue: tc.queue})
+			if strings.Contains(card, `"tag":"button"`) || strings.Contains(card, `"tag":"form"`) {
+				t.Fatalf("%s async queue retained stale controls: %s", tc.name, card)
+			}
+		})
+	}
+}
+
+func TestInteractionAsyncQueueControlsAreReadOnlyWhenLimited(t *testing.T) {
+	card := Interaction(InteractionView{
+		Kind:         "async_question",
+		State:        "queued",
+		Reason:       strings.Repeat("超长回答背景。", 1000),
+		MaxCardBytes: 2048,
+		Queue:        &QueueView{State: "queued", Token: "queue-token", QueueID: "native-q", Revision: 17, Active: true},
+	})
+	if strings.Contains(card, `"tag":"button"`) || strings.Contains(card, `"tag":"form"`) {
+		t.Fatalf("limited async queue retained actionable controls: %s", card)
+	}
+	if !strings.Contains(card, "内容超出卡片展示范围") {
+		t.Fatal("limited async queue omitted read-only warning")
+	}
+}
+
 func TestInteractionQuestionReceiptUsesRecordedAnswersAndCollapsedDetails(t *testing.T) {
 	card := Interaction(InteractionView{
 		Kind: "question", State: "resolved", AnswerStatus: "recorded", Reason: "保留解释性原因",
@@ -882,5 +955,32 @@ func interactionButtonValues(t *testing.T, doc map[string]any) []map[string]any 
 		}
 	}
 	walk(doc)
+	return values
+}
+
+func interactionQueueCallbacks(t *testing.T, doc map[string]any) []map[string]any {
+	t.Helper()
+	var values []map[string]any
+	walkInteractionJSON(doc, func(element map[string]any) {
+		if element["tag"] != "button" {
+			return
+		}
+		behaviors, ok := element["behaviors"].([]any)
+		if !ok || len(behaviors) == 0 {
+			return
+		}
+		behavior, ok := behaviors[0].(map[string]any)
+		if !ok {
+			return
+		}
+		callback, ok := behavior["value"].(map[string]any)
+		if !ok {
+			return
+		}
+		action, _ := callback["action"].(string)
+		if action == "steer" || action == "remove" || action == "cancel_pending" {
+			values = append(values, callback)
+		}
+	})
 	return values
 }
