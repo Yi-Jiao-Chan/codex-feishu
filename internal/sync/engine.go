@@ -189,6 +189,12 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 				asyncOnly[t.ID] = true
 				continue
 			}
+			if item.Type == "agentMessage" {
+				// Every rendering path, including preview-disabled snapshots and
+				// legacy adoption, needs a readable projection of App-only embeds.
+				// Validate duplicate native items above before changing this copy.
+				item.Text, _ = codexclient.RewriteVisualizations(item.Text, nil)
+			}
 			copyTurns[i].Items = append(copyTurns[i].Items, item)
 		}
 	}
