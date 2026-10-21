@@ -1,9 +1,87 @@
 package config
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+func writeLoadFixture(t *testing.T, interactions string) string {
+	t.Helper()
+	root := t.TempDir()
+	path := filepath.Join(root, "config.toml")
+	body := fmt.Sprintf(`schema_version = 1
+
+[host]
+id = "host-load-test"
+
+[codex]
+cli_path = "auto"
+endpoint = "auto"
+
+[feishu]
+app_id = "cli_load_test"
+app_secret_file = %q
+
+[access]
+owner_open_id = "ou_load_owner"
+operator_open_ids = ["ou_load_owner"]
+
+[discovery]
+first_run = "baseline"
+allowed_roots = [%q]
+
+[notifications]
+timezone = "Asia/Shanghai"
+
+[storage]
+database_file = %q
+
+%s
+`, filepath.Join(root, "secret"), root, filepath.Join(root, "bridge.db"), interactions)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoadUsesInteractionDefaultsAndPreservesExplicitValues(t *testing.T) {
+	defaultTypes := []string{"question", "async_question"}
+	for _, test := range []struct {
+		name         string
+		interactions string
+		wantEnabled  bool
+		wantTypes    []string
+		wantErr      bool
+	}{
+		{name: "omitted", wantEnabled: true, wantTypes: defaultTypes},
+		{name: "partial-enabled", interactions: "[interactions]\nenabled = true", wantEnabled: true, wantTypes: defaultTypes},
+		{name: "explicit-off", interactions: "[interactions]\nenabled = false", wantEnabled: false, wantTypes: defaultTypes},
+		{name: "explicit-off-with-list", interactions: "[interactions]\nenabled = false\nenabled_types = [\"command\"]", wantEnabled: false, wantTypes: []string{"command"}},
+		{name: "explicit-off-with-empty-list", interactions: "[interactions]\nenabled = false\nenabled_types = []", wantEnabled: false, wantTypes: []string{}},
+		{name: "question-only", interactions: "[interactions]\nenabled_types = [\"question\"]", wantEnabled: true, wantTypes: []string{"question"}},
+		{name: "command-and-question", interactions: "[interactions]\nenabled_types = [\"command\", \"question\"]", wantEnabled: true, wantTypes: []string{"command", "question"}},
+		{name: "empty-while-enabled", interactions: "[interactions]\nenabled = true\nenabled_types = []", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, err := Load(writeLoadFixture(t, test.interactions))
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("explicit empty enabled_types was accepted while interactions are enabled")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Interactions.Enabled != test.wantEnabled || !reflect.DeepEqual(c.Interactions.EnabledTypes, test.wantTypes) {
+				t.Fatalf("interactions = %#v, want enabled=%v types=%v", c.Interactions, test.wantEnabled, test.wantTypes)
+			}
+		})
+	}
+}
 
 func validTestConfig(t *testing.T) Config {
 	t.Helper()
@@ -56,10 +134,13 @@ func TestValidateRejectsUnsafeIdentityAndInvalidOperationalSettings(t *testing.T
 	}
 }
 
-func TestInteractionsRequireExplicitRequestTypesAndDefaultOff(t *testing.T) {
+func TestValidateDoesNotApplyInteractionDefaults(t *testing.T) {
 	c := validTestConfig(t)
-	if c.Interactions.Enabled {
-		t.Fatal("interaction controls enabled implicitly")
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if c.Interactions.Enabled || c.Interactions.EnabledTypes != nil {
+		t.Fatal("Validate applied interaction defaults")
 	}
 	c.Interactions.Enabled, c.Interactions.EnabledTypes = true, []string{"question"}
 	if err := c.Validate(); err != nil {

@@ -96,6 +96,8 @@ development 包的 `phase1_released=false` 和 pending 验收模板不能改成 
 
 默认 operator 与通知目标都是本人；通知只在最终结果、失败或需处理时 @；时区 Asia/Shanghai；每日 quiet 默认关闭，可采用用户选择。默认排队、一期自动专属群、二期关闭，这些已确定行为不要再当必答问题。
 
+新配置默认在飞书开放同步与异步问答：`interactions.enabled=true`、`enabled_types=["question", "async_question"]`。已有配置的显式关闭与类型清单在重跑 setup 时保留；需要扩展旧清单时按用户要求修改。审批类型另行开启，问答默认值不改变 Codex 的会话权限。实际联调范围见 [13 审批与问答](13-feishu-approvals-and-questions.md)。
+
 用户主动提出其他通知接收者时，收集该应用下的 open_id 与是否加入任务群，加入名单放 identity.group_member_open_ids；不能仅靠姓名猜 ID，也不为配对顺手给其他人发消息。第二期已经发布且用户明确启用时，才补问工作群 chat_id，默认创建仍为专属群。
 
 长期 secret **不进入聊天或 argv**。首选用户已有的受限文件；如需要录入，用配置工具安全 TTY 提示。没有安全输入通道时，引导用户在目标机器保存文件并只回复绝对路径。Agent 仅核验可读、所有者、0600，不显示内容。

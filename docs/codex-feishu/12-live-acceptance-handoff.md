@@ -41,6 +41,10 @@ rules/discovery/app/store/sync 五个包已集中完成 `go test -race`，903 �
 
 继续工作时实查发现同一 unit 为 inactive/disabled，原因未确定，不能称作已证实的服务崩溃或网络故障。沿用准确二进制/config 的候选 install/start 已恢复 enabled/running；doctor `--require-running`、status 均退出 0，配置字节、四个绑定、目录和提醒规则与启动前一致。这也验证了既有 unit 自动启动状态的修复，不代表已观察系统重启或最后一次 SSH 注销。
 
+## 2026-10-21 异步问答增量
+
+用户已在真实飞书卡提交一次异步单题选择，回答进入原会话：一次动作、一次已确认原生 add、输入 consumed、唯一历史关联与实际答案收据，原卡更新投递已确认。用户确认回传成功。异步填写与回传记为本场景 pass，App 原问题控件的完成显示仍 pending；其他 P1 状态和发布标志保持原值。运行构建、私有证据范围及随后默认配置变更见[异步问答记录](../records/feishu-async-question-defaults-2026-10-21.md)。
+
 ## 开始前由 Agent 完成
 
 1. 重新核验候选包、共享 daemon 的实际版本、用户服务条件、已有桥与监听锁。依据指南生成候选配置计划，使用新的私有配置/schema 21 数据库和独立测试目录；不读取凭据正文到聊天，不迁移或复制旧 M0 数据库。
