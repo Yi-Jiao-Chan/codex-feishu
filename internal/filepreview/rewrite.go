@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 
+	"codex-feishu/internal/codexclient"
+
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
@@ -142,9 +144,9 @@ type sourceEdit struct {
 	value       string
 }
 
-// Rewrite returns a display copy of body with eligible inline file links replaced
-// by durable preview URLs. Invalid or inaccessible file links stay byte-for-byte
-// unchanged. Registry failures abort rather than returning an unpersisted URL.
+// Rewrite returns a display copy with eligible file links and App visualizations
+// replaced by durable preview URLs. Inaccessible ordinary links stay unchanged;
+// visualizations receive a readable fallback. Registry failures abort the copy.
 func (s *Service) Rewrite(ctx context.Context, body string) (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -154,15 +156,25 @@ func (s *Service) Rewrite(ctx context.Context, body string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return body, err
 	}
-	if !strings.Contains(body, "](") && !strings.Contains(body, "http://") {
+	if !strings.Contains(body, "](") && !strings.Contains(body, "http://") && !strings.Contains(body, "\ue200visualize") {
 		return body, nil
 	}
+	original := body
 	source := []byte(body)
+	visualizations := codexclient.ParseVisualizations(body)
 	document, links := parsedLinks(source)
 	var edits []sourceEdit
+	linked := make(map[string]bool)
 	for _, link := range links {
 		if err := ctx.Err(); err != nil {
 			return body, err
+		}
+		// Native embed payloads are structured data, even when a filename or
+		// malformed field contains Markdown. Only links that survive consuming
+		// the envelope may be rewritten or suppress a visualization entry.
+		at := sort.Search(len(visualizations), func(n int) bool { return visualizations[n].Stop > link.start })
+		if at < len(visualizations) && visualizations[at].Start < link.stop {
+			continue
 		}
 		// Images can contain link-like alt content; never alter their contents.
 		current := ast.Node(link.node)
@@ -176,6 +188,9 @@ func (s *Service) Rewrite(ctx context.Context, body string) (string, error) {
 		}
 		if !eligible || current != document {
 			continue
+		}
+		if destination, _, _ := strings.Cut(string(link.destination), "#"); strings.HasPrefix(destination, s.baseURL+"/f/") {
+			linked[destination] = true
 		}
 		path, line, ok := localDestination(link.destination)
 		if !ok {
@@ -196,6 +211,7 @@ func (s *Service) Rewrite(ctx context.Context, body string) (string, error) {
 			return body, err
 		}
 		target := s.baseURL + "/f/" + id
+		linked[target] = true
 		if line != "" {
 			target += "#L" + line
 			if !link.auto && !labelHasLine(string(link.node.Text(source)), line) {
@@ -212,20 +228,48 @@ func (s *Service) Rewrite(ctx context.Context, body string) (string, error) {
 		}
 		edits = append(edits, sourceEdit{start: link.start, stop: link.stop, value: target})
 	}
-	if len(edits) == 0 {
-		return body, nil
+	if len(edits) > 0 {
+		sort.Slice(edits, func(i, j int) bool { return edits[i].start < edits[j].start })
+		var result strings.Builder
+		result.Grow(len(body))
+		previous := 0
+		for _, edit := range edits {
+			result.WriteString(body[previous:edit.start])
+			result.WriteString(edit.value)
+			previous = edit.stop
+		}
+		result.WriteString(body[previous:])
+		body = result.String()
 	}
-	sort.Slice(edits, func(i, j int) bool { return edits[i].start < edits[j].start })
-	var result strings.Builder
-	result.Grow(len(body))
-	previous := 0
-	for _, edit := range edits {
-		result.WriteString(body[previous:edit.start])
-		result.WriteString(edit.value)
-		previous = edit.stop
+	result, err := codexclient.RewriteVisualizations(body, func(path string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		root, relative := s.rootForPath(path)
+		if root == nil {
+			return codexclient.VisualizationFallback, nil
+		}
+		if _, err := s.readFile(root, relative); err != nil {
+			if errors.Is(err, errNotPreviewable) {
+				return codexclient.VisualizationFallback, nil
+			}
+			return "", err
+		}
+		id, err := s.persistRecord(fileRecord{Version: 1, Root: root.path, Relative: relative})
+		if err != nil {
+			return "", err
+		}
+		target := s.baseURL + "/f/" + id
+		if linked[target] {
+			return "", nil
+		}
+		linked[target] = true
+		return "[查看可视化 · 静态预览](" + target + ")（交互版请回 Codex 查看）", nil
+	})
+	if err != nil {
+		return original, err
 	}
-	result.WriteString(body[previous:])
-	return result.String(), nil
+	return result, nil
 }
 
 func labelHasLine(label, line string) bool {
