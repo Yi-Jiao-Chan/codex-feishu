@@ -61,8 +61,17 @@ type Config struct {
 	} `toml:"storage"`
 }
 
-func Load(path string) (Config, error) {
+// Default returns optional behavior defaults. Identity and filesystem paths
+// remain unset and must be configured by the caller.
+func Default() Config {
 	var c Config
+	c.Interactions.Enabled = true
+	c.Interactions.EnabledTypes = []string{"question", "async_question"}
+	return c
+}
+
+func Load(path string) (Config, error) {
+	c := Default()
 	if !filepath.IsAbs(path) {
 		return c, errors.New("config path must be absolute")
 	}

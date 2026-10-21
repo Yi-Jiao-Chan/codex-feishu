@@ -83,7 +83,7 @@ token 由服务端映射到 binding、receipt/native queue ID、动作、可操�
 1. 桌面与手机首屏看得到正文、状态和引导按钮；长路径、长代码、长页脚不遮挡操作。
 2. 生成中 → 完成、排队 → 追加、unknown → 核验结果均更新同卡，不闪回旧状态。
 3. 非授权人、token 篡改、过期卡片和重复点击没有副作用。
-4. 默认审批显示回 App；扩展按 `interactions.enabled_types` 逐项开启。未验收、未启用、敏感或卡片展示不完整的请求没有按钮。合成预览 token 无效，不能替代真实验收，见[13 审批与问答](13-feishu-approvals-and-questions.md)。
+4. 同步与异步问答默认可在飞书填写；审批按 `interactions.enabled_types` 逐项开启。未启用、敏感或卡片展示不完整的请求没有按钮；未验收的审批类型保持回 App 提示。合成预览 token 无效，不能替代真实验收，见[13 审批与问答](13-feishu-approvals-and-questions.md)。
 5. 表单提交只产生一个有效草稿/创建意图；选择其他目录回到原草稿。
 
 起步样例：[队列卡](examples/queue-card.example.json)。按钮令牌是无效占位值。旧 M0 / P1 的桌面、手机与长代码已经历实际联调；正文优先的新布局与刷新期间折叠状态应单独验收，不能复用旧样式结论。
