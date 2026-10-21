@@ -56,10 +56,27 @@ details{margin-top:32px;border-top:1px solid #d8dee4;padding-top:20px}summary{cu
 var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>文件预览登录</title><style>` + pageStyle + `</style></head><body><main class="login"><h1>文件预览</h1><p>输入预览口令后打开已分享的文件。</p>{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}<form method="post" action=""><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}"><label for="password">预览口令</label><input type="password" id="password" name="password" autocomplete="current-password" maxlength="256" required autofocus><button type="submit">打开预览</button></form></main></body></html>`))
 
 var previewTemplate = template.Must(template.New("preview").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Name}} · 文件预览</title><style>` + pageStyle + `</style></head><body><main class="preview-shell {{if .IsHTML}}preview-html{{else if .IsMarkdown}}preview-markdown{{else}}preview-code{{end}}">
-<header class="preview-header"><div class="preview-title"><div class="preview-heading">{{if .IsMarkdown}}<span class="file-kind">Markdown 阅读</span>{{else if .IsHTML}}<span class="file-kind">HTML 静态预览</span>{{else if .Language}}<span class="file-kind">{{.Language}}</span>{{else}}<span class="file-kind">文本</span>{{end}}<h1 title="{{.Name}}">{{.Name}}</h1></div><p class="meta">当前文件内容 · 修改时间 {{.Modified}} · 每次打开读取最新内容{{if .IsHTML}}<span class="preview-note">{{if .HTMLDocument}}脚本、图片和外部资源不加载{{else}}无法生成 HTML 页面预览，请查看源码。{{end}}</span>{{end}}</p></div>{{if .IsMarkdown}}<label class="reading-width"><input id="reading-width" type="checkbox">舒适宽度</label>{{end}}</header>
+<header class="preview-header"><div class="preview-title"><div class="preview-heading">{{if .IsMarkdown}}<span class="file-kind">Markdown 阅读</span>{{else if .IsHTML}}<span class="file-kind">HTML 交互预览</span>{{else if .Language}}<span class="file-kind">{{.Language}}</span>{{else}}<span class="file-kind">文本</span>{{end}}<h1 title="{{.Name}}">{{.Name}}</h1></div><p class="meta">当前文件内容 · 修改时间 {{.Modified}} · 每次打开读取最新内容{{if .IsHTML}}<span class="preview-note">{{if .HTMLPath}}内嵌脚本可运行；图片和外部资源不加载{{else}}无法生成 HTML 页面预览，请查看源码。{{end}}</span>{{end}}</p></div>{{if .IsMarkdown}}<label class="reading-width"><input id="reading-width" type="checkbox">舒适宽度</label>{{end}}</header>
 {{if .IsMarkdown}}<div class="preview-content"><article class="markdown-body">{{.Markdown}}</article></div><details class="source-panel"><summary>查看 Markdown 源码 · 含行号</summary>{{.Source}}</details>
-{{else if .IsHTML}}<details class="source-panel"{{if not .HTMLDocument}} open{{end}}><summary>查看 HTML 源码 · 含行号</summary>{{.Source}}</details>{{if .HTMLDocument}}<div class="html-view"><iframe class="html-preview" title="{{.Name}} 页面预览" sandbox="" referrerpolicy="no-referrer" srcdoc="{{.HTMLDocument}}"></iframe></div>{{end}}
+{{else if .IsHTML}}<details class="source-panel"{{if not .HTMLPath}} open{{end}}><summary>查看 HTML 源码 · 含行号</summary>{{.Source}}</details>{{if .HTMLPath}}<div class="html-view"><iframe class="html-preview" title="{{.Name}} 页面预览" sandbox="allow-scripts" referrerpolicy="no-referrer" src="{{.HTMLPath}}"></iframe></div>{{end}}
 {{else}}<div class="preview-content">{{.Source}}</div>{{end}}</main></body></html>`))
+
+// The trusted wrapper keeps the report in a frame even if its endpoint is opened
+// directly. Its frame-src 'none' policy also restricts report self-navigation.
+// HTMLDocument stays a string so html/template escapes the srcdoc attribute.
+var htmlDocumentTemplate = template.Must(template.New("html-document").Parse(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Name}}</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100%;border:0}</style></head><body><iframe title="{{.Name}} 内容" sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="{{.HTMLDocument}}"></iframe></body></html>`))
+
+func renderHTMLDocument(file previewFile) ([]byte, error) {
+	document := interactiveHTMLDocument(file.content)
+	if document == "" {
+		return nil, errRender
+	}
+	var body bytes.Buffer
+	if htmlDocumentTemplate.Execute(&body, struct{ Name, HTMLDocument string }{file.name, document}) != nil {
+		return nil, errRender
+	}
+	return body.Bytes(), nil
+}
 
 var messageTemplate = template.Must(template.New("message").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Title}}</title><style>` + pageStyle + `</style></head><body><main><h1>{{.Title}}</h1><p>{{.Message}}</p></main></body></html>`))
 
@@ -95,11 +112,11 @@ func writePage(w http.ResponseWriter, r *http.Request, status int, title, messag
 	}
 }
 
-func renderPreview(file previewFile) ([]byte, error) {
+func renderPreview(file previewFile, htmlPath string) ([]byte, error) {
 	var rendered bytes.Buffer
 	ext := strings.ToLower(filepath.Ext(file.name))
 	isMarkdown := ext == ".md" || ext == ".markdown" || ext == ".mdown"
-	isHTML := ext == ".html" || ext == ".htm" || ext == ".xhtml"
+	isHTML := isHTMLFile(file.name)
 	if isMarkdown {
 		md := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithRendererOptions(
 			renderer.WithNodeRenderers(util.Prioritized(&codeHighlighter{remaining: highlightBytes}, 100)),
@@ -164,15 +181,13 @@ func renderPreview(file previewFile) ([]byte, error) {
 	}
 	data := struct {
 		Name, Modified, Language string
-		// Keep HTMLDocument a string: html/template must escape the srcdoc
-		// attribute. Its markup only belongs in the sandboxed child document.
-		HTMLDocument       string
-		IsMarkdown, IsHTML bool
-		Markdown, Source   template.HTML
+		HTMLPath                 string
+		IsMarkdown, IsHTML       bool
+		Markdown, Source         template.HTML
 	}{Name: file.name, Modified: file.modified.UTC().Format(time.RFC3339), Language: language, IsMarkdown: isMarkdown, IsHTML: isHTML,
 		Markdown: template.HTML(rendered.String()), Source: template.HTML(numberedCode(file.content, lexer))}
-	if isHTML {
-		data.HTMLDocument = staticHTMLDocument(file.content)
+	if isHTML && interactiveHTMLDocument(file.content) != "" {
+		data.HTMLPath = htmlPath
 	}
 	if previewTemplate.Execute(&body, data) != nil {
 		return nil, errRender

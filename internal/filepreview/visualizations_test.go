@@ -17,14 +17,15 @@ func visualizationMarkup(path string) string {
 	return "\ue200visualize\ue202" + string(payload) + "\ue201"
 }
 
-func TestVisualizationUsesDurableAuthenticatedStaticPreview(t *testing.T) {
+func TestVisualizationUsesDurableAuthenticatedInteractivePreview(t *testing.T) {
 	f := newFixture(t)
 	path := writeFixture(t, f.root, "图表 (草稿).html", "<h1>synthetic chart</h1><script>alert(1)</script>")
 	body := "结果：\n\n" + visualizationMarkup(path)
 	got, err := f.s.Rewrite(context.Background(), body)
 	if err != nil || strings.Contains(got, path) || strings.Contains(got, "\ue200") ||
-		!strings.Contains(got, "查看可视化 · 静态预览") || !strings.Contains(got, "交互版请回 Codex 查看") {
-		t.Fatalf("visualization was not presented as a static preview: %q, %v", got, err)
+		!strings.Contains(got, "[查看可视化](") || strings.Contains(got, "静态预览") ||
+		strings.Contains(got, "交互版请回 Codex 查看") {
+		t.Fatalf("visualization was not presented as an interactive preview: %q, %v", got, err)
 	}
 	target := strings.TrimRight(previewURLPattern.FindString(got), ")")
 	if target == "" || request(t, f.s, http.MethodGet, target, nil).Code != http.StatusUnauthorized {
@@ -32,7 +33,7 @@ func TestVisualizationUsesDurableAuthenticatedStaticPreview(t *testing.T) {
 	}
 	session := loggedIn(t, f.s)
 	if w := request(t, f.s, http.MethodGet, target, session); w.Code != http.StatusOK ||
-		!strings.Contains(w.Body.String(), "synthetic chart") || !strings.Contains(w.Body.String(), `sandbox=""`) {
+		!strings.Contains(w.Body.String(), "synthetic chart") || !strings.Contains(w.Body.String(), `sandbox="allow-scripts"`) {
 		t.Fatal("visualization did not use the existing isolated HTML preview")
 	}
 	if again, err := f.s.Rewrite(context.Background(), got); err != nil || again != got {

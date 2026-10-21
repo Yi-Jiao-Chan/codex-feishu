@@ -2,11 +2,14 @@ package filepreview
 
 import (
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
 	"golang.org/x/net/html"
 )
+
+var testHTMLPath = "/f/" + strings.Repeat("A", 43) + "/html"
 
 func htmlElements(root *html.Node, tag string) []*html.Node {
 	var found []*html.Node
@@ -61,30 +64,33 @@ func assertChildDNSPolicy(t *testing.T, document *html.Node) {
 	if policies != 1 {
 		t.Fatal("static HTML retained a user DNS policy")
 	}
+	bases := htmlElements(document, "base")
+	if len(bases) != 1 || first.NextSibling != bases[0] || htmlAttribute(bases[0], "href") != "about:srcdoc" || htmlAttribute(bases[0], "target") != "_self" {
+		t.Fatal("HTML report lost its trusted local base before user scripts")
+	}
 }
 
-func assertRenderedHTMLFrame(t *testing.T, page *renderedNode, name string) *html.Node {
+func assertRenderedHTMLFrame(t *testing.T, page *renderedNode, name, content string) *html.Node {
 	t.Helper()
 	frames := renderedTags(page, "iframe")
 	if len(frames) != 1 {
 		t.Fatalf("HTML preview has %d frames, want 1", len(frames))
 	}
 	frame := frames[0]
-	source, present := frame.attrs["srcdoc"]
-	if !present || source == "" {
-		t.Fatal("HTML preview has no child document")
-	}
-	if sandbox, present := frame.attrs["sandbox"]; !present || sandbox != "" {
-		t.Fatal("HTML preview does not have an empty sandbox")
+	if sandbox, present := frame.attrs["sandbox"]; !present || sandbox != "allow-scripts" {
+		t.Fatal("HTML preview does not have an isolated script sandbox")
 	}
 	if frame.attrs["title"] != name+" 页面预览" {
 		t.Fatal("HTML preview frame has no descriptive title")
 	}
-	if !strings.Contains(page.text.String(), "HTML 静态预览") {
-		t.Fatal("HTML preview has no static preview label")
+	if !strings.Contains(page.text.String(), "HTML 交互预览") {
+		t.Fatal("HTML preview has no interactive preview label")
 	}
-	if _, present := frame.attrs["src"]; present {
-		t.Fatal("HTML preview frame has a navigation source")
+	if frame.attrs["src"] != testHTMLPath {
+		t.Fatal("HTML preview does not load its independent document endpoint")
+	}
+	if _, present := frame.attrs["srcdoc"]; present {
+		t.Fatal("HTML preview still inherits the shell's script restriction")
 	}
 	for _, node := range renderedNodes(page, func(*renderedNode) bool { return true }) {
 		switch node.tag {
@@ -100,7 +106,19 @@ func assertRenderedHTMLFrame(t *testing.T, page *renderedNode, name string) *htm
 	if len(frame.children) != 0 {
 		t.Fatal("original HTML escaped into iframe fallback elements")
 	}
-	document, err := html.ParseWithOptions(strings.NewReader(source), html.ParseOptionEnableScripting(false))
+	body, err := renderHTMLDocument(previewFile{name: name, content: []byte(content)})
+	if err != nil {
+		t.Fatal("HTML child document could not be rendered", err)
+	}
+	wrapper := parseRenderedPage(t, body)
+	children := renderedTags(wrapper, "iframe")
+	if len(children) != 1 || children[0].attrs["sandbox"] != "allow-scripts" || children[0].attrs["srcdoc"] == "" || len(renderedTags(wrapper, "script")) != 0 {
+		t.Fatal("HTML child endpoint lost its trusted, sandboxed srcdoc wrapper")
+	}
+	if _, present := children[0].attrs["src"]; present {
+		t.Fatal("HTML wrapper loads a network document")
+	}
+	document, err := html.Parse(strings.NewReader(children[0].attrs["srcdoc"]))
 	if err != nil {
 		t.Fatal("static HTML child document could not be parsed", err)
 	}
@@ -134,7 +152,7 @@ func TestRenderPreviewHTMLDocumentAndSource(t *testing.T) {
 	for _, name := range []string{"report.html", "report.htm", "report.xhtml", "report.HTML", "report.HtM", "report.XhTmL"} {
 		t.Run(name, func(t *testing.T) {
 			page := renderedPage(t, name, content)
-			document := assertRenderedHTMLFrame(t, page, name)
+			document := assertRenderedHTMLFrame(t, page, name, content)
 			titles, headings := htmlElements(document, "title"), htmlElements(document, "h1")
 			if len(titles) != 1 || htmlNodeText(titles[0]) != "Fixture & demo" || len(headings) != 1 || htmlNodeText(headings[0]) != "Hello & goodbye" || htmlAttribute(headings[0], "title") != "'quoted'" {
 				t.Fatal("static HTML changed document text, entities or quoted attributes")
@@ -152,7 +170,7 @@ func TestRenderPreviewHTMLClosingTagsAndQuotesStayInSrcdoc(t *testing.T) {
 		`<p title="'quoted' &amp; text">&lt;literal&gt; & raw text</p>` + "\n"
 	name := `report"><img src=x onerror=alert(1)>.html`
 	page := renderedPage(t, name, content)
-	document := assertRenderedHTMLFrame(t, page, name)
+	document := assertRenderedHTMLFrame(t, page, name, content)
 	scripts, paragraphs := htmlElements(document, "script"), htmlElements(document, "p")
 	if len(scripts) != 1 || htmlNodeText(scripts[0]) != `window.fixture = "</iframe>";` || len(paragraphs) != 1 || htmlNodeText(paragraphs[0]) != "<literal> & raw text" || htmlAttribute(paragraphs[0], "title") != "'quoted' & text" {
 		t.Fatal("static HTML changed script text, entities or quoted attributes")
@@ -171,31 +189,40 @@ func TestRenderPreviewHTMLDirectoryLinksStayInChildDocument(t *testing.T) {
 <a id="explicit-blank" href="#chapter" target="_blank">Blank target</a>
 <map><area id="area" href="#chapter"></map>
 <svg><a id="svg" xlink:href="#chapter"><text>SVG</text></a></svg>
+<svg><a id="svg-mixed" href="https://outside.invalid/" xlink:href="#chapter"><text>Mixed SVG</text></a></svg>
+<svg><a id="svg-mixed-reverse" href="#chapter" xlink:href="https://outside.invalid/"><text>Mixed SVG reverse</text></a></svg>
 <a id="relative" href="other.html#chapter" target="_blank">Other file</a>
 <a id="remote" href="https://outside.invalid/#chapter" target="_blank">Remote</a>
 <a id="script" href="javascript:alert(1)">Script</a>
 <h2 id="chapter">Chapter</h2></body></html>`
 	page := renderedPage(t, "directory.html", content)
-	document := assertRenderedHTMLFrame(t, page, "directory.html")
+	document := assertRenderedHTMLFrame(t, page, "directory.html", content)
 	want := map[string][2]string{
-		"ordinary":       {"about:srcdoc#chapter", "_self"},
-		"unicode":        {"about:srcdoc#中文标题", "_self"},
-		"encoded":        {"about:srcdoc#%E4%B8%AD%E6%96%87", "_self"},
-		"top":            {"about:srcdoc#", "_self"},
-		"space":          {"about:srcdoc#chapter", "_self"},
-		"explicit-top":   {"about:srcdoc#chapter", "_self"},
-		"explicit-blank": {"about:srcdoc#chapter", "_self"},
-		"area":           {"about:srcdoc#chapter", "_self"},
-		"svg":            {"about:srcdoc#chapter", "_self"},
-		"relative":       {"other.html#chapter", "_blank"},
-		"remote":         {"https://outside.invalid/#chapter", "_blank"},
-		"script":         {"javascript:alert(1)", ""},
+		"ordinary":          {"#chapter", "_self"},
+		"unicode":           {"#中文标题", "_self"},
+		"encoded":           {"#%E4%B8%AD%E6%96%87", "_self"},
+		"top":               {"#", "_self"},
+		"space":             {"#chapter", "_self"},
+		"explicit-top":      {"#chapter", "_self"},
+		"explicit-blank":    {"#chapter", "_self"},
+		"area":              {"#chapter", "_self"},
+		"svg":               {"#chapter", "_self"},
+		"svg-mixed":         {"#chapter", "_self"},
+		"svg-mixed-reverse": {"#chapter", "_self"},
+		"relative":          {"", "_blank"},
+		"remote":            {"", "_blank"},
+		"script":            {"", ""},
 	}
 	for _, node := range append(htmlElements(document, "a"), htmlElements(document, "area")...) {
 		id := htmlAttribute(node, "id")
 		expected, ok := want[id]
 		if !ok || htmlAttribute(node, "href") != expected[0] || htmlAttribute(node, "target") != expected[1] {
 			t.Fatalf("directory link %q does not keep the expected document and target", id)
+		}
+		for _, attr := range node.Attr {
+			if attr.Key == "href" && attr.Val != expected[0] {
+				t.Fatalf("directory link %q retained an unexpected namespaced href", id)
+			}
 		}
 		delete(want, id)
 	}
@@ -207,7 +234,7 @@ func TestRenderPreviewHTMLDirectoryLinksStayInChildDocument(t *testing.T) {
 
 func TestRenderPreviewEmptyHTMLKeepsFrameAndSource(t *testing.T) {
 	page := renderedPage(t, "empty.html", "")
-	assertRenderedHTMLFrame(t, page, "empty.html")
+	assertRenderedHTMLFrame(t, page, "empty.html", "")
 	assertRenderedHTMLSource(t, page, "", false)
 }
 
@@ -232,7 +259,7 @@ func TestRenderPreviewHTMLRemovesHintsAndNestedContexts(t *testing.T) {
 				}
 			}
 			page := renderedPage(t, "report.html", tc.content)
-			document := assertRenderedHTMLFrame(t, page, "report.html")
+			document := assertRenderedHTMLFrame(t, page, "report.html", tc.content)
 			for _, tag := range []string{"link", "iframe", "frame"} {
 				if len(htmlElements(document, tag)) != 0 {
 					t.Fatalf("static HTML retained a %s element", tag)
@@ -246,26 +273,20 @@ func TestRenderPreviewHTMLRemovesHintsAndNestedContexts(t *testing.T) {
 	}
 }
 
-func TestRenderPreviewHTMLNoscriptKeepsFallbackAndLiteralMarkup(t *testing.T) {
-	for _, tc := range []struct{ name, content, expectedText string }{
-		{"literal-markup", `<body><noscript>&lt;link rel="preconnect" href="https://hint.invalid/"&gt;&lt;iframe srcdoc="child"&gt;&lt;/iframe&gt;</noscript></body>`, `<link rel="preconnect" href="https://hint.invalid/"><iframe srcdoc="child"></iframe>`},
-		{"ordinary-fallback", `<body><noscript><p id="fallback">JavaScript disabled fallback &amp; text</p></noscript></body>`, "JavaScript disabled fallback & text"},
+func TestRenderPreviewHTMLNoscriptStaysInactive(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		{"literal-markup", `<body><noscript>&lt;link rel="preconnect" href="https://hint.invalid/"&gt;&lt;iframe srcdoc="child"&gt;&lt;/iframe&gt;</noscript></body>`},
+		{"ordinary-fallback", `<body><noscript><p id="fallback">JavaScript disabled fallback &amp; text</p></noscript></body>`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			page := renderedPage(t, "report.html", tc.content)
-			document := assertRenderedHTMLFrame(t, page, "report.html")
-			for _, tag := range []string{"noscript", "link", "iframe"} {
+			document := assertRenderedHTMLFrame(t, page, "report.html", tc.content)
+			if len(htmlElements(document, "noscript")) != 1 || len(htmlElements(document, "div")) != 0 {
+				t.Fatal("interactive HTML materialized the noscript fallback")
+			}
+			for _, tag := range []string{"p", "link", "iframe"} {
 				if len(htmlElements(document, tag)) != 0 {
 					t.Fatalf("static noscript fallback materialized a %s element", tag)
-				}
-			}
-			if !strings.Contains(htmlNodeText(document), tc.expectedText) {
-				t.Fatal("static HTML lost noscript fallback text or changed its literal markup")
-			}
-			if tc.name == "ordinary-fallback" {
-				paragraphs := htmlElements(document, "p")
-				if len(paragraphs) != 1 || htmlAttribute(paragraphs[0], "id") != "fallback" {
-					t.Fatal("ordinary noscript fallback lost its element structure")
 				}
 			}
 			assertRenderedHTMLSource(t, page, tc.content, false)
@@ -297,7 +318,7 @@ func TestHTMLPreviewServiceRequiresAuthentication(t *testing.T) {
 				t.Fatal("unauthenticated HTML preview exposed a frame or document")
 			}
 			w = request(t, f.s, http.MethodGet, target, loggedIn(t, f.s))
-			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<iframe") || !strings.Contains(w.Body.String(), "srcdoc=") || !strings.Contains(w.Body.String(), "service-html-fixture") {
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<iframe") || !strings.Contains(w.Body.String(), `src="/f/`) || !strings.Contains(w.Body.String(), "service-html-fixture") {
 				t.Fatal("authenticated HTML preview did not render a registered document")
 			}
 			if w.Header().Get("X-DNS-Prefetch-Control") != "off" {
@@ -308,10 +329,99 @@ func TestHTMLPreviewServiceRequiresAuthentication(t *testing.T) {
 				name, value, _ := strings.Cut(strings.TrimSpace(directive), " ")
 				csp[name] = strings.TrimSpace(value)
 			}
-			if csp["default-src"] != "'none'" || csp["script-src"] != "'none'" {
+			if csp["default-src"] != "'none'" || csp["script-src"] != "'none'" || csp["frame-src"] != target+"/html" {
 				t.Fatal("HTML preview response relaxed resource or script CSP")
 			}
 		})
+	}
+}
+
+func TestHTMLDocumentServiceKeepsAuthenticationAndFileGuards(t *testing.T) {
+	f := newFixture(t)
+	content := `<h1>interactive fixture</h1><script>document.body.dataset.ready = "yes";</script>`
+	path := writeFixture(t, f.root, "report.html", content)
+	target := registeredURL(t, f.s, path) + "/html"
+	if w := request(t, f.s, http.MethodGet, target, nil); w.Code != http.StatusUnauthorized || strings.Contains(w.Body.String(), "fixture") || strings.Contains(w.Body.String(), "<form") || w.Header().Get("Content-Security-Policy") != previewCSP {
+		t.Fatal("child endpoint exposed a report or login form without authentication")
+	}
+	session := loggedIn(t, f.s)
+	w := request(t, f.s, http.MethodGet, target, session)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "srcdoc=") || !strings.Contains(w.Body.String(), "interactive fixture") || w.Header().Get("Content-Security-Policy") != htmlDocumentCSP || w.Header().Get("X-Frame-Options") != "SAMEORIGIN" || w.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatal("child endpoint lost its report or independent sandbox policy")
+	}
+	policy := map[string]string{}
+	for _, directive := range strings.Split(w.Header().Get("Content-Security-Policy"), ";") {
+		name, value, _ := strings.Cut(strings.TrimSpace(directive), " ")
+		policy[name] = value
+	}
+	for name, want := range map[string]string{
+		"default-src": "'none'", "script-src": "'unsafe-inline'", "script-src-attr": "'none'",
+		"style-src": "'unsafe-inline'", "img-src": "'none'", "connect-src": "'none'",
+		"frame-src": "'none'", "worker-src": "'none'", "object-src": "'none'",
+		"base-uri": "about:", "form-action": "'none'", "frame-ancestors": "'self'", "sandbox": "allow-scripts",
+	} {
+		if policy[name] != want {
+			t.Fatalf("child CSP %s = %q, want %q", name, policy[name], want)
+		}
+	}
+	if w := request(t, f.s, http.MethodHead, target, session); w.Code != http.StatusOK || w.Body.Len() != 0 || w.Header().Get("Content-Security-Policy") != htmlDocumentCSP {
+		t.Fatal("child HEAD did not preserve policy without a body")
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPut} {
+		if w := request(t, f.s, method, target, session); w.Code != http.StatusMethodNotAllowed {
+			t.Fatal("child endpoint accepted a write method")
+		}
+	}
+	if w := request(t, f.s, http.MethodGet, target+"?raw=1", session); w.Code != http.StatusBadRequest {
+		t.Fatal("child endpoint accepted query parameters")
+	}
+	for _, name := range []string{"code.go", "notes.md", "notes.txt"} {
+		other := registeredURL(t, f.s, writeFixture(t, f.root, name, content))
+		if w := request(t, f.s, http.MethodGet, other+"/html", session); w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "fixture") {
+			t.Fatal("child endpoint executed a non-HTML file")
+		}
+	}
+	if err := os.WriteFile(path, []byte(`<p>updated child report</p>`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(t, f.s, http.MethodGet, target, session); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "updated child report") {
+		t.Fatal("child endpoint did not read the current report")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(t, f.s, http.MethodGet, target, session); w.Code != http.StatusNotFound {
+		t.Fatal("child endpoint retained a removed report")
+	}
+	outside := writeFixture(t, t.TempDir(), "outside.html", `<p>outside report</p>`)
+	if err := os.Symlink(outside, path); err != nil {
+		t.Fatal(err)
+	}
+	if w := request(t, f.s, http.MethodGet, target, session); w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "outside report") {
+		t.Fatal("child endpoint bypassed symlink guards")
+	}
+}
+
+func TestInteractiveHTMLKeepsInlineScriptsAndDataOnly(t *testing.T) {
+	content := `<html><head><script src="https://outside.invalid/library.js"></script><meta http-equiv="refresh" content="0;url=https://outside.invalid/"></head><body>
+<script type="application/json" id="data">{"tasks":["a","b"]}</script>
+<script>document.body.dataset.count = JSON.parse(document.getElementById('data').textContent).tasks.length;</script>
+<button onclick="alert(1)">Click</button><svg><script href="https://outside.invalid/svg.js"></script></svg>
+</body></html>`
+	document := assertRenderedHTMLFrame(t, renderedPage(t, "report.html", content), "report.html", content)
+	scripts := htmlElements(document, "script")
+	if len(scripts) != 2 || htmlAttribute(scripts[0], "type") != "application/json" || htmlNodeText(scripts[0]) != `{"tasks":["a","b"]}` || !strings.Contains(htmlNodeText(scripts[1]), "JSON.parse") {
+		t.Fatal("interactive HTML changed inline scripts or JSON data")
+	}
+	for _, meta := range htmlElements(document, "meta") {
+		if strings.EqualFold(htmlAttribute(meta, "http-equiv"), "refresh") {
+			t.Fatal("interactive HTML retained a refresh navigation")
+		}
+	}
+	for _, button := range htmlElements(document, "button") {
+		if htmlAttribute(button, "onclick") != "" {
+			t.Fatal("interactive HTML retained an inline event attribute")
+		}
 	}
 }
 

@@ -30,6 +30,8 @@ const (
 	csrfLifetime        = 15 * time.Minute
 	sessionCookie       = "codex_filepreview_session"
 	csrfCookie          = "codex_filepreview_csrf"
+	previewCSP          = "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	htmlDocumentCSP     = "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; script-src-attr 'none'; img-src 'none'; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri about:; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
 )
 
 var (
@@ -236,7 +238,7 @@ func (s *Service) cookie(name, value string, duration time.Duration) *http.Cooki
 		MaxAge: int(duration / time.Second)}
 }
 
-// ServeHTTP serves only login and registered file previews. Requests and errors
+// ServeHTTP serves only login, registered file previews and HTML containers. Requests and errors
 // deliberately carry no server paths or file contents in diagnostic messages.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -247,7 +249,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// no-referrer makes a browser's ordinary form POST use Origin: null.
 	// Keep the origin for our own login while suppressing cross-origin referrers.
 	w.Header().Set("Referrer-Policy", "same-origin")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", previewCSP)
 	gotHost, ok := canonicalHost(r.Host, s.scheme)
 	if !ok || gotHost != s.host || (r.URL.IsAbs() && (r.URL.Scheme != s.scheme || r.URL.Host != r.Host)) {
 		writeStatus(w, r, http.StatusForbidden)
@@ -269,11 +271,15 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/f/")
+	htmlDocument := strings.HasSuffix(id, "/html")
+	if htmlDocument {
+		id = strings.TrimSuffix(id, "/html")
+	}
 	if r.URL.Path != "/" && (!strings.HasPrefix(r.URL.Path, "/f/") || !validID(id)) {
 		writeStatus(w, r, http.StatusNotFound)
 		return
 	}
-	if r.Method == http.MethodPost {
+	if r.Method == http.MethodPost && !htmlDocument {
 		// The login form posts to its current URL so the browser preserves #Lx
 		// through authentication. This route only authenticates; it never writes
 		// the registered file or reads its contents before authentication.
@@ -281,12 +287,20 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD, POST")
+		if htmlDocument {
+			w.Header().Set("Allow", "GET, HEAD")
+		} else {
+			w.Header().Set("Allow", "GET, HEAD, POST")
+		}
 		writeStatus(w, r, http.StatusMethodNotAllowed)
 		return
 	}
 	if !s.validToken(singleCookie(r, sessionCookie), "session", sessionLifetime) {
-		s.showLogin(w, r, r.URL.Path, "", http.StatusUnauthorized)
+		if htmlDocument {
+			writeStatus(w, r, http.StatusUnauthorized)
+		} else {
+			s.showLogin(w, r, r.URL.Path, "", http.StatusUnauthorized)
+		}
 		return
 	}
 	if r.URL.Path == "/" {
@@ -315,10 +329,28 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, r, http.StatusNotFound)
 		return
 	}
-	page, err := renderPreview(file)
+	var page []byte
+	if htmlDocument {
+		if !isHTMLFile(file.name) {
+			writeStatus(w, r, http.StatusNotFound)
+			return
+		}
+		page, err = renderHTMLDocument(file)
+	} else {
+		page, err = renderPreview(file, r.URL.Path+"/html")
+	}
 	if err != nil {
 		writeStatus(w, r, http.StatusInternalServerError)
 		return
+	}
+	if htmlDocument {
+		w.Header().Set("Content-Security-Policy", htmlDocumentCSP)
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+	} else if isHTMLFile(file.name) {
+		// A srcdoc child would inherit script-src 'none'. Only the registered
+		// report's independent wrapper may be framed by the script-free shell.
+		w.Header().Set("Content-Security-Policy", previewCSP+"; frame-src "+s.baseURL+r.URL.Path+"/html")
 	}
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {

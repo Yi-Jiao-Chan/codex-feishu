@@ -2,18 +2,25 @@ package filepreview
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
 
-// staticHTMLDocument prepares the isolated, script-free view. CSP blocks
-// resource loads, but browsers can still act on connection hints. Remove those
-// hints and nested browsing contexts before serializing the child document.
+func isHTMLFile(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	return ext == ".html" || ext == ".htm" || ext == ".xhtml"
+}
+
+// interactiveHTMLDocument prepares a self-contained report for a script-enabled,
+// opaque-origin sandbox. CSP restricts resource loads; remove static connection
+// hints, navigation and nested contexts as well. This is not a sanitizer for
+// arbitrary JavaScript: reports must still come from a trusted source.
 // The original bytes remain available in the numbered source view.
-func staticHTMLDocument(content []byte) string {
-	document, err := html.ParseWithOptions(bytes.NewReader(content), html.ParseOptionEnableScripting(false))
+func interactiveHTMLDocument(content []byte) string {
+	document, err := html.Parse(bytes.NewReader(content))
 	if err != nil {
 		return ""
 	}
@@ -24,39 +31,48 @@ func staticHTMLDocument(content []byte) string {
 			next := node.NextSibling
 			if node.Type == html.ElementNode {
 				switch node.Data {
-				case "link", "iframe", "frame":
+				case "link", "iframe", "frame", "base", "object", "embed":
 					parent.RemoveChild(node)
 					node = next
 					continue
+				case "script":
+					external := false
+					for _, attr := range node.Attr {
+						external = external || attr.Key == "src" || attr.Key == "href"
+					}
+					if external {
+						parent.RemoveChild(node)
+						node = next
+						continue
+					}
 				case "meta":
 					for _, attr := range node.Attr {
-						if attr.Key == "http-equiv" && strings.EqualFold(strings.TrimSpace(attr.Val), "x-dns-prefetch-control") {
+						if attr.Key == "http-equiv" && (strings.EqualFold(strings.TrimSpace(attr.Val), "x-dns-prefetch-control") || strings.EqualFold(strings.TrimSpace(attr.Val), "refresh")) {
 							parent.RemoveChild(node)
 							break
 						}
 					}
-				case "noscript":
-					// Render treats noscript text as raw HTML even though this
-					// document was parsed with scripting disabled. A normal div
-					// preserves the fallback content and escapes literal markup.
-					node.Data, node.DataAtom = "div", atom.Div
 				case "head":
 					if node.Namespace == "" {
 						head = node
 					}
 				case "a", "area":
 					localFragment := false
-					for i := range node.Attr {
-						attr := &node.Attr[i]
-						href := strings.TrimSpace(attr.Val)
-						if attr.Key == "href" && strings.HasPrefix(href, "#") {
-							// srcdoc inherits the outer preview's base URL. Keep
-							// directory links in this document instead of loading
-							// the outer /f/ URL inside the frame (blocked by CSP).
-							attr.Val = "about:srcdoc" + href
+					attrs := node.Attr[:0]
+					for _, attr := range node.Attr {
+						if attr.Key == "href" {
+							href := strings.TrimSpace(attr.Val)
+							if !strings.HasPrefix(href, "#") {
+								continue
+							}
+							// Preserve fragment selectors used by report scripts.
+							// The trusted base also keeps dynamic links in srcdoc.
+							attr.Val = href
 							localFragment = true
 						}
+						attrs = append(attrs, attr)
 					}
+					node.Attr = attrs
 					if localFragment {
 						hasTarget := false
 						for i := range node.Attr {
@@ -70,6 +86,13 @@ func staticHTMLDocument(content []byte) string {
 						}
 					}
 				}
+				attrs := node.Attr[:0]
+				for _, attr := range node.Attr {
+					if !strings.HasPrefix(attr.Key, "on") && attr.Key != "ping" {
+						attrs = append(attrs, attr)
+					}
+				}
+				node.Attr = attrs
 			}
 			clean(node)
 			node = next
@@ -79,6 +102,12 @@ func staticHTMLDocument(content []byte) string {
 	if head == nil {
 		return ""
 	}
+	// srcdoc otherwise inherits the wrapper's URL. A fixed local base keeps
+	// both static and dynamically created #links in this document without
+	// rewriting href values that scripts use as querySelector inputs.
+	head.InsertBefore(&html.Node{Type: html.ElementNode, Data: "base", DataAtom: atom.Base, Attr: []html.Attribute{
+		{Key: "href", Val: "about:srcdoc"}, {Key: "target", Val: "_self"},
+	}}, head.FirstChild)
 	// Set the child's own DNS policy before any user content. An off policy
 	// inherited from the outer response alone can be re-enabled by child meta.
 	head.InsertBefore(&html.Node{Type: html.ElementNode, Data: "meta", DataAtom: atom.Meta, Attr: []html.Attribute{
