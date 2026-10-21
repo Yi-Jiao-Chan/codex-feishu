@@ -239,6 +239,12 @@ func (s *Store) FinishInteraction(ctx context.Context, id, outcome string) error
 // StageInteractionCard uses the same send/reply/PATCH journal as normal output.
 // CAS prevents an event or callback racing rendering from restoring old controls.
 func (s *Store) StageInteractionCard(ctx context.Context, r InteractionRequest, card string, operable bool) error {
+	return s.StageInteractionSubmissionCard(ctx, r, card, operable, 0)
+}
+
+// A submission revision prevents a racing queue action from restoring stale
+// controls on the original question card.
+func (s *Store) StageInteractionSubmissionCard(ctx context.Context, r InteractionRequest, card string, operable bool, submissionRevision int64) error {
 	if !json.Valid([]byte(card)) {
 		return ErrConflict
 	}
@@ -253,6 +259,15 @@ func (s *Store) StageInteractionCard(ctx context.Context, r InteractionRequest, 
 	}
 	if actual.Revision != r.Revision || actual.State != r.State {
 		return ErrConflict
+	}
+	if submissionRevision > 0 {
+		n, err := readSubmission(ctx, tx, SubmissionScope{r.HostID, r.AppID, r.ThreadID}, actual.SubmissionID)
+		if err != nil {
+			return err
+		}
+		if n.Revision != submissionRevision {
+			return ErrConflict
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE interaction_requests SET operable=? WHERE request_key=?`, operable, r.Key); err != nil {
 		return err

@@ -295,7 +295,11 @@ func (c *Controller) StageCards(ctx context.Context, thread string, turns []code
 			}
 		}
 		card := cards.Interaction(v)
-		if err = c.Store.StageInteractionCard(ctx, row, card, actionableCard(card)); err != nil && !errors.Is(err, store.ErrConflict) {
+		var submissionRevision int64
+		if v.Queue != nil {
+			submissionRevision = v.Queue.Revision
+		}
+		if err = c.Store.StageInteractionSubmissionCard(ctx, row, card, actionableCard(card), submissionRevision); err != nil && !errors.Is(err, store.ErrConflict) {
 			return err
 		}
 	}
@@ -418,23 +422,24 @@ func (c *Controller) view(ctx context.Context, row store.InteractionRequest, tur
 		}
 	}
 	if row.SubmissionID != "" {
-		n, err := c.Store.Submission(ctx, c.scope(row.ThreadID), row.SubmissionID)
+		scope := c.scope(row.ThreadID)
+		offline := c.Native == nil || row.ConnectionID != c.Native.ConnectionID()
+		queue, err := c.Store.SubmissionQueueView(ctx, scope, row.SubmissionID, store.QueueCardOptions{LocalPending: offline, Offline: offline})
 		if err != nil {
 			return v, err
 		}
-		switch n.State {
-		case "received":
-			v.State = "received"
-		case "queued":
-			v.State = "queued"
-		case "consumed", "steered":
-			v.State = "consumed"
-		case "unknown":
-			v.State = "unknown"
-		case "failed", "removed":
-			v.State = "failed"
-		default:
-			v.State = "submitted"
+		if row.State != "resolved" {
+			v.State = queue.State
+		} else if queue.State == "queued" {
+			v.Reason += "\n飞书提交的回答仍在队列中，可移除。"
+		}
+		// Existing separate queue journals keep ownership, including unknown deliveries.
+		m, err := c.Store.SubmissionCard(ctx, scope, row.SubmissionID)
+		if err != nil {
+			return v, err
+		}
+		if m.Key == store.InteractionCardKey(row.Key) {
+			v.Queue = &queue
 		}
 	}
 	if r.Kind == "question" {

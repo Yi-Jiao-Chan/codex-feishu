@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
 	"codex-feishu/internal/cards"
 )
@@ -14,21 +15,29 @@ import (
 // IDs are UUIDs, so this reserved UI namespace cannot identify a native turn.
 func QueueCardKey(receiptID string) string { return "ui:queue:" + receiptID }
 
-type submissionCardIdentity struct{ key, parent string }
+type submissionCardIdentity struct{ key, parent, parentKey string }
 
 // Keep existing queue journals authoritative, including ambiguous deliveries.
 // New attachment submissions retain their original card and immutable reply
 // parent; a later instruction receipt must not change that physical relation.
 func submissionCardIdentityTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, n Submission) (submissionCardIdentity, error) {
-	identity := submissionCardIdentity{QueueCardKey(n.ID), n.ReplyID()}
+	identity := submissionCardIdentity{key: QueueCardKey(n.ID), parent: n.ReplyID()}
 	if _, err := readMirror(ctx, tx, scope.HostID, scope.ThreadID, identity.key); err == nil {
 		return identity, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return identity, err
 	}
+	var request, parentKey, parentMessage string
+	err := tx.QueryRowContext(ctx, `SELECT request_key,parent_key,parent_message_id FROM interaction_requests
+ WHERE host_id=? AND app_id=? AND thread_id=? AND mode='async' AND submission_id=?`, scope.HostID, scope.AppID, scope.ThreadID, n.ID).Scan(&request, &parentKey, &parentMessage)
+	if err == nil {
+		return submissionCardIdentity{key: InteractionCardKey(request), parent: parentMessage, parentKey: parentKey}, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return identity, err
+	}
 	var count int
 	var batch, parent string
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(MIN(batch_id),''),COALESCE(MIN(first_message_id),'') FROM attachment_batches
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(MIN(batch_id),''),COALESCE(MIN(first_message_id),'') FROM attachment_batches
  WHERE host_id=? AND app_id=? AND thread_id=? AND chat_id=? AND receipt_id=? AND state<>'cleared'`, scope.HostID, scope.AppID, scope.ThreadID, n.ChatID, n.ID).Scan(&count, &batch, &parent)
 	if err != nil {
 		return identity, err
@@ -37,13 +46,13 @@ func submissionCardIdentityTx(ctx context.Context, tx *sql.Tx, scope SubmissionS
 		return identity, ErrConflict
 	}
 	if count == 1 {
-		identity = submissionCardIdentity{AttachmentCardKey(batch), parent}
+		identity = submissionCardIdentity{key: AttachmentCardKey(batch), parent: parent}
 	}
 	return identity, nil
 }
 
 func validSubmissionCard(m Mirror, identity submissionCardIdentity) bool {
-	return m.Key == identity.key && m.Kind == "progress" && m.TurnID == identity.key && m.ParentMessageID == identity.parent && m.ParentKey == "" && !m.Retired
+	return m.Key == identity.key && m.Kind == "progress" && m.TurnID == identity.key && m.ParentMessageID == identity.parent && m.ParentKey == identity.parentKey && !m.Retired
 }
 
 // SubmissionCard resolves and validates the one authoritative UI document in
@@ -88,6 +97,58 @@ func (s *Store) StageQueueCard(ctx context.Context, scope SubmissionScope, recei
 // exists. Offline disables native controls regardless of old hydrated state.
 type QueueCardOptions struct{ LocalPending, Offline bool }
 
+// SubmissionQueueView shares verified queue facts with an asynchronous question card.
+func (s *Store) SubmissionQueueView(ctx context.Context, scope SubmissionScope, receiptID string, options QueueCardOptions) (cards.QueueView, error) {
+	tx, err := s.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return cards.QueueView{}, err
+	}
+	defer tx.Rollback()
+	if _, err = submissionBinding(ctx, tx, scope); err != nil {
+		return cards.QueueView{}, err
+	}
+	n, err := readSubmission(ctx, tx, scope, receiptID)
+	if err != nil {
+		return cards.QueueView{}, err
+	}
+	view, err := submissionQueueViewTx(ctx, tx, scope, n, options)
+	if err != nil {
+		return view, err
+	}
+	return view, tx.Commit()
+}
+
+func submissionQueueViewTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, n Submission, options QueueCardOptions) (cards.QueueView, error) {
+	localPending, err := localPendingSubmission(ctx, tx, scope, n)
+	if err != nil {
+		return cards.QueueView{}, err
+	}
+	view := cards.QueueView{State: n.State, Token: n.ActionToken, QueueID: n.QueueID, Revision: n.Revision, QueueOrdinal: n.QueueOrdinal, LocalPending: localPending && options.LocalPending}
+	if n.State == "received" && !localPending {
+		view.State = "unknown"
+	}
+	if options.Offline {
+		if !view.LocalPending {
+			view.Token = ""
+		}
+	} else if n.State == "queued" {
+		var active int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_controls WHERE host_id=? AND app_id=? AND thread_id=? AND native_status='inProgress' AND kind='stop' AND state='available'`, scope.HostID, scope.AppID, scope.ThreadID).Scan(&active); err != nil {
+			return view, err
+		}
+		view.Active = active == 1
+		if !view.Active {
+			var status string
+			err := tx.QueryRowContext(ctx, `SELECT native_status FROM task_controls WHERE host_id=? AND app_id=? AND thread_id=? ORDER BY rowid DESC LIMIT 1`, scope.HostID, scope.AppID, scope.ThreadID).Scan(&status)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return view, err
+			}
+			view.Stopped = status == "interrupted"
+		}
+	}
+	return view, nil
+}
+
 func (s *Store) StageQueueCardWithOptions(ctx context.Context, scope SubmissionScope, receiptID string, options QueueCardOptions) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -123,38 +184,20 @@ func stageQueueCardTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, re
 		return err
 	}
 	key := identity.key
+	if strings.HasPrefix(key, "ui:interaction:") {
+		return nil // The question renderer owns this card and its queue controls.
+	}
 	old, err := readMirror(ctx, tx, scope.HostID, scope.ThreadID, key)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	mirrorMissing := errors.Is(err, sql.ErrNoRows)
-	localPending, checkErr := localPendingSubmission(ctx, tx, scope, n)
-	if checkErr != nil {
-		return checkErr
+	view, err := submissionQueueViewTx(ctx, tx, scope, n, options)
+	if err != nil {
+		return err
 	}
-	uncertainReceived := n.State == "received" && !localPending
-	localPending = localPending && options.LocalPending
-	if mirrorMissing && n.State != "queued" && n.State != "unknown" && n.State != "failed" && !localPending && !uncertainReceived {
+	if mirrorMissing && view.State != "queued" && view.State != "unknown" && view.State != "failed" && !view.LocalPending {
 		return nil
-	}
-	view := cards.QueueView{State: n.State, Token: n.ActionToken, QueueID: n.QueueID, Revision: n.Revision, QueueOrdinal: n.QueueOrdinal, LocalPending: localPending}
-	if uncertainReceived {
-		view.State = "unknown"
-	}
-	if n.State == "queued" && !options.Offline {
-		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_controls WHERE host_id=? AND app_id=? AND thread_id=? AND native_status='inProgress' AND kind='stop' AND state='available'`, scope.HostID, scope.AppID, scope.ThreadID).Scan(&active); err != nil {
-			return err
-		}
-		view.Active = active == 1
-		if !view.Active {
-			var status string
-			err := tx.QueryRowContext(ctx, `SELECT native_status FROM task_controls WHERE host_id=? AND app_id=? AND thread_id=? ORDER BY rowid DESC LIMIT 1`, scope.HostID, scope.AppID, scope.ThreadID).Scan(&status)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			view.Stopped = status == "interrupted"
-		}
 	}
 	card := cards.QueueInputView(view)
 	if options.Offline && n.State == "queued" {

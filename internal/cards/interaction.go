@@ -21,6 +21,7 @@ type InteractionView struct {
 	Questions                                         []InteractionQuestion
 	Permissions                                       []InteractionOption
 	Enabled                                           bool
+	Queue                                             *QueueView
 }
 
 type InteractionDecision struct {
@@ -168,6 +169,9 @@ func renderInteraction(v InteractionView, limits interactionLimits) string {
 	if omitted := interactionOmittedSummary(v, limits); omitted != "" && !limits.minimal {
 		elements = append(elements, element{"tag": "markdown", "content": omitted, "text_size": "notation", "margin": "0px"})
 	}
+	if v.Kind == "async_question" && v.Queue != nil && v.State != "pending" && !limited {
+		elements = append(elements, queueControls(*v.Queue)...)
+	}
 	elements = append(elements, footer(interactionSource(v.Kind)))
 
 	width := "compact"
@@ -233,6 +237,8 @@ func interactionStatus(v InteractionView) string {
 		return "已收到 · 正在提交"
 	case "submitted":
 		return "已提交 · 等待状态确认"
+	case "submitting":
+		return "正在提交"
 	case "unknown":
 		return "正在核验 · 请勿重复提交"
 	case "resolved":
@@ -249,9 +255,20 @@ func interactionStatus(v InteractionView) string {
 		return "连接已断开 · 请回 Codex App 核验"
 	case "unsupported":
 		return "此请求暂不支持在飞书处理 · 请回 Codex App"
+	case "accepted":
+		return "已提交 · 等待状态确认"
 	case "queued":
 		if question {
-			return "回答已排队 · 等待进入会话"
+			label := "回答已排队 · 等待进入会话"
+			if v.Kind == "async_question" && v.Queue != nil {
+				if v.Queue.Stopped {
+					label += " · 队列已保留，等待显式继续"
+				}
+				if v.Queue.QueueOrdinal > 0 {
+					label += fmt.Sprintf(" · 第 %d 条", v.Queue.QueueOrdinal)
+				}
+			}
+			return label
 		}
 		return "已排队 · 等待进入会话"
 	case "received":
@@ -261,6 +278,14 @@ func interactionStatus(v InteractionView) string {
 			return "回答已进入会话"
 		}
 		return "已进入会话"
+	case "steering":
+		return "正在追加引导"
+	case "steered":
+		return "已追加引导"
+	case "removing":
+		return "正在移除"
+	case "removed":
+		return "已移除"
 	case "failed":
 		return "提交失败 · 请回 Codex App 处理"
 	default:
