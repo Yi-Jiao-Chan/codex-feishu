@@ -147,3 +147,9 @@ filepreview 测试和 race、本机桌面/手机尺寸浏览器核验均通过�
 用户实际目录操作暴露了 srcdoc 相对 fragment 错误加载外层预览地址的缺陷，现已修复并更新为 `4bc4c9ff7c2e+preview-html-anchors-20261019`，二进制 SHA-256 `d00a693787c1fddcc1311237e1ed400d5e96e01e9f02b9abf4e617c749535f23`。目录在子文档内跳转，原 HTML、源码、CSP 和 sandbox 保持；[修复及部署记录](../records/feishu-local-file-preview-implementation-2026-10-15.md#2026-10-19-html-目录锚点修复)记录复现与新增回归。
 
 filepreview 测试和 race 通过，本机 Chromium 已核验桌面/手机尺寸的目录、中文锚点和返回顶部，以及用户原链接的 9 个页内目标；跳转不重载文档，不产生导航请求。实际进程与稳定 CLI 匹配候选，配置和 schema 29 保持，备份完成；两侧连接及发现基线通过。用户随后确认原链接目录已恢复正常，并授权提交与推送；真实手机、飞书内置浏览器、原恢复诊断 pending 和发布状态保持，前次全仓既有失败未改写为通过。
+
+### 2026-10-21 HTML 交互预览
+
+用户授权独立 CodeReview 后部署本地，当前运行构建更新为 `b613584f8932+html-interactive-20261021-162439-8850d9d4`，二进制 SHA-256 `775f5a72a4e8bb419ad2edf4a7d379df45f4a1c86dd1c194c1b74a360cd89b58`。自包含报告可运行内嵌脚本和数据，登录外壳继续禁脚本，渲染容器保留来源隔离和受限 CSP。独立审查发现的 fragment 选择器与动态锚点问题已修复，复审无剩余阻断项；[部署记录](../records/feishu-local-file-preview-implementation-2026-10-15.md#2026-10-21-自包含-html-交互预览与本地部署)保存构建、回滚和验证范围。
+
+filepreview/sync race、修复后的合成 Chromium 42 项检查及部署后原链接 22 项检查通过；原报告已生成图表，搜索、排序、展开、动态锚点、源码和既有 Markdown/代码链接正常。实际进程与稳定 CLI 匹配候选，systemd active/enabled，两侧连接和发现基线通过；原配置、口令及 schema 30 保持，一致备份已核验。全仓仍有同一条基线已有建群重试测试超时；`bindings_reconciled`、`operations_known` 原 pending 与 doctor/status 退出 5 保留，无新增 required fail。手机尺寸模拟不替代真实手机或飞书内置浏览器验收，完整 P1 与 `phase1_released=false` 保持。

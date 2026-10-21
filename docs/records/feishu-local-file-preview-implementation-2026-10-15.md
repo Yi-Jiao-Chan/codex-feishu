@@ -132,3 +132,16 @@ go test -race ./internal/filepreview ./internal/sync ./internal/app ./cmd/codex-
 - 部署前保存配置、setup journal、unit、CLI 链接目标与 SQLite 一致备份；schema 29、55 张表、81,246 条记录、`quick_check=ok`。配置与数据库结构保持，实际进程和稳定 CLI 匹配新候选，systemd active/enabled；两侧连接与发现基线通过。
 
 原恢复诊断 pending 和 doctor/status 退出 5 保留，没有新增 required fail。用户随后确认原链接目录跳转已正常，并授权提交与推送；真实手机和飞书内置浏览器观察仍待单独确认，完整 P1 和发布结论保持。
+
+## 2026-10-21 自包含 HTML 交互预览与本地部署
+
+用户授权支持报告内嵌 JavaScript，并要求独立 SubAgent CodeReview 通过后部署本地。HTML 外壳继续禁脚本，新增受同一登录与文件校验保护的渲染容器；容器使用 HTTP CSP 沙箱和 `sandbox="allow-scripts"` 的 `srcdoc`，不授予 `allow-same-origin`。内嵌脚本与 JSON 可生成图表、搜索、排序和展开交互，外链资源、连接、表单与弹窗继续受限；源码与原文件保持。动态连接提示、WebRTC 等残余风险仍按 [14 模块边界](../codex-feishu/14-file-preview.md#阅读与代码展示) 说明，不将其当作任意脚本的绝对离线执行环境。
+
+- 独立审查发现并修复 P2 锚点兼容问题：改写 `href="#panel"` 会破坏脚本选择器，动态 fragment 链接还可能导航到容器地址。显示副本现保留 fragment，在用户脚本前注入可信 `about:srcdoc` 基址，容器 `base-uri` 仅允许 `about:`。复审无剩余阻断项；使用实际 Go 输出的 Chromium 选择器、标签页、动态英文/中文锚点和隔离检查 16/16 通过。
+- 构建身份 `b613584f8932+html-interactive-20261021-162439-8850d9d4`，包含本次尚未提交的改动；二进制 SHA-256 `775f5a72a4e8bb419ad2edf4a7d379df45f4a1c86dd1c194c1b74a360cd89b58`。构建目录 `~/.local/lib/codex-feishu/preview-interactive-20261021-162029-bg19hpit/` 保留源码差异、583 份输入摘要、审查结论与部署聚合证据。
+- `filepreview`、`sync` 的 race 回归与文档检查通过。全仓回归仅原有 `TestRuntimeGroupDeadlinePreservesFinalAndWakesWithoutNewInput` 超时；将全部变更 Go 文件通过 overlay 恢复到 HEAD 后，同一测试仍失败，其余包通过。
+- 最新源码的合成 Service 在 Chromium 153 完成 42/42 检查：内嵌 JS/JSON、DOM/SVG/Canvas、点击交互、目录与手机尺寸正常；父 DOM、cookie、存储、资源请求、连接和导航隔离按预期工作。本地接收端未收到报告探针请求，正对照确认计数有效。这不替代其他浏览器或飞书客户端验收。
+- 沿既有 CLI stop → install/start 切换同一用户服务，未重启共享 Codex daemon。切换前保留原 unit、配置、setup journal、CLI 链接目标和 SQLite 一致备份；schema 30、55 张业务表、124,532 条记录，`quick_check=ok`。没有配置或数据库结构变更，预览口令保持。
+- 部署后原报告与旧链接的真实浏览器检查 22/22 通过：匿名 401、原口令登录 200，脚本生成 29 个图表；搜索、排序、展开、动态 fragment、源码行号、桌面和手机尺寸正常，既有 Markdown 与代码链接仍可读。仅保留布尔和计数等聚合证据，未保存真实正文、截图或网络明细。
+
+实际进程和稳定 CLI 均匹配新二进制，systemd active/enabled，两侧连接与发现基线通过。`instance.bindings_reconciled`、`instance.operations_known` 保留切换前的 pending，doctor/status 仍退出 5，无新增 required fail 或原 pass 项退化。真实手机、飞书内置浏览器和完整一期验收仍 pending，`phase1_released=false` 保持。

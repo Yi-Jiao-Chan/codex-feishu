@@ -264,7 +264,7 @@ func (s *Service) Rewrite(ctx context.Context, body string) (string, error) {
 			return "", nil
 		}
 		linked[target] = true
-		return "[查看可视化 · 静态预览](" + target + ")（交互版请回 Codex 查看）", nil
+		return "[查看可视化](" + target + ")", nil
 	})
 	if err != nil {
 		return original, err

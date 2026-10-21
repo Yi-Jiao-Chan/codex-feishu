@@ -19,10 +19,15 @@ type renderedNode struct {
 
 func renderedPage(t *testing.T, name, content string) *renderedNode {
 	t.Helper()
-	body, err := renderPreview(previewFile{name: name, content: []byte(content), modified: time.Unix(1800000000, 0)})
+	body, err := renderPreview(previewFile{name: name, content: []byte(content), modified: time.Unix(1800000000, 0)}, testHTMLPath)
 	if err != nil {
 		t.Fatal("render failed", err)
 	}
+	return parseRenderedPage(t, body)
+}
+
+func parseRenderedPage(t *testing.T, body []byte) *renderedNode {
+	t.Helper()
 	decoder := xml.NewDecoder(bytes.NewReader(body))
 	decoder.Strict = false
 	decoder.AutoClose = xml.HTMLAutoClose
