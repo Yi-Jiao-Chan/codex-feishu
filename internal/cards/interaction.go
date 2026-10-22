@@ -832,7 +832,7 @@ func interactionCallbackButton(label, decision, token string, revision int64) el
 
 func interactionButtonType(decision string) string {
 	switch decision {
-	case "accept", "acceptForSession", "submit":
+	case "accept", "acceptForSession", "submit", "append_answer":
 		return "primary"
 	case "decline", "cancel":
 		return "default"
@@ -971,7 +971,12 @@ func interactionQuestionForm(v InteractionView, limits interactionLimits) []elem
 		}
 		formElements = append(formElements, input)
 	}
-	formElements = append(formElements, interactionButtonRow(interactionFormSubmitButton("提交回答", "submit_answers", v.Token, v.Revision)))
+	if v.Kind == "async_question" {
+		formElements = append(formElements, element{"tag": "markdown", "content": "忙碌时追加到当前任务，空闲时继续会话。", "text_size": "notation", "margin": "0px"})
+		formElements = append(formElements, interactionButtonRow(interactionFormButton("提交回答并追加", "submit_answers", v.Token, v.Revision, "append_answer", true)))
+	} else {
+		formElements = append(formElements, interactionButtonRow(interactionFormSubmitButton("提交回答", "submit_answers", v.Token, v.Revision)))
+	}
 	return []element{{"tag": "form", "name": interactionAnswersName, "elements": formElements}}
 }
 

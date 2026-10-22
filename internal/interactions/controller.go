@@ -520,7 +520,12 @@ func (c *Controller) Claim(ctx context.Context, scope store.SubmissionScope, use
 	if !c.enabled(kind) {
 		return "", store.ErrSubmissionStale
 	}
-	result, err := codexclient.BuildInteractiveResult(r, decision, form)
+	appendAnswer := row.Mode == "async" && decision == "append_answer"
+	nativeDecision := decision
+	if appendAnswer {
+		nativeDecision = ""
+	}
+	result, err := codexclient.BuildInteractiveResult(r, nativeDecision, form)
 	if err != nil {
 		return "", err
 	}
@@ -528,7 +533,15 @@ func (c *Controller) Claim(ctx context.Context, scope store.SubmissionScope, use
 	if row.Mode == "native" && r.Kind != "question" {
 		summary = "决定：" + map[string]string{"accept": "允许本次", "decline": "拒绝", "cancel": "停止本轮", "acceptForSession": "本会话允许同类请求", "": "授予所选权限"}[decision]
 	}
-	_, err = c.Store.ClaimInteraction(ctx, scope, user, operators, chat, message, token, revision, c.Native.ConnectionID(), int64(c.Native.GenerationID()), string(result), summary, c.now().UnixMilli())
+	if appendAnswer {
+		body, buildErr := asyncReplyBody(row, r, result)
+		if buildErr != nil {
+			return "", buildErr
+		}
+		_, err = c.Store.ClaimAsyncInteraction(ctx, scope, user, operators, chat, message, token, revision, c.Native.ConnectionID(), int64(c.Native.GenerationID()), string(result), summary, body, c.now().UnixMilli())
+	} else {
+		_, err = c.Store.ClaimInteraction(ctx, scope, user, operators, chat, message, token, revision, c.Native.ConnectionID(), int64(c.Native.GenerationID()), string(result), summary, c.now().UnixMilli())
+	}
 	return row.ThreadID, err
 }
 func (c *Controller) Tick(ctx context.Context, thread string) error {
@@ -618,13 +631,21 @@ func (c *Controller) submitAsync(ctx context.Context, row store.InteractionReque
 	if json.Unmarshal([]byte(row.Payload), &req) != nil {
 		return store.ErrConflict
 	}
+	body, err := asyncReplyBody(row, req, json.RawMessage(a.Result))
+	if err != nil {
+		return err
+	}
+	return c.Store.SubmitAsyncInteraction(ctx, row.Key, body)
+}
+
+func asyncReplyBody(row store.InteractionRequest, req codexclient.InteractiveRequest, encoded json.RawMessage) (string, error) {
 	var result struct {
 		Answers map[string]struct {
 			Answers []string `json:"answers"`
 		} `json:"answers"`
 	}
-	if json.Unmarshal([]byte(a.Result), &result) != nil {
-		return store.ErrConflict
+	if json.Unmarshal(encoded, &result) != nil {
+		return "", store.ErrConflict
 	}
 	replies := []map[string]string{}
 	for i, q := range req.Questions {
@@ -632,8 +653,7 @@ func (c *Controller) submitAsync(ctx context.Context, row store.InteractionReque
 		replies = append(replies, map[string]string{"questionItemId": string(identity), "question": q.Question, "answer": strings.Join(result.Answers[q.ID].Answers, "\n")})
 	}
 	text, _ := json.Marshal(replies)
-	body := "<send_user_message_question_reply>\n" + string(text) + "\n</send_user_message_question_reply>"
-	return c.Store.SubmitAsyncInteraction(ctx, row.Key, body)
+	return "<send_user_message_question_reply>\n" + string(text) + "\n</send_user_message_question_reply>", nil
 }
 
 func actionableCard(card string) bool {

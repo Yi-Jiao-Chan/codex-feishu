@@ -11,7 +11,7 @@
 ## 实现约束
 
 - 复用现有 daemon 和原线程；不新起 app-server / exec resume，不修改全局 Codex 配置或原会话策略。
-- 普通输入使用原生 queue/add；只有用户点击追加引导才 steer。`clientUserMessageId` 不是原生去重键。
+- 普通输入使用原生 queue/add；只有用户点击追加引导，或异步问题卡的“提交回答并追加”，才 steer。`clientUserMessageId` 不是原生去重键。
 - 远程状态变更在发出前持久记录；结果 unknown 时先核验，不盲重试或创建替代资源。
 - 凭据、真实对话正文、数据库及运行日志不得进入 Git、普通日志或诊断输出。样例使用合成身份和内容。
 - Go build/test 继承 `GOCACHE`、`GOMODCACHE`，不覆盖或清理，除非用户明确要求隔离缓存。

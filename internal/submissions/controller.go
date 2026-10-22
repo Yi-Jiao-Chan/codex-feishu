@@ -199,12 +199,26 @@ func (c *Controller) Tick(ctx context.Context) error {
 	if err != nil {
 		return &Error{err}
 	}
+	initial := map[string]string{}
 	for _, a := range actions {
 		if a.State != "ready" {
 			continue
 		}
+		if initialSteer(a) {
+			initial[a.ReceiptID] = a.ID
+			continue
+		}
 		if err = c.processAction(ctx, a.ID); err != nil {
 			return &Error{err}
+		}
+	}
+	// An explicit async answer may steer past ordinary pending inputs. Its
+	// idle/rejected queue fallback still belongs at the receipt's FIFO position.
+	for _, a := range actions {
+		if a.State == "ready" && initialSteer(a) {
+			if err = c.processActionWithInitialQueue(ctx, a.ID, false); err != nil {
+				return &Error{err}
+			}
 		}
 	}
 	inputs, err := c.Store.Submissions(ctx, c.scope())
@@ -214,6 +228,12 @@ func (c *Controller) Tick(ctx context.Context) error {
 	for _, n := range inputs {
 		if n.State == "collecting" {
 			break
+		}
+		if actionID := initial[n.ID]; actionID != "" {
+			if err = c.processAction(ctx, actionID); err != nil {
+				return &Error{err}
+			}
+			continue
 		}
 		if n.State != "received" {
 			continue
@@ -526,11 +546,22 @@ func (c *Controller) confirmAddEvidence(ctx context.Context, n store.Submission,
 	return nil
 }
 
+func initialSteer(a store.SubmissionAction) bool {
+	return a.Kind == "steer" && a.QueueID == ""
+}
+
 func (c *Controller) processAction(ctx context.Context, actionID string) error {
+	return c.processActionWithInitialQueue(ctx, actionID, true)
+}
+
+func (c *Controller) processActionWithInitialQueue(ctx context.Context, actionID string, allowInitialQueue bool) error {
 	for step := 0; step < 5; step++ {
 		op, err := c.Store.SubmissionAction(ctx, c.scope(), actionID)
 		if err != nil || op.State != "ready" {
 			return err
+		}
+		if initialSteer(op) && op.Stage == "restore" && !allowInitialQueue {
+			return nil
 		}
 		snap, err := c.snapshot(ctx)
 		if err != nil {
@@ -559,6 +590,20 @@ func (c *Controller) processAction(ctx context.Context, actionID string) error {
 					return err
 				} else if found {
 					return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", "consumed")
+				}
+				if initialSteer(op) {
+					if _, found := snap.byQueue[n.ClientID]; found {
+						if _, err = c.observe(ctx, n, snap, "queued", op.ID); err != nil {
+							return err
+						}
+						return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", "retained")
+					}
+					stage := "steer"
+					if snap.active == "" {
+						stage = "restore"
+					}
+					err = c.Store.PrepareSubmissionAction(ctx, c.scope(), op.ID, stage, snap.active, "", n.ClientID)
+					break
 				}
 				q, found := snap.byQueue[n.ClientID]
 				if !found || q.ID != op.QueueID {

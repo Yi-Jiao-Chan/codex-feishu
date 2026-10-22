@@ -148,6 +148,20 @@ func (s *Store) InteractionAttempt(ctx context.Context, id string) (a Interactio
 // Claim binds an authorized operator to the actual unforwarded card. It freezes
 // the complete answer before returning to Feishu; the thread actor sends later.
 func (s *Store) ClaimInteraction(ctx context.Context, scope SubmissionScope, user string, operators []string, chat, message, token string, revision int64, connection string, generation int64, result, summary string, nowMS int64) (r InteractionRequest, err error) {
+	return s.claimInteraction(ctx, scope, user, operators, chat, message, token, revision, connection, generation, result, summary, "", nowMS)
+}
+
+// ClaimAsyncInteraction atomically freezes the explicitly requested append,
+// its answer receipt, and the existing native-operation journal. Old callbacks
+// use ClaimInteraction and keep their original queued-delivery behavior.
+func (s *Store) ClaimAsyncInteraction(ctx context.Context, scope SubmissionScope, user string, operators []string, chat, message, token string, revision int64, connection string, generation int64, result, summary, body string, nowMS int64) (InteractionRequest, error) {
+	if body == "" {
+		return InteractionRequest{}, ErrIneligible
+	}
+	return s.claimInteraction(ctx, scope, user, operators, chat, message, token, revision, connection, generation, result, summary, body, nowMS)
+}
+
+func (s *Store) claimInteraction(ctx context.Context, scope SubmissionScope, user string, operators []string, chat, message, token string, revision int64, connection string, generation int64, result, summary, appendBody string, nowMS int64) (r InteractionRequest, err error) {
 	if !containsMentionID(operators, user) || user == "" || !json.Valid([]byte(result)) || nowMS <= 0 {
 		return r, ErrIneligible
 	}
@@ -180,6 +194,9 @@ func (s *Store) ClaimInteraction(ctx context.Context, scope SubmissionScope, use
 	if r.AttemptID != "" {
 		return r, ErrSubmissionBusy
 	}
+	if appendBody != "" && (r.Mode != "async" || r.Method != "async") {
+		return r, ErrConflict
+	}
 	attempt := ID()
 	_, err = tx.ExecContext(ctx, `INSERT INTO interaction_attempts(attempt_id,request_key,user_id,connection_id,generation,result_json,summary,state,created_at_ms) VALUES(?,?,?,?,?,?,?,'ready',?)`, attempt, r.Key, user, connection, generation, result, summary, nowMS)
 	if err == nil {
@@ -188,9 +205,16 @@ func (s *Store) ClaimInteraction(ctx context.Context, scope SubmissionScope, use
 	if err != nil {
 		return r, err
 	}
-	err = tx.Commit()
 	r.AttemptID = attempt
 	r.Revision++
+	if appendBody != "" {
+		r.SubmissionID, err = submitAsyncInteractionTx(ctx, tx, r, appendBody, true, nowMS)
+		if err != nil {
+			return r, err
+		}
+		r.Revision++
+	}
+	err = tx.Commit()
 	return r, err
 }
 func (s *Store) DispatchInteraction(ctx context.Context, key, connection string, generation int64) (a InteractionAttempt, ok bool, err error) {
@@ -336,27 +360,55 @@ func (s *Store) SubmitAsyncInteraction(ctx context.Context, key, body string) er
 	if state != "ready" {
 		return nil
 	}
+	if _, err = submitAsyncInteractionTx(ctx, tx, r, body, false, 0); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func submitAsyncInteractionTx(ctx context.Context, tx *sql.Tx, r InteractionRequest, body string, appendAnswer bool, nowMS int64) (string, error) {
 	b, err := submissionBinding(ctx, tx, SubmissionScope{r.HostID, r.AppID, r.ThreadID})
 	if err != nil {
-		return err
+		return "", err
 	}
-	m, err := readMirror(ctx, tx, r.HostID, r.ThreadID, InteractionCardKey(key))
+	m, err := readMirror(ctx, tx, r.HostID, r.ThreadID, InteractionCardKey(r.Key))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if m.RemoteID == "" {
-		return ErrConflict
+		return "", ErrConflict
+	}
+	if appendAnswer {
+		// Preserve FIFO for older receipts not yet adopted by the actor.
+		_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO submission_order(receipt_id)
+ SELECT id FROM m0_receipts WHERE app_id=? AND thread_id=? AND chat_id=? AND state<>'draft' ORDER BY rowid`, r.AppID, r.ThreadID, b)
+		if err != nil {
+			return "", err
+		}
 	}
 	receipt, client, token := ID(), "cfb-"+ID(), ID()
 	_, err = tx.ExecContext(ctx, `INSERT INTO m0_receipts(id,app_id,message_id,thread_id,chat_id,body,client_id,state,action_token) VALUES(?,?,?,?,?,?,?,'received',?)`, receipt, r.AppID, m.RemoteID, r.ThreadID, b, body, client, token)
+	if err == nil && appendAnswer {
+		_, err = tx.ExecContext(ctx, `INSERT INTO submission_order(receipt_id) VALUES(?)`, receipt)
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO submission_inputs(receipt_id,host_id,app_id,thread_id,state) VALUES(?,?,?,?,'steering')`, receipt, r.HostID, r.AppID, r.ThreadID)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `UPDATE m0_receipts SET state='steering' WHERE id=?`, receipt)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `INSERT INTO submission_actions(action_id,host_id,app_id,thread_id,receipt_id,token,revision,kind,stage,state,client_id,created_at_ms)
+ VALUES(?,?,?,?,?,?,1,'steer','prepare','ready',?,?)`, ID(), r.HostID, r.AppID, r.ThreadID, receipt, token, client, nowMS)
+		}
+	}
 	if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE interaction_requests SET submission_id=?,revision=revision+1 WHERE request_key=?`, receipt, key)
+		_, err = tx.ExecContext(ctx, `UPDATE interaction_requests SET submission_id=?,revision=revision+1 WHERE request_key=?`, receipt, r.Key)
 	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `UPDATE interaction_attempts SET state='submitted' WHERE attempt_id=? AND state='ready'`, r.AttemptID)
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
-	return tx.Commit()
+	return receipt, nil
 }

@@ -386,6 +386,36 @@ func (s *Store) ClaimThreadSubmissionActionExpected(ctx context.Context, scope S
 	return a, tx.Commit()
 }
 
+// A steer with no original queue identity is created only by the explicit
+// async-answer claim. Provenance and the absence of an earlier native write
+// keep ordinary/legacy receipts out of this initial-delivery path.
+func initialAsyncSubmission(ctx context.Context, q submissionQuerier, scope SubmissionScope, a SubmissionAction) error {
+	n, err := readSubmission(ctx, q, scope, a.ReceiptID)
+	if err != nil {
+		return err
+	}
+	if n.State != "steering" || n.QueueID != "" || n.QueueOrdinal != 0 || n.TurnID != "" || n.ItemID != "" ||
+		n.ClientID == "" || n.ClientID != a.ClientID || n.ActionToken != a.Token {
+		return ErrSubmissionStale
+	}
+	var provenance, previous int
+	err = q.QueryRowContext(ctx, `SELECT
+ (SELECT COUNT(*) FROM interaction_requests r JOIN interaction_attempts i ON i.attempt_id=r.attempt_id AND i.request_key=r.request_key
+  WHERE r.host_id=? AND r.app_id=? AND r.thread_id=? AND r.mode='async' AND r.submission_id=? AND i.state='submitted'),
+ (SELECT COUNT(*) FROM submission_attempts WHERE receipt_id=? AND NOT(action_id=? AND stage='steer' AND state='rejected'))+
+ (SELECT COUNT(*) FROM m0_operations WHERE key='m0.add.'||?)+
+ (SELECT COUNT(*) FROM m0_actions WHERE receipt_id=?)+
+ (SELECT COUNT(*) FROM input_history_links WHERE receipt_id=?)`,
+		scope.HostID, scope.AppID, scope.ThreadID, n.ID, n.ID, a.ID, n.ID, n.ID, n.ID).Scan(&provenance, &previous)
+	if err != nil {
+		return err
+	}
+	if provenance != 1 || previous != 0 {
+		return ErrSubmissionStale
+	}
+	return nil
+}
+
 // PrepareSubmissionAction captures a target once. Later stages cannot retarget
 // an expected turn when App moves to a different turn.
 func (s *Store) PrepareSubmissionAction(ctx context.Context, scope SubmissionScope, id, stage, turnID, queueID, clientID string) error {
@@ -401,11 +431,18 @@ func (s *Store) PrepareSubmissionAction(ctx context.Context, scope SubmissionSco
 	if err != nil {
 		return err
 	}
+	initial := a.Kind == "steer" && a.QueueID == ""
 	if a.State != "ready" || a.Stage != "prepare" || a.ExpectedTurnID != "" && turnID != a.ExpectedTurnID ||
-		(a.Kind == "steer" || a.Kind == "remove") && (stage != "delete" || a.QueueID != queueID || a.ClientID != clientID) ||
+		initial && (stage != "steer" && stage != "restore" || stage == "steer" && turnID == "" || stage == "restore" && turnID != "" || queueID != "" || a.ClientID != clientID) ||
+		!initial && (a.Kind == "steer" || a.Kind == "remove") && (stage != "delete" || a.QueueID != queueID || a.ClientID != clientID) ||
 		a.Kind == "stop" && (stage != "interrupt" || turnID == "") ||
-		a.Kind == "continue" && stage != "start" || a.Kind == "steer" && turnID == "" {
+		a.Kind == "continue" && stage != "start" || !initial && a.Kind == "steer" && turnID == "" {
 		return ErrSubmissionStale
+	}
+	if initial {
+		if err = initialAsyncSubmission(ctx, tx, scope, a); err != nil {
+			return err
+		}
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE submission_actions SET stage=?,expected_turn_id=?,queue_id=?,client_id=? WHERE host_id=? AND app_id=? AND thread_id=? AND action_id=?`, stage, turnID, queueID, clientID, scope.HostID, scope.AppID, scope.ThreadID, id)
 	if err != nil {
@@ -468,6 +505,14 @@ func (s *Store) ClaimSubmissionAttempt(ctx context.Context, scope SubmissionScop
 		}
 		if op.State != "ready" || op.Stage != stage || op.ReceiptID != receiptID || stage == "prepare" || stage == "local" {
 			return a, false, ErrSubmissionStale
+		}
+		if op.Kind == "steer" && op.QueueID == "" {
+			if stage != "steer" && stage != "restore" || stage == "steer" && op.ExpectedTurnID == "" {
+				return a, false, ErrSubmissionStale
+			}
+			if err = initialAsyncSubmission(ctx, tx, scope, op); err != nil {
+				return a, false, err
+			}
 		}
 		a.QueueID, a.ExpectedTurnID, a.ClientID = op.QueueID, op.ExpectedTurnID, op.ClientID
 		_, err = tx.ExecContext(ctx, `UPDATE submission_actions SET state='running' WHERE host_id=? AND app_id=? AND thread_id=? AND action_id=?`, scope.HostID, scope.AppID, scope.ThreadID, actionID)
