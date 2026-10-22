@@ -33,7 +33,7 @@ V3 新会话复测已通过：第一题在飞书提交选项及补充文字，�
 | 网络访问 | 命令审批中的 `networkApprovalContext` | 展示实际 host、protocol，决定是否允许 | 本轮 |
 | 申请额外权限 | `item/permissions/requestApproval` | 展示请求的读、写、网络范围；授予全部或选定子集 | 本轮，默认仅当前轮 |
 | 原生同步问答 | `item/tool/requestUserInput` | 选项、补充输入、多问题一次提交 | 本轮 |
-| 非阻塞的异步问答 | `agentMessage.delivery=async` + `questions` | 问答卡，回答进入同会话原生队列 | 本轮单独适配；App 问答组件回显需验证 |
+| 非阻塞的异步问答 | `agentMessage.delivery=async` + `questions` | 问答卡，显式提交时追加活跃轮；空闲时继续会话 | 本轮单独适配；App 问答组件回显需验证 |
 | MCP 普通表单 | `mcpServer/elicitation/request` 的 form 模式 | 按 `requestedSchema` 生成受支持字段 | 后续扩展 |
 | 登录、用户验证、密钥等 | URL / owner 专属 / `isSecret` 等 | 进入原授权或验证界面 | 不在公共卡片收集秘密或代办身份验证 |
 
@@ -137,12 +137,13 @@ B · 同时调整正文与执行过程布局
 本机协议中，`agentMessage` 可包含 `delivery:"async"` 和 `questions:[{title,options}]`。这一类没有上述 pending callback，也没有公开的专用“回答异步问题”客户端 method。官方固定版本实现会直接返回 `accepted:true` 并让 Agent 继续工作，来源及边界见[异步问答实现研究](../research/approval-routing-0.162.0.md)。
 
 - 扩展 `codexclient.Item` 读取 delivery/questions，按 thread + 原消息 item ID + 题号建立问答身份。
-- 卡片提交生成包含原问题与答案对应关系的普通输入，复用现有可靠的原生队列链路；执行中默认排队，现有追加引导入口继续可用。
+- “提交回答并追加”生成带原问题身份的用户输入。存在活跃轮时直接 `turn/steer` 追加，空闲时用 queue/add 继续会话；不先入队再删队。提交动作在回调事务中落盘，目标轮在实际发送前冻结。
+- steer 明确拒绝时按原收据进入可靠队列，并遵守附件收取与 FIFO；响应 unknown 时只核验原目标轮，不尝试第二次 steer 或替代提交。旧回调、旧答案及已经排队的回答不自动追加。
 - 卡片准确显示“回答已排队 / 已进入会话”，不写“原生审批已完成”，也不把一条异步问题误认为最终任务结果。
 - 回答后的排队状态、队列序号及“追加引导 / 移除”复用原问题卡，保留原消息 ID 和引用，不再另发通用排队卡。断线时禁用原生操作；移除显示“已移除”。另一端已回答而飞书回答仍排队时，原卡保留排队提示和移除入口。升级前已存在的独立排队投递继续沿用原收据，unknown 不另建替代卡。
 - 首先在隔离会话中确认 App 所用答复格式与问题组件的关联。如果公开输入只能回显文字，应明确保留“结构化文字回显”的限制，不能声称 App 选择控件已变成已答。该缺口不影响审批与同步问答的原生回应路线。
 
-异步回答的原生传输本身会产生一条 `userMessage`，不是同步问答的 JSON-RPC result。关联信息在 `send_user_message_question_reply` 包装内，`questionItemId` 保持原始 `agentMessage.id` 和零起始题号；不能因界面显示新输入就改用不存在的专用回复 method，也不能自动 steer。原问题控件是否识别跨端回答仍以实际 App 验收为准。
+异步回答的原生传输本身会产生一条 `userMessage`，不是同步问答的 JSON-RPC result。关联信息在 `send_user_message_question_reply` 包装内，`questionItemId` 保持原始 `agentMessage.id` 和零起始题号；这不是同步问答的专用回复 method。用户点击“提交回答并追加”后可显式 steer，普通聊天继续排队；不能把两种投递策略混为一谈。原问题控件是否识别跨端回答仍以实际 App 验收为准。
 
 2026-10-15 异步通知与回答展示适配：启用交互扩展后，异步问题始终保存并显示独立问题卡，`async_question` 只控制能否在飞书填写。未启用填写时提示“请在 Codex App 中回答”，首次投递按 needs_user 策略决定 @，不再把问题作为另一份最终回复发送。原生实时 item 事件可证明旧轮次内的新问题；未观察到的新历史问题不补提醒，首次看到时已经回答的问题不补发待回答卡或 @。
 

@@ -440,11 +440,17 @@ func TestInteractionQuestionFormIsTopLevelAndNamesRemainUnique(t *testing.T) {
 			if element["name"] != "submit_answers" || element["form_action_type"] != "submit" || element["type"] != "primary" {
 				t.Fatalf("submit button shape = %#v", element)
 			}
+			if text := element["text"].(map[string]any)["content"]; text != "提交回答" {
+				t.Fatalf("synchronous submit label = %#v", text)
+			}
 			submitSeen = true
 			behaviors := element["behaviors"].([]any)
 			value := behaviors[0].(map[string]any)["value"].(map[string]any)
 			if len(value) != 3 || value["action"] != "interaction_submit" || value["token"] != "invalid-question-token" || value["revision"] != float64(3) {
 				t.Fatalf("submit callback leaked native IDs or wrong shape: %#v", value)
+			}
+			if _, ok := value["decision"]; ok {
+				t.Fatal("synchronous question unexpectedly carried an append decision")
 			}
 		}
 	})
@@ -477,6 +483,59 @@ func TestInteractionQuestionFormIsTopLevelAndNamesRemainUnique(t *testing.T) {
 	}
 	if strings.Contains(card, "<at") || strings.Contains(card, "审批成功") {
 		t.Fatal("question card contains an unsafe native tag or success claim")
+	}
+}
+
+func TestInteractionAsyncQuestionUsesAppendAnswerSubmit(t *testing.T) {
+	card := Interaction(InteractionView{
+		Kind:   "async_question",
+		State:  "pending",
+		Reason: "请回答当前问题",
+		Token:  "invalid-async-question-token", Revision: 4, Enabled: true,
+		Questions: []InteractionQuestion{{Field: "q_0", Question: "是否继续？", Options: []InteractionOption{{Value: "yes", Label: "继续"}}}},
+	})
+	if !strings.Contains(card, "提交回答并追加") || !strings.Contains(card, "忙碌时追加到当前任务，空闲时继续会话。") {
+		t.Fatalf("async question lost append guidance: %s", card)
+	}
+	doc := decodeInteraction(t, card)
+	var submit map[string]any
+	walkInteractionJSON(doc, func(element map[string]any) {
+		if element["tag"] == "button" && element["name"] == "submit_answers" {
+			submit = element
+		}
+	})
+	if submit == nil {
+		t.Fatal("async question has no submit button")
+	}
+	if submit["type"] != "primary" || submit["text"].(map[string]any)["content"] != "提交回答并追加" {
+		t.Fatalf("async submit shape = %#v", submit)
+	}
+	value := submit["behaviors"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	if value["action"] != "interaction_submit" || value["token"] != "invalid-async-question-token" || value["revision"] != float64(4) || value["decision"] != "append_answer" {
+		t.Fatalf("async submit callback = %#v", value)
+	}
+}
+
+func TestInteractionAsyncQuestionSubmitIsReadOnlyWhenDisabledLimitedOrResolved(t *testing.T) {
+	questions := []InteractionQuestion{{Field: "q_0", Question: "是否继续？", Options: []InteractionOption{{Value: "yes", Label: "继续"}}}}
+	cases := []struct {
+		name string
+		view InteractionView
+	}{
+		{name: "disabled", view: InteractionView{Kind: "async_question", State: "pending", Token: "disabled-token", Revision: 1, Questions: questions}},
+		{name: "limited", view: InteractionView{Kind: "async_question", State: "pending", Reason: strings.Repeat("很长的背景。", 3000), Token: "limited-token", Revision: 2, Enabled: true, MaxCardBytes: 3500, Questions: questions}},
+		{name: "resolved", view: InteractionView{Kind: "async_question", State: "resolved", Token: "resolved-token", Revision: 3, Enabled: true, Questions: questions}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			card := Interaction(tc.view)
+			if strings.Contains(card, "submit_answers") || strings.Contains(card, "append_answer") {
+				t.Fatalf("%s async question retained submit action: %s", tc.name, card)
+			}
+			if tc.view.MaxCardBytes > 0 && len(card) > tc.view.MaxCardBytes {
+				t.Fatalf("%s async question exceeded card budget: %d > %d", tc.name, len(card), tc.view.MaxCardBytes)
+			}
+		})
 	}
 }
 

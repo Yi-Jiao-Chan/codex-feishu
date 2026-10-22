@@ -77,6 +77,8 @@ schema 30 为 `creation_drafts` 增加 `attachments_json`；旧草稿迁移为�
 
 输入流程：`received → pending_submit → queued/executing → confirmed`。明确失败进入 failed；RPC 结果未知从任意发出阶段进入 reconciling。删除/引导有独立动作记录，不覆盖原始输入内容。
 
+异步问题的显式追加复用现有 schema 30 收据与动作日志，不增加表或迁移。仅新按钮回调在一个事务内保存 interaction attempt、完整回答 receipt、submission input 和 `kind=steer, stage=prepare, queue_id=''` 的初始动作；先补齐较早未被 actor 收取的收据顺序，再登记新答案。旧 queued steer 的 queue_id 非空，仍走删除后引导；旧回答不生成初始动作。发送前把目标 turn 固定在 action/attempt；明确拒绝进入 restore，unknown 按原目标 turn/clientId 核验。重连不得改投新轮、盲目补发或复制一份替代收据。 虽然数据库 schema 未变，旧二进制不能处理这类未完成的初始追加动作；回退前须确认这些动作已安全结束。不得为回退二进制而用旧备份覆盖升级后已产生的会话活动。
+
 每次远程写入采用以下边界：
 
 1. 事务内领取入站消息/动作，持久化输入、目标和操作意图，提交。
