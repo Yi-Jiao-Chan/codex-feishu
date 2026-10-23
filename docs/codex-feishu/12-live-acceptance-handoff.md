@@ -2,11 +2,13 @@
 
 本页用于 M0 之后的候选部署验收，执行契约仍以 [Agent 配置指南](AGENT-SETUP.md) 和 [一期矩阵](11-integration-and-acceptance.md) 为准。它将需要用户查看 App / 飞书的操作合并，不能代替逐项取证。
 
-## 2026-10-23 飞书输入触发工作树恢复（待部署）
+## 2026-10-23 飞书输入触发工作树恢复（候选已部署）
 
 托管工作树被回收后，普通飞书消息先持久接收，再从原路径的 Codex 快照恢复，在原 cwd 附着同一线程并提交原收据。已经卡住且确认从未提交的普通消息也可恢复，进度或阻塞更新原消息的回复卡。schema 33→34 新增身份、输入授权和恢复日志，保留会话设置与既有收据；unknown 先核验，取消不重发，原创建 birth 不改写。
 
-实现与自动验证见[恢复记录](../records/feishu-worktree-auto-restore-2026-10-23.md)。尚未部署或改写真实工作树；真实 App/飞书恢复、原聊天继续和客户端附件展示均为 pending。兼容边界仍为 App Server 0.162.1 / 桌面 26.1016.62342；桌面私有附件状态、缓存 gitdir 与已排队清理不由桥修改，`phase1_released=false`。
+已 rebase 最新 main 并部署构建 `c816b561399193ab6acf193fdde29f218045476d`。schema 33→34 副本演练及停桥迁移通过，59 张旧表和 179,623 行数据保持，新增恢复表为空。原配置保持，PID 1532952，systemd active/running/enabled，进程与稳定 CLI 身份一致，两侧连接正常。已恢复绑定由 61/104 增至 66/104，仍只有原来的两项 required pending，历史 unknown 未增加。
+
+两条既存普通输入已自动恢复原工作树并 consumed，各有一次 confirmed add 和一条原生历史关联；未额外创建测试资源或发送输入。实现、自动验证与运行证据见[恢复记录](../records/feishu-worktree-auto-restore-2026-10-23.md)。真实 App/飞书 UI、原聊天继续和客户端附件展示仍为 pending。兼容边界仍为 App Server 0.162.1 / 桌面 26.1016.62342；桌面私有附件状态、缓存 gitdir 与已排队清理不由桥修改，`phase1_released=false`。
 
 ## 2026-10-23 托管工作树归属修复（待部署）
 
