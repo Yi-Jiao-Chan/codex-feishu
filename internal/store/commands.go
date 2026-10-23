@@ -31,6 +31,8 @@ type CommandRequest struct {
 	SourceRootID, SourceThreadID                                 string
 	HostID, AppID, MessageID, ChatID, ChatType, UserID, ThreadID string
 	Kind, Feedback, NotificationTimezone                         string
+	HelpTopic                                                    string
+	Setting, SettingValue                                        string
 	CreationEnabled                                              bool
 	OwnerOpenID                                                  string
 	FilePreviewEnabled                                           bool
@@ -104,6 +106,16 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 	var body, settingsCard string
 	silentReply := false
 	switch req.Kind {
+	case "model_settings":
+		if !operator || req.ThreadID == "" || req.SettingValue != "" || req.Setting != "" && req.Setting != "model" {
+			return CommandReply{}, false, ErrConflict
+		}
+		silentReply = true
+	case "session_settings":
+		if !operator || req.ThreadID == "" || req.Setting != "model" && req.Setting != "reasoning" && req.Setting != "fast" || len(req.SettingValue) > 256 {
+			return CommandReply{}, false, ErrConflict
+		}
+		body = "正在读取当前会话设置。"
 	case "preview":
 		if !operator || req.OwnerOpenID == "" || req.UserID != req.OwnerOpenID || req.ChatType != "p2p" ||
 			req.ThreadID != "" || !req.FilePreviewEnabled || req.PreviewAccessCode == "" {
@@ -176,14 +188,8 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 				body = "已收到继续处理队列的请求，正在核验；不会在没有队列时启动新任务。"
 			}
 		}
-	case "help", "status":
-		body = "一期从 Codex App 发起任务，第一条实际输入后自动建专属群；在已绑定群中普通消息进入同一会话的队列。\n这里暂不创建新任务。支持 /mute-dir、/unmute-dir、/notify at；已绑定群的操作者可用 /stop 和 /continue。"
-		if req.CreationEnabled {
-			body = "私聊机器人发送任务描述或 /new，即可选择目录并创建 Codex 会话。授权入口群可 @机器人发起；已绑定任务群用 /new 新建，普通 @ 消息继续原会话。\n支持 /mute-dir、/unmute-dir、/notify at；任务群或对应话题可用 /stop 和 /continue。"
-		}
-		if req.FilePreviewEnabled {
-			body += "\n部署所有者可私聊发送 /preview 获取文件预览口令。"
-		}
+	case "help":
+		settingsCard = cards.CommandHelp(req.HelpTopic, req.CreationEnabled, req.FilePreviewEnabled)
 	case "feedback":
 		body = req.Feedback
 		if body == "" {
@@ -201,8 +207,8 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 	}
 	r := CommandReply{ID: ID(), HostID: req.HostID, AppID: req.AppID, MessageID: req.MessageID, ChatID: req.ChatID, ChatType: req.ChatType, UserID: req.UserID, ThreadID: req.ThreadID, Kind: req.Kind, Card: card, State: "ready", CreatedAtMS: now.UnixMilli()}
 	if silentReply {
-		// This completes only the local no-op reply delivery, not the native
-		// stop. Its independently journaled action still has to be confirmed.
+		// A silent receipt deduplicates local admission. The independent
+		// settings form or native stop journal owns the remaining work.
 		r.State = "confirmed"
 	}
 	if len(r.Card) > cards.DefaultMaxCardBytes {
@@ -214,6 +220,21 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 	}
 	if err := recordCommandSourceTargetTx(ctx, tx, req); err != nil {
 		return CommandReply{}, false, err
+	}
+	if req.Kind == "session_settings" || req.Kind == "model_settings" {
+		id, setting, value := ID(), req.Setting, req.SettingValue
+		if req.Kind == "model_settings" {
+			setting, value = "model", ""
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO session_settings_requests(id,host_id,app_id,message_id,thread_id,setting,value,state,created_at_ms) VALUES(?,?,?,?,?,?,?,'ready',?)`, id, req.HostID, req.AppID, req.MessageID, req.ThreadID, setting, value, now.UnixMilli()); err != nil {
+			return CommandReply{}, false, err
+		}
+		if req.Kind == "model_settings" {
+			request := SessionSettingsRequest{ID: id, HostID: req.HostID, AppID: req.AppID, MessageID: req.MessageID, ThreadID: req.ThreadID, Setting: setting, State: "ready", CreatedAtMS: now.UnixMilli()}
+			if err := createSessionSettingsFormTx(ctx, tx, request, now.UnixMilli()); err != nil {
+				return CommandReply{}, false, err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return CommandReply{}, false, err
@@ -361,7 +382,7 @@ func commandNotificationCard(p rules.Policy, now time.Time) string {
 	return cards.Settings(cards.SettingsView{Conclusion: conclusions[reason], Summary: summary, DetailsTitle: "完整通知设置", Details: text, Source: "机器人设置 · 本部署"})
 }
 
-const commandReplyReady = `host_id=? AND state='ready' AND NOT EXISTS(SELECT 1 FROM command_reply_throttles t WHERE t.app_id=command_replies.app_id AND t.message_id=command_replies.message_id AND t.next_retry_at_ms>?) AND NOT EXISTS(SELECT 1 FROM command_reply_attempts a WHERE a.app_id=command_replies.app_id AND a.message_id=command_replies.message_id AND a.state IN ('dispatching','unknown'))`
+const commandReplyReady = `host_id=? AND state='ready' AND NOT EXISTS(SELECT 1 FROM command_reply_throttles t WHERE t.app_id=command_replies.app_id AND t.message_id=command_replies.message_id AND t.next_retry_at_ms>?) AND NOT EXISTS(SELECT 1 FROM command_reply_attempts a WHERE a.app_id=command_replies.app_id AND a.message_id=command_replies.message_id AND a.state IN ('dispatching','unknown')) AND NOT EXISTS(SELECT 1 FROM session_settings_requests s WHERE s.app_id=command_replies.app_id AND s.message_id=command_replies.message_id AND s.state IN ('ready','dispatching'))`
 
 // CommandReplyCandidates reads a bounded snapshot without claiming, changing
 // attempt identities, or freezing a wire card. It shares dispatch filtering with

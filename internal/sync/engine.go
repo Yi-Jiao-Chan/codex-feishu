@@ -32,6 +32,7 @@ type Engine struct {
 	SuppressAsyncQuestions bool
 	AsyncQuestionsSinceMS  int64
 	asyncItems             map[string]bool
+	replySources           map[string]string
 	TimeZone               string
 	MaxCardBytes           int
 	MentionTargets         []string // Reserve the complete structured reminder before splitting final text.
@@ -76,6 +77,11 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 	if err != nil {
 		return err
 	}
+	replySources, err := e.Store.ReplySettingsSources(ctx, e.HostID, thread)
+	if err != nil {
+		return err
+	}
+	e.replySources = replySources
 	if e.SuppressAsyncQuestions {
 		e.asyncItems = map[string]bool{}
 		rows, readErr := e.Store.DB.QueryContext(ctx, `SELECT turn_id,item_id FROM interaction_requests WHERE host_id=? AND thread_id=? AND mode='async'`, e.HostID, thread)
@@ -99,6 +105,14 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 	plan, err := e.renderSnapshot(thread, turns, receipts, old, replay, observedAtMS)
 	if err != nil {
 		return err
+	}
+	if changed, err := e.observeReplySources(ctx, thread, turns, old, plan.Docs, replay); err != nil {
+		return err
+	} else if changed {
+		plan, err = e.renderSnapshot(thread, turns, receipts, old, replay, observedAtMS)
+		if err != nil {
+			return err
+		}
 	}
 	// Validate the complete snapshot before any resource upload. The renderer
 	// remains pure for recovery and reviewed legacy adoption.
@@ -347,7 +361,12 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			if err != nil {
 				return snapshotPlan{}, err
 			}
-			parts, err := cards.SplitMessage("AI 回复", "Codex", body, budget)
+			replySource := replySourceForTurn(turn.ID, e.replySources)
+			replyRole := "AI 回复"
+			if stored, ok := e.replySources[turn.ID]; ok && stored != "" {
+				replyRole = ""
+			}
+			parts, err := cards.SplitMessage(replyRole, replySource, body, budget)
 			if err != nil {
 				return snapshotPlan{}, err
 			}

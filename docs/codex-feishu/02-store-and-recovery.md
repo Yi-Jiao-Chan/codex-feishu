@@ -2,6 +2,20 @@
 
 负责 `internal/store/`、迁移、恢复协调器。依赖 00；必须在输入提交与自动建群之前可用。
 
+## Schema 33：会话设置表单
+
+`session_settings_forms` 与 schema 32 的 `session_settings_requests`、`reply_settings_sources` 并存。每次不带参数的 `/model` 在同一事务中保存命令收据、表单和初始 UI mirror/outbox；表单阶段为 `loading`、`editing`、`saving`、`canceling`、`closed`。`loading` 完成后才发布编辑表单，编辑中的草稿不调用原生设置接口，也不阻塞普通队列输入或停止。
+
+点击保存或取消时，先在本地事务中核验当前操作者、绑定、原卡消息、token、revision 和有效期，并冻结首个动作；同一动作、同一 revision 的精确重复回调幂等确认，动作或选择已变化的重复回调、竞争动作、过期、旧 revision、转发卡片或其他发起人的回调均失败关闭，首个保存/取消动作获胜。保存只提交一次已冻结的 `thread/settings/update` patch；取消不写原生设置，而是重新读取当前值。结果和 compact terminal 卡片都沿同一 UI mirror/outbox 更新原始卡片。
+
+打开表单后若原生设置已变化，保存拒绝覆盖并要求重新发送 `/model`。原生写入结果为 unknown 时只读回核验冻结 patch，绝不重发；表单过期后须重新发送 `/model`。本地实现与协议证据不替代真实 App、飞书桌面端和移动端验收，后者仍为 pending。
+
+## Schema 32：会话设置收据与回复引用区
+
+`session_settings_requests` 保留原有设置请求、冻结 payload、dispatching/unknown 恢复和去重收据；没有新表单的旧请求仍走兼容恢复路径：`ready` 且尚未发送的请求执行此前已授权的 intent 一次，`dispatching` 和 `unknown` 只读回核验，绝不重发。schema 33 的新表单仍以对应请求收据作为持久父记录。写入前将准确参数冻结为 payload；重启后的 dispatching 和丢失响应的 unknown 都只读回核验，不重新发送。unknown 每 30 秒核验一次，未决时仍允许 `/model` 查询、普通输入和停止等已有任务控制。
+
+`reply_settings_sources` 按 host/thread/turn 保存首次最终回复的紧凑引用区设置文本；同一轮所有分片复用，后续设置变更与重启不会改写。引用区的设置部分例如 `gpt-6-astra · max` 或 `gpt-6.1-sol · max · fast`，只在 Fast 已明确开启时追加 `fast`，不追加 `Codex`、字段标签或 Fast 关闭文案。历史补同步、设置读取失败或缺字段时省略缺失的思考强度和服务档位；仅模型缺失时显示 `模型未知`。快照不证明该轮每次模型调用采用了相同设置。
+
 ## Schema 31：原生 CoT 投递状态
 
 新增 `cot_deliveries` 保存每个进度镜像的 cot_id、已确认公开投影和 completed 标志；原 outbound_attempts 新增 cot_step、cot_id、cot_events_json、cot_state_json、cot_state_before 与 cot_caught_up。继续复用原 mirrors/outbound、绑定、授权租约和启动恢复，不新增接收器或独立出站队列。CoT 文档以 codex_feishu_cot=1 与普通 Card JSON 区分；每轮首次投影后固定传输类型，旧卡片、旧 unknown 和回调均保留。

@@ -2,7 +2,19 @@
 
 本页用于 M0 之后的候选部署验收，执行契约仍以 [Agent 配置指南](AGENT-SETUP.md) 和 [一期矩阵](11-integration-and-acceptance.md) 为准。它将需要用户查看 App / 飞书的操作合并，不能代替逐项取证。
 
-## 2026-10-23 创建卡当前部署
+## 2026-10-23 模型设置卡片当前部署
+
+用户确认单一 `/model` 表单和取消按钮后，原本地服务更新到 `348dd9935909+model-card-11a9c1d69374`，二进制 SHA-256 `22c15813c51c6b1a99f9715a182e29a89ddb45d0af61d2fae06d2ab3d3545130`。保存和取消后在原卡显示实际当前模型、思考强度及启用时的 fast；新回复引用区使用同样的紧凑格式。删除聊天 `/status`、`/reasoning`、`/fast`，`/help` 保留 12 条指令与详情。
+
+schema 32→33 的副本演练和停服升级通过；原 58 表/179285 行的定义与行数保持，新增表单表为空。PID 1011491，systemd active/running/enabled，进程和稳定 CLI 身份一致，原配置与共享 daemon 保留。Codex 与飞书连接恢复，切换前后绑定恢复均为 61/104；doctor/status 仍只有原来两项 required pending。全仓测试、相关 race 及文档检查通过；部署后用户确认本轮测试无问题并授权 PR 合并。该确认不扩展为逐端、全部异常场景或完整一期通过，`phase1_released=false`。详见[本次部署记录](../records/model-settings-card-deployment-2026-10-23.md)。
+
+## 2026-10-23 会话设置与帮助前次部署记录
+
+用户授权本地部署后，现有服务更新到 `348dd9935909+session-settings-8212a54c826c`，二进制 SHA-256 `58f9ffb39296192b21dc2707c6bdca89315375e82dca4aa67e04d047f6641742`，保留已部署的创建卡更新。schema 31→32 已经副本演练和停服备份后升级，原 56 表/179006 行的定义与行数保持，完整性及外键检查通过；原配置与共享 daemon 保留。
+
+进程和稳定 CLI 身份一致，PID 557845，systemd active/running/enabled，Codex 与飞书连接恢复。doctor/status 仍有 bindings_reconciled / operations_known 两项 required pending；绑定恢复从 65/104 变为 61/104，差异尚未定位，不能记为整体健康通过。会话设置、回复底部信息和 `/help` 详情等待用户测试，完整一期状态及 `phase1_released=false` 保持。详见[本次部署记录](../records/session-settings-help-deployment-2026-10-23.md)。
+
+## 2026-10-23 创建卡前次部署记录
 
 用户明确授权后，现有服务已更新到 `f86c0422922c+creation-card-796ba293d814`，二进制 SHA-256 `588549e8c3d7cc139f4f84dc1d8dda1505307a9b5dbe3b885fcb348fb41d41f0`，保留此前的压缩轮、Goal 同步与桥工作树存储修复。schema 31、原配置与共享 daemon 保持；停桥一致备份 56 表/178532 行通过完整性、外键和逐表行数检查。
 

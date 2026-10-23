@@ -73,6 +73,20 @@ func (c Commands) Handle(ctx context.Context, in InboundCommand) error {
 	}
 	feedback := func(text string) { req.Kind, req.Feedback = "feedback", text }
 	switch command {
+	case "/model":
+		if !operator {
+			feedback("会话设置仅限操作者修改或查看。")
+			break
+		}
+		if in.ThreadID == "" || in.ChatType != "group" {
+			feedback("请在对应的已绑定任务群或任务话题中使用 /model。")
+			break
+		}
+		if len(fields) != 1 {
+			feedback("发送 /model 打开设置卡片，在卡片中选择模型、思考强度和 Fast，再点击保存。")
+			break
+		}
+		req.Kind = "model_settings"
 	case "/preview":
 		if len(fields) != 1 {
 			feedback("请使用 /preview 获取文件预览口令，不需要参数。")
@@ -159,11 +173,14 @@ func (c Commands) Handle(ctx context.Context, in InboundCommand) error {
 			break
 		}
 		req.Kind = strings.TrimPrefix(command, "/")
-	case "/help", "/status":
-		if len(fields) != 1 {
-			feedback("/help 和 /status 不接受参数。")
+	case "/help":
+		if len(fields) > 2 {
+			feedback("用法：/help 查看全部指令；/help 指令名 查看具体用法，例如 /help model 或 /help /notify。")
 		} else {
-			req.Kind = strings.TrimPrefix(command, "/")
+			req.Kind = "help"
+			if len(fields) == 2 {
+				req.HelpTopic = fields[1]
+			}
 		}
 	default:
 		req.Kind = "help"

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/creation"
@@ -35,20 +36,21 @@ type InboundCommand struct {
 // bounded; thread actors consume committed receipts after their claims.
 // There is intentionally no Native field or client policy configuration.
 type Receiver struct {
-	Store              *store.Store
-	Config             config.Config
-	BotID              string
-	Wake               func(string)
-	Command            func(context.Context, InboundCommand) error
-	Create             func(context.Context, creation.Inbound) (bool, error)
-	CreationAction     func(context.Context, string, string, string, string, int64, string, map[string]any, map[string]any) error
-	InteractionAction  func(context.Context, store.SubmissionScope, string, []string, string, string, string, int64, string, map[string]any) (string, error)
-	TaskAction         func(context.Context, string, string, string, string, int64) (string, error)
-	ActionAllowed      func(string) bool
-	BeginBound         func(context.Context, store.Binding, string) (context.Context, func(), error)
-	Notice             func(string)
-	Verification       *verification.Manager
-	VerificationGroups *verification.GroupManager
+	Store               *store.Store
+	Config              config.Config
+	BotID               string
+	Wake                func(string)
+	Command             func(context.Context, InboundCommand) error
+	Create              func(context.Context, creation.Inbound) (bool, error)
+	CreationAction      func(context.Context, string, string, string, string, int64, string, map[string]any, map[string]any) error
+	ModelSettingsAction func(context.Context, store.SubmissionScope, string, string, string, string, int64, string, map[string]any) (string, error)
+	InteractionAction   func(context.Context, store.SubmissionScope, string, []string, string, string, string, int64, string, map[string]any) (string, error)
+	TaskAction          func(context.Context, string, string, string, string, int64) (string, error)
+	ActionAllowed       func(string) bool
+	BeginBound          func(context.Context, store.Binding, string) (context.Context, func(), error)
+	Notice              func(string)
+	Verification        *verification.Manager
+	VerificationGroups  *verification.GroupManager
 }
 
 func (r *Receiver) notice(code string) {
@@ -283,6 +285,40 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 	}
 	token, _ := a.Action.Value["token"].(string)
 	kind, _ := a.Action.Value["action"].(string)
+	if (kind == cards.ModelSettingsSaveAction || kind == cards.ModelSettingsCancelAction) && r.ModelSettingsAction != nil {
+		revision, valid := callbackRevision(a.Action.Value["revision"])
+		if !valid || token == "" {
+			return respond("info", "设置卡已更新，请重新发送 /model"), nil
+		}
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+		defer cancel()
+		b, err := r.actionBinding(ctx, a.Context.OpenChatID, a.Context.OpenMessageID)
+		if err != nil || r.ActionAllowed != nil && !r.ActionAllowed(b.ThreadID) {
+			return respond("info", "会话暂不可用，请恢复连接后重试"), nil
+		}
+		opctx, release, err := r.beginBound(ctx, b, a.Operator.OpenID)
+		if err != nil {
+			return respond("info", "会话暂不可用，请恢复连接后重试"), nil
+		}
+		defer release()
+		scope := store.SubmissionScope{HostID: r.Config.Host.ID, AppID: r.Config.Feishu.AppID, ThreadID: b.ThreadID}
+		thread, err := r.ModelSettingsAction(opctx, scope, a.Operator.OpenID, a.Context.OpenChatID, a.Context.OpenMessageID, token, revision, kind, a.Action.FormValue)
+		if err != nil {
+			var invalid *modelSettingsInputError
+			if errors.As(err, &invalid) {
+				return respond("info", invalid.reason), nil
+			}
+			if errors.Is(err, store.ErrSubmissionStale) || errors.Is(err, store.ErrConflict) || errors.Is(err, sql.ErrNoRows) {
+				return respond("info", "设置卡已处理或失效，请重新发送 /model"), nil
+			}
+			return respond("error", "保存操作失败，请稍后重试"), err
+		}
+		r.wake(thread)
+		if kind == cards.ModelSettingsCancelAction {
+			return respond("info", "正在取消"), nil
+		}
+		return respond("info", "正在保存"), nil
+	}
 	if strings.HasPrefix(kind, "creation_") && r.Config.Creation.Enabled && r.CreationAction != nil {
 		revision, valid := callbackRevision(a.Action.Value["revision"])
 		if !valid || token == "" {

@@ -10,22 +10,24 @@ import (
 )
 
 type Thread struct {
-	ID             string          `json:"id"`
-	Path           *string         `json:"path"`
-	CWD            string          `json:"cwd"`
-	Name           *string         `json:"name"`
-	Section        *ThreadSection  `json:"section"`
-	Preview        string          `json:"preview"`
-	CreatedAt      int64           `json:"createdAt"`
-	UpdatedAt      int64           `json:"updatedAt"`
-	ParentThreadID *string         `json:"parentThreadId"`
-	ForkedFromID   *string         `json:"forkedFromId"`
-	ProjectID      *string         `json:"projectId"`
-	Ephemeral      bool            `json:"ephemeral"`
-	ThreadSource   json.RawMessage `json:"threadSource"`
-	Source         json.RawMessage `json:"source"`
-	Originator     *string         `json:"originator"`
-	Status         struct {
+	ID              string          `json:"id"`
+	Model           *string         `json:"model"`
+	ReasoningEffort *string         `json:"reasoningEffort"`
+	Path            *string         `json:"path"`
+	CWD             string          `json:"cwd"`
+	Name            *string         `json:"name"`
+	Section         *ThreadSection  `json:"section"`
+	Preview         string          `json:"preview"`
+	CreatedAt       int64           `json:"createdAt"`
+	UpdatedAt       int64           `json:"updatedAt"`
+	ParentThreadID  *string         `json:"parentThreadId"`
+	ForkedFromID    *string         `json:"forkedFromId"`
+	ProjectID       *string         `json:"projectId"`
+	Ephemeral       bool            `json:"ephemeral"`
+	ThreadSource    json.RawMessage `json:"threadSource"`
+	Source          json.RawMessage `json:"source"`
+	Originator      *string         `json:"originator"`
+	Status          struct {
 		Type string `json:"type"`
 	} `json:"status"`
 	Turns []Turn `json:"turns"`

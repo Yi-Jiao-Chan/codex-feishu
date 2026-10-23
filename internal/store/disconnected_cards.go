@@ -62,9 +62,9 @@ func (s *Store) StageDisconnectedCards(ctx context.Context, scope SubmissionScop
 			rows.Close()
 			return err
 		}
-		// Interaction requests have their own offline projection, retaining
-		// the original scope/question and disabling only the reply controls.
-		if strings.HasPrefix(m.Key, "ui:interaction:") {
+		// Interaction requests and settings forms own their UI projections;
+		// generic task feedback must not erase their scope or persisted state.
+		if strings.HasPrefix(m.Key, "ui:interaction:") || strings.HasPrefix(m.Key, "ui:session-settings:") {
 			continue
 		}
 		if _, nativeCOT, parseErr := cot.Parse(m.Card); parseErr != nil {
