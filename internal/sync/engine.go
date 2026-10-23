@@ -294,10 +294,13 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			}
 		}
 		if parentKey == "" && parentID == "" {
-			// An empty native turn may be a draft; public assistant content
-			// without its initiating input needs recovery, not a plain send.
-			if len(turn.Items) != 0 {
-				return snapshotPlan{}, errors.New("public turn has no initiating human input")
+			// Empty drafts and standalone compaction turns have no public
+			// message or reply anchor. Their items still advance the scan
+			// checkpoint; other nonempty turns require the initiating input.
+			for _, item := range turn.Items {
+				if item.Type != "contextCompaction" {
+					return snapshotPlan{}, errors.New("public turn has no initiating human input")
+				}
 			}
 			continue
 		}
