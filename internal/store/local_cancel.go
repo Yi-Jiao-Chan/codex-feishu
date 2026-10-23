@@ -15,12 +15,40 @@ func localPendingSubmission(ctx context.Context, q submissionQuerier, scope Subm
 	var count int
 	err := q.QueryRowContext(ctx, `SELECT
  (SELECT COUNT(*) FROM submission_attempts WHERE receipt_id=?)+
- (SELECT COUNT(*) FROM submission_actions WHERE receipt_id=? AND state IN ('ready','running','unknown'))+
  (SELECT COUNT(*) FROM m0_operations WHERE key='m0.add.'||?)+
  (SELECT COUNT(*) FROM m0_actions WHERE receipt_id=?)+
  (SELECT COUNT(*) FROM input_history_links WHERE receipt_id=?)+
- (SELECT COUNT(*) FROM m0_receipts WHERE id=? AND (state<>'received' OR queue_id<>''))`, n.ID, n.ID, n.ID, n.ID, n.ID, n.ID).Scan(&count)
-	return count == 0, err
+ (SELECT COUNT(*) FROM m0_receipts WHERE id=? AND (state<>'received' OR queue_id<>''))`, n.ID, n.ID, n.ID, n.ID, n.ID).Scan(&count)
+	if err != nil || count != 0 {
+		return false, err
+	}
+	a, err := scanSubmissionAction(q.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM submission_actions WHERE host_id=? AND app_id=? AND thread_id=? AND receipt_id=? AND state IN ('ready','running','unknown')`, scope.HostID, scope.AppID, scope.ThreadID, n.ID))
+	if err == sql.ErrNoRows {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, inputContinue := InputContinueSource(a)
+	return inputContinue && a.State == "ready" && a.Stage == "prepare", nil
+}
+
+// The local removal CAS and retirement of an unsent follow-up control must
+// commit together. localPendingSubmission has proved that no native attempt,
+// legacy write or history link exists; all other active actions still conflict.
+func cancelInputContinueTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, receipt string) error {
+	a, err := scanSubmissionAction(tx.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM submission_actions WHERE host_id=? AND app_id=? AND thread_id=? AND receipt_id=? AND state IN ('ready','running','unknown')`, scope.HostID, scope.AppID, scope.ThreadID, receipt))
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, ok := InputContinueSource(a); !ok || a.State != "ready" || a.Stage != "prepare" {
+		return ErrSubmissionStale
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE submission_actions SET state='rejected',result='removed' WHERE action_id=? AND state='ready' AND stage='prepare'`, a.ID)
+	return err
 }
 
 // CancelPendingSubmission is a local callback transaction. Callers supply the
@@ -80,6 +108,9 @@ func (s *Store) CancelPendingSubmission(ctx context.Context, scope SubmissionSco
 		return SubmissionAction{}, err
 	} else if !safe {
 		return SubmissionAction{}, ErrSubmissionStale
+	}
+	if err = cancelInputContinueTx(ctx, tx, scope, n.ID); err != nil {
+		return SubmissionAction{}, err
 	}
 	a = SubmissionAction{ID: ID(), ReceiptID: n.ID, Token: token, Revision: revision, Kind: "remove", Stage: "local", State: "confirmed", Result: "removed", ClientID: n.ClientID}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO submission_actions(action_id,host_id,app_id,thread_id,receipt_id,token,revision,kind,stage,state,client_id,result,created_at_ms) VALUES(?,?,?,?,?,?,?,'remove','local','confirmed',?,'removed',?)`, a.ID, scope.HostID, scope.AppID, scope.ThreadID, n.ID, token, revision, n.ClientID, time.Now().UnixMilli()); err != nil {

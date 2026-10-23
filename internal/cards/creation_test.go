@@ -36,6 +36,20 @@ func creationNodes(t *testing.T, card string) []map[string]any {
 	return out
 }
 
+func creationWidthMode(t *testing.T, card string) string {
+	t.Helper()
+	var root map[string]any
+	if err := json.Unmarshal([]byte(card), &root); err != nil {
+		t.Fatal(err)
+	}
+	config, ok := root["config"].(map[string]any)
+	if !ok {
+		t.Fatal("creation card has no config")
+	}
+	width, _ := config["width_mode"].(string)
+	return width
+}
+
 func creationAction(node map[string]any) map[string]any {
 	if node["tag"] != "button" && node["tag"] != "select_static" {
 		return nil
@@ -60,6 +74,9 @@ func TestCreationDraftFormAndActionContract(t *testing.T) {
 	v := creationView()
 	v.QuickChoices = []CreationDirectoryChoice{{Path: "/recent", Label: "recent"}}
 	card := Creation(v)
+	if got := creationWidthMode(t, card); got != "default" {
+		t.Fatalf("main creation card width = %q, want default", got)
+	}
 	actions := map[string]bool{}
 	body, form, primary := false, false, 0
 	for _, n := range creationNodes(t, card) {
@@ -110,6 +127,9 @@ func TestCreationSearchResultsAreAdjacentAndDoNotCreate(t *testing.T) {
 	v.Workgroups = []CreationOption{{Label: "工作群", Value: "oc_known"}}
 	v.SearchPage = &CreationDirectoryPage{Total: 2, Choices: []CreationDirectoryChoice{{Path: "/one/codex", Label: "codex"}, {Path: "/two/codex", Label: "codex", ReadOnly: true}}}
 	card := Creation(v)
+	if got := creationWidthMode(t, card); got != "compact" {
+		t.Fatalf("search picker width = %q, want compact", got)
+	}
 	paths := map[string]string{}
 	query := false
 	for _, n := range creationNodes(t, card) {
@@ -226,6 +246,9 @@ func TestCreationStateSpecificActionsAndNoAppClaim(t *testing.T) {
 			v := creationView()
 			v.State = state
 			card := Creation(v)
+			if got := creationWidthMode(t, card); got != "default" {
+				t.Fatalf("%s creation card width = %q, want default", state, got)
+			}
 			actions := []string{}
 			for _, node := range creationNodes(t, card) {
 				if a := creationAction(node); a != nil {
@@ -249,6 +272,9 @@ func TestCreationDirectoryActionValuesAndTopLevelForms(t *testing.T) {
 	v := creationView()
 	v.DirectoryPage = &CreationDirectoryPage{Path: "/allowed/目录 空格", Parent: "/allowed", Filter: "项目", Next: "/allowed/目录 空格/next", Total: 120, Offset: 100, Choices: []CreationDirectoryChoice{{Path: "/allowed/目录 空格/项目", Label: "项目"}}}
 	card := Creation(v)
+	if got := creationWidthMode(t, card); got != "compact" {
+		t.Fatalf("directory picker width = %q, want compact", got)
+	}
 	var root map[string]any
 	if err := json.Unmarshal([]byte(card), &root); err != nil {
 		t.Fatal(err)
@@ -386,12 +412,19 @@ func TestCreationLinkSafetyAndThreadDetails(t *testing.T) {
 func TestCreationWithoutTokenAndRootEscaping(t *testing.T) {
 	v := creationView()
 	v.Token = ""
-	for _, node := range creationNodes(t, Creation(v)) {
+	card := Creation(v)
+	if got := creationWidthMode(t, card); got != "default" {
+		t.Fatalf("readonly creation card width = %q, want default", got)
+	}
+	for _, node := range creationNodes(t, card) {
 		if creationAction(node) != nil {
 			t.Fatal("unusable token has controls")
 		}
 	}
-	card := CreationRoot("任务 <at id=\"all\"></at>\n正文", "/allowed/<at>", "飞书来源 <at>")
+	card = CreationRoot("任务 <at id=\"all\"></at>\n正文", "/allowed/<at>", "飞书来源 <at>")
+	if got := creationWidthMode(t, card); got != "" {
+		t.Fatalf("creation root width = %q, want empty", got)
+	}
 	var root map[string]any
 	if err := json.Unmarshal([]byte(card), &root); err != nil {
 		t.Fatal(err)
@@ -543,6 +576,9 @@ func TestCreationBusyPreservesContextWithoutActions(t *testing.T) {
 	v.Busy = "正在打开目录…"
 	v.DirectoryPage = &CreationDirectoryPage{Path: "/allowed"}
 	card := Creation(v)
+	if got := creationWidthMode(t, card); got != "compact" {
+		t.Fatalf("busy creation card width = %q, want compact", got)
+	}
 	for _, n := range creationNodes(t, card) {
 		if n["tag"] == "input" || n["tag"] == "select_static" || creationAction(n) != nil {
 			t.Fatal("busy card allows conflicting operations")

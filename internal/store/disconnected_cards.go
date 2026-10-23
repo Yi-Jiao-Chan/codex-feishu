@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"codex-feishu/internal/cards"
+	"codex-feishu/internal/cot"
 )
 
 func cardHasCallback(raw string) bool {
@@ -64,6 +65,14 @@ func (s *Store) StageDisconnectedCards(ctx context.Context, scope SubmissionScop
 		// Interaction requests have their own offline projection, retaining
 		// the original scope/question and disabling only the reply controls.
 		if strings.HasPrefix(m.Key, "ui:interaction:") {
+			continue
+		}
+		if _, nativeCOT, parseErr := cot.Parse(m.Card); parseErr != nil {
+			rows.Close()
+			return parseErr
+		} else if nativeCOT {
+			// A transport interruption is not a native task failure. Preserve
+			// the CoT journal; never PATCH its post-compatible message as a card.
 			continue
 		}
 		if !m.Terminal || cardHasCallback(m.Card) {

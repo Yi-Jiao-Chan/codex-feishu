@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+
+	"codex-feishu/internal/cot"
 )
 
 // Mirror is a public card document. Key includes the turn and stable segment
@@ -28,6 +30,8 @@ type Watermark struct {
 }
 
 type MirrorAttempt struct {
+	COTStep, COTID, COTEvents, COTState, COTStateBefore   string
+	COTCaughtUp                                           bool
 	FollowMode, RootMessageID, PlatformThreadID           string
 	ID, HostID, ThreadID, Key, Operation                  string
 	ChatID, ParentMessageID, TargetMessageID, Card, State string
@@ -105,6 +109,11 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 		if m.Key == "" || m.TurnID == "" || !json.Valid([]byte(m.Card)) || seen[m.Key] || m.Retired && !m.Terminal {
 			return errors.New("invalid or duplicate public mirror")
 		}
+		if doc, nativeCOT, parseErr := cot.Parse(m.Card); parseErr != nil {
+			return parseErr
+		} else if nativeCOT && (m.Kind != "progress" || doc.ThreadID != thread || doc.TurnID != m.TurnID || m.Terminal != (doc.Status != "inProgress")) {
+			return ErrConflict
+		}
 		seen[m.Key] = true
 		for id, at := range m.ProgressObservedAt {
 			if m.Kind != "progress" || id == "" || at < 0 {
@@ -146,6 +155,26 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 		} else {
 			if old.Kind != m.Kind || old.TurnID != m.TurnID || old.ParentKey != m.ParentKey || old.ParentMessageID != m.ParentMessageID {
 				return ErrConflict
+			}
+			_, oldCOT, parseErr := cot.Parse(old.Card)
+			if parseErr != nil {
+				return parseErr
+			}
+			_, newCOT, parseErr := cot.Parse(m.Card)
+			if parseErr != nil {
+				return parseErr
+			}
+			if oldCOT != newCOT {
+				return ErrConflict
+			}
+			if oldCOT {
+				var closed bool
+				if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM cot_deliveries WHERE host_id=? AND thread_id=? AND mirror_key=? AND (completed=1 OR json_extract(state_json,'$.finished')=1))`, host, thread, m.Key).Scan(&closed); err != nil {
+					return err
+				}
+				if closed {
+					continue
+				}
 			}
 			if old.Terminal && !m.Terminal {
 				continue
@@ -343,13 +372,32 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 			a.ParentMessageID = binding.RootMessageID
 		}
 	}
-	mentionIDs, err := prepareMirrorMentions(ctx, tx, m, &a, mentions)
+	_, isCOT, err := cot.Parse(m.Card)
+	if err != nil {
+		return MirrorAttempt{}, false, err
+	}
+	if isCOT {
+		work, err := prepareCOTAttempt(ctx, tx, m, &a)
+		if err != nil {
+			return MirrorAttempt{}, false, err
+		}
+		if !work {
+			return MirrorAttempt{}, false, tx.Commit()
+		}
+	}
+	var mentionIDs []string
+	if !isCOT {
+		mentionIDs, err = prepareMirrorMentions(ctx, tx, m, &a, mentions)
+	}
 	if err != nil {
 		return MirrorAttempt{}, false, err
 	}
 	err = mirrorWriteOne(ctx, tx, `INSERT INTO outbound_attempts(attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,follow_mode,root_message_id,platform_thread_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching',?,?,?)`, a.ID, host, thread, key, a.Revision, a.Operation, a.ChatID, a.ParentMessageID, a.TargetMessageID, a.Card, nowMS, a.FollowMode, a.RootMessageID, a.PlatformThreadID)
-	if err == nil {
+	if err == nil && !isCOT {
 		err = freezeMirrorRequestMarker(ctx, tx, &a)
+	}
+	if err == nil && isCOT {
+		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET cot_step=?,cot_id=?,cot_events_json=?,cot_state_json=?,cot_state_before=?,cot_caught_up=? WHERE attempt_id=?`, a.COTStep, a.COTID, a.COTEvents, a.COTState, a.COTStateBefore, a.COTCaughtUp, a.ID)
 	}
 	if err == nil {
 		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET card_json=? WHERE attempt_id=?`, a.Card, a.ID)
@@ -367,10 +415,13 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	return a, err == nil, err
 }
 
-const attemptColumns = `attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,remote_id,follow_mode,root_message_id,platform_thread_id`
+const attemptColumns = `attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,remote_id,follow_mode,root_message_id,platform_thread_id,cot_step,cot_id,cot_events_json,cot_state_json,cot_state_before,cot_caught_up`
 
 func scanAttempt(row rowScanner) (a MirrorAttempt, err error) {
-	err = row.Scan(&a.ID, &a.HostID, &a.ThreadID, &a.Key, &a.Revision, &a.Operation, &a.ChatID, &a.ParentMessageID, &a.TargetMessageID, &a.Card, &a.CreatedAtMS, &a.State, &a.RemoteID, &a.FollowMode, &a.RootMessageID, &a.PlatformThreadID)
+	err = row.Scan(&a.ID, &a.HostID, &a.ThreadID, &a.Key, &a.Revision, &a.Operation, &a.ChatID, &a.ParentMessageID, &a.TargetMessageID, &a.Card, &a.CreatedAtMS, &a.State, &a.RemoteID, &a.FollowMode, &a.RootMessageID, &a.PlatformThreadID, &a.COTStep, &a.COTID, &a.COTEvents, &a.COTState, &a.COTStateBefore, &a.COTCaughtUp)
+	if a.COTStep == "" {
+		a.COTEvents, a.COTState = "", ""
+	}
 	return
 }
 
@@ -382,6 +433,14 @@ func (s *Store) MirrorAttempt(ctx context.Context, id string) (MirrorAttempt, er
 // atomically. Unknown/rejected attempts stay frozen even if new content arrives.
 // Confirmation after response loss is allowed, but only with an actual ID.
 func (s *Store) FinishMirrorAttempt(ctx context.Context, id, outcome, remoteID string) error {
+	return s.finishMirrorAttempt(ctx, id, outcome, remoteID, "", false)
+}
+
+func (s *Store) FinishCOTAttempt(ctx context.Context, id, outcome, remoteID, cotID string) error {
+	return s.finishMirrorAttempt(ctx, id, outcome, remoteID, cotID, true)
+}
+
+func (s *Store) finishMirrorAttempt(ctx context.Context, id, outcome, remoteID, cotID string, nativeCOT bool) error {
 	if outcome != "confirmed" && outcome != "unknown" && outcome != "rejected" {
 		return errors.New("invalid mirror outcome")
 	}
@@ -397,6 +456,9 @@ func (s *Store) FinishMirrorAttempt(ctx context.Context, id, outcome, remoteID s
 	if err != nil {
 		return err
 	}
+	if (a.COTStep != "") != nativeCOT {
+		return ErrConflict
+	}
 	if a.State == "confirmed" || a.State == "rejected" {
 		if a.State == outcome && a.RemoteID == remoteID {
 			return nil
@@ -411,7 +473,9 @@ func (s *Store) FinishMirrorAttempt(ctx context.Context, id, outcome, remoteID s
 		return ErrConflict
 	}
 	state := outcome
-	if outcome == "confirmed" {
+	if nativeCOT {
+		state, err = finishCOTMirror(ctx, tx, a, m, outcome, remoteID, cotID)
+	} else if outcome == "confirmed" {
 		if a.Operation == "update" && remoteID != a.TargetMessageID || m.RemoteID != "" && remoteID != m.RemoteID {
 			return ErrConflict
 		}

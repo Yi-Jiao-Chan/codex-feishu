@@ -324,6 +324,9 @@ func (s *Store) ClaimSubmissionAction(ctx context.Context, scope SubmissionScope
 		} else if !safe {
 			return SubmissionAction{}, ErrSubmissionStale
 		}
+		if err = cancelInputContinueTx(ctx, tx, scope, n.ID); err != nil {
+			return SubmissionAction{}, err
+		}
 	}
 	a = SubmissionAction{ID: ID(), ReceiptID: n.ID, Token: n.ActionToken, Kind: kind, Stage: "prepare", State: "ready", QueueID: queueID, ClientID: n.ClientID, Revision: revision}
 	if n.State == "received" {
@@ -363,12 +366,22 @@ func (s *Store) ClaimThreadSubmissionActionExpected(ctx context.Context, scope S
 	if _, err = submissionBinding(ctx, tx, scope); err != nil {
 		return SubmissionAction{}, err
 	}
+	a, err := claimThreadSubmissionActionTx(ctx, tx, scope, kind, token, expectedTurnID)
+	if err != nil {
+		return SubmissionAction{}, err
+	}
+	return a, tx.Commit()
+}
+
+// Card claims and their native intent share one admission transaction, so a
+// following ordinary input can observe a pending stop before actor dispatch.
+func claimThreadSubmissionActionTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, kind, token, expectedTurnID string) (SubmissionAction, error) {
 	a, err := scanSubmissionAction(tx.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM submission_actions WHERE host_id=? AND app_id=? AND thread_id=? AND token=? AND revision=0`, scope.HostID, scope.AppID, scope.ThreadID, token))
 	if err == nil {
 		if a.Kind != kind {
 			return SubmissionAction{}, ErrSubmissionStale
 		}
-		return a, tx.Commit()
+		return a, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return SubmissionAction{}, err
@@ -383,7 +396,7 @@ func (s *Store) ClaimThreadSubmissionActionExpected(ctx context.Context, scope S
 	if err != nil {
 		return SubmissionAction{}, err
 	}
-	return a, tx.Commit()
+	return a, nil
 }
 
 // A steer with no original queue identity is created only by the explicit
@@ -477,6 +490,13 @@ func (s *Store) ClaimSubmissionAttempt(ctx context.Context, scope SubmissionScop
 	}
 	a := SubmissionAttempt{ID: ID(), ReceiptID: receiptID, ActionID: actionID, Stage: stage, State: "dispatching", Deleted: -1}
 	if actionID == "" {
+		var stops int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM submission_actions WHERE host_id=? AND app_id=? AND thread_id=? AND kind='stop' AND state='ready'`, scope.HostID, scope.AppID, scope.ThreadID).Scan(&stops); err != nil {
+			return a, false, err
+		}
+		if stops != 0 {
+			return a, false, ErrSubmissionBusy
+		}
 		n, err := readSubmission(ctx, tx, scope, receiptID)
 		if err != nil {
 			return a, false, err
@@ -505,6 +525,15 @@ func (s *Store) ClaimSubmissionAttempt(ctx context.Context, scope SubmissionScop
 		}
 		if op.State != "ready" || op.Stage != stage || op.ReceiptID != receiptID || stage == "prepare" || stage == "local" {
 			return a, false, ErrSubmissionStale
+		}
+		if _, inputContinue := InputContinueSource(op); inputContinue {
+			ready, gateErr := inputContinueReadyTx(ctx, tx, scope, &op)
+			if gateErr != nil {
+				return a, false, gateErr
+			}
+			if !ready {
+				return a, false, tx.Commit()
+			}
 		}
 		if op.Kind == "steer" && op.QueueID == "" {
 			if stage != "steer" && stage != "restore" || stage == "steer" && op.ExpectedTurnID == "" {
@@ -593,7 +622,9 @@ func (s *Store) FinishSubmissionAttempt(ctx context.Context, scope SubmissionSco
 		op.State, op.Result = outcome, ""
 	}
 	if outcome == "unknown" {
-		n.State = "unknown"
+		if a.Stage != "start" && a.Stage != "interrupt" {
+			n.State = "unknown"
+		}
 	} else {
 		stage := a.Stage
 		if IsQueueAddStage(stage) {
@@ -674,7 +705,7 @@ func (s *Store) RecoverSubmissionDispatches(ctx context.Context, scope Submissio
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE submission_inputs SET state='unknown',revision=revision+1 WHERE host_id=? AND app_id=? AND thread_id=? AND receipt_id IN
- (SELECT receipt_id FROM submission_attempts WHERE host_id=? AND app_id=? AND thread_id=? AND state='dispatching')`, scope.HostID, scope.AppID, scope.ThreadID, scope.HostID, scope.AppID, scope.ThreadID)
+ (SELECT receipt_id FROM submission_attempts WHERE host_id=? AND app_id=? AND thread_id=? AND state='dispatching' AND stage NOT IN ('start','interrupt'))`, scope.HostID, scope.AppID, scope.ThreadID, scope.HostID, scope.AppID, scope.ThreadID)
 	if err != nil {
 		return err
 	}
@@ -714,12 +745,12 @@ func (s *Store) ObserveSubmission(ctx context.Context, scope SubmissionScope, id
 	if n.State == "removed" || n.State == "failed" {
 		return ErrSubmissionStale
 	}
-	var activeID string
-	err = tx.QueryRowContext(ctx, `SELECT action_id FROM submission_actions WHERE host_id=? AND app_id=? AND thread_id=? AND receipt_id=? AND state IN ('ready','running','unknown')`, scope.HostID, scope.AppID, scope.ThreadID, id).Scan(&activeID)
+	active, err := scanSubmissionAction(tx.QueryRowContext(ctx, `SELECT `+actionColumns+` FROM submission_actions WHERE host_id=? AND app_id=? AND thread_id=? AND receipt_id=? AND state IN ('ready','running','unknown')`, scope.HostID, scope.AppID, scope.ThreadID, id))
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if activeID != "" && (len(actionID) != 1 || actionID[0] != activeID) {
+	_, inputContinue := InputContinueSource(active)
+	if active.ID != "" && !inputContinue && (len(actionID) != 1 || actionID[0] != active.ID) {
 		return ErrSubmissionStale
 	}
 	if len(actionID) != 0 {

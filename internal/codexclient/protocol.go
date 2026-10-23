@@ -53,19 +53,32 @@ type FileChange struct {
 	Kind json.RawMessage `json:"kind"`
 	Diff string          `json:"diff"`
 }
+
+// CommandAction retains native best-effort classification and file metadata.
+// Progress uses only safe basenames; commands and search queries stay unmodeled.
+type CommandAction struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
 type Item struct {
-	Delivery  *string           `json:"delivery"`
-	Questions []AsyncQuestion   `json:"questions"`
-	Command   string            `json:"command"`
-	CWD       string            `json:"cwd"`
-	Changes   []FileChange      `json:"changes"`
-	Type      string            `json:"type"`
-	ID        string            `json:"id"`
-	Text      string            `json:"text"`
-	Phase     *string           `json:"phase"`
-	Content   []json.RawMessage `json:"content"`
-	ClientID  *string           `json:"clientId"`
-	Status    string            `json:"status"`
+	CommandActions []CommandAction   `json:"commandActions"`
+	Server         string            `json:"server"`
+	Tool           string            `json:"tool"`
+	Namespace      string            `json:"namespace"`
+	Delivery       *string           `json:"delivery"`
+	Questions      []AsyncQuestion   `json:"questions"`
+	Command        string            `json:"command"`
+	CWD            string            `json:"cwd"`
+	Changes        []FileChange      `json:"changes"`
+	Type           string            `json:"type"`
+	ID             string            `json:"id"`
+	Text           string            `json:"text"`
+	Phase          *string           `json:"phase"`
+	Content        []json.RawMessage `json:"content"`
+	ClientID       *string           `json:"clientId"`
+	Status         string            `json:"status"`
 }
 
 func (i Item) PublicText() string {

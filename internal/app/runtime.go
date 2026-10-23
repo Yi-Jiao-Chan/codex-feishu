@@ -70,6 +70,7 @@ type Runtime struct {
 	EventObserved              func(codexclient.Event)
 	EventObservedContext       func(context.Context, codexclient.Event) error
 	RenderProgress             func(string, string, string, cards.ProgressView) string
+	NativeCOT                  bool
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
 	Notice       func(string)
 	Now          func() time.Time
@@ -442,6 +443,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	engine.PrepareHuman = r.PrepareHuman
 	engine.PreparePublic = r.PreparePublic
 	engine.ProgressRender = r.RenderProgress
+	engine.NativeCOT = r.NativeCOT
 	engine.SuppressAsyncQuestions = r.SuppressAsyncQuestions
 	engine.AsyncQuestionsSinceMS = r.AsyncQuestionsSinceMS
 	if r.Mentions.Enabled {

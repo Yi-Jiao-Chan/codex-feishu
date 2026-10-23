@@ -262,7 +262,7 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 		}
 		return err
 	}
-	_, _, err = r.Store.Claim(ctx, store.Receipt{AppID: scope.AppID, MessageID: ptr(msg.MessageId), ThreadID: b.ThreadID, ChatID: b.ChatID, Body: text})
+	_, _, err = r.Store.ReceiveSubmissionInput(ctx, scope, store.Receipt{AppID: scope.AppID, MessageID: ptr(msg.MessageId), ThreadID: b.ThreadID, ChatID: b.ChatID, Body: text})
 	if err == nil {
 		// Replays wake recovery after a receipt committed just before disconnect.
 		r.wake(b.ThreadID)

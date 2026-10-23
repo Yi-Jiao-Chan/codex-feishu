@@ -102,6 +102,7 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 		}
 	}
 	var body, settingsCard string
+	silentReply := false
 	switch req.Kind {
 	case "preview":
 		if !operator || req.OwnerOpenID == "" || req.UserID != req.OwnerOpenID || req.ChatType != "p2p" ||
@@ -151,11 +152,26 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 		if blocked {
 			body = "当前操作正在核验，未提交新的控制请求。请等待任务状态更新。"
 		} else {
+			expectedTurn := ""
+			if req.Kind == "stop" {
+				var hasCOT, unambiguous bool
+				expectedTurn, hasCOT, unambiguous, err = cotStopTarget(ctx, tx, scope)
+				if err != nil {
+					return CommandReply{}, false, err
+				}
+				if hasCOT && !unambiguous {
+					body = "当前执行状态尚未核验，未提交停止请求。请在 Codex App 停止，或等待状态更新。"
+					break
+				}
+			}
 			digest := sha256.Sum256([]byte(req.AppID + "\x00" + req.MessageID))
 			token := "command-" + hex.EncodeToString(digest[:])
-			_, err = tx.ExecContext(ctx, `INSERT INTO submission_actions(action_id,host_id,app_id,thread_id,token,revision,kind,stage,state,created_at_ms) VALUES(?,?,?,?,?,0,?,'prepare','ready',?)`, ID(), req.HostID, req.AppID, req.ThreadID, token, req.Kind, now.UnixMilli())
+			_, err = tx.ExecContext(ctx, `INSERT INTO submission_actions(action_id,host_id,app_id,thread_id,token,revision,kind,stage,state,created_at_ms,expected_turn_id) VALUES(?,?,?,?,?,0,?,'prepare','ready',?,?)`, ID(), req.HostID, req.AppID, req.ThreadID, token, req.Kind, now.UnixMilli(), expectedTurn)
 			if req.Kind == "stop" {
 				body = "已收到停止请求，正在处理；结果以任务状态为准。"
+				// CoT already carries the task state. Keep the command dedup
+				// receipt and stop intent, without an extra success-receipt card.
+				silentReply = expectedTurn != ""
 			} else {
 				body = "已收到继续处理队列的请求，正在核验；不会在没有队列时启动新任务。"
 			}
@@ -180,14 +196,19 @@ func (s *Store) ApplyLocalCommand(ctx context.Context, req CommandRequest, now t
 		return CommandReply{}, false, err
 	}
 	card := settingsCard
-	if card == "" {
+	if card == "" && !silentReply {
 		card = cards.Message("机器人设置", "本部署", body)
 	}
 	r := CommandReply{ID: ID(), HostID: req.HostID, AppID: req.AppID, MessageID: req.MessageID, ChatID: req.ChatID, ChatType: req.ChatType, UserID: req.UserID, ThreadID: req.ThreadID, Kind: req.Kind, Card: card, State: "ready", CreatedAtMS: now.UnixMilli()}
+	if silentReply {
+		// This completes only the local no-op reply delivery, not the native
+		// stop. Its independently journaled action still has to be confirmed.
+		r.State = "confirmed"
+	}
 	if len(r.Card) > cards.DefaultMaxCardBytes {
 		return CommandReply{}, false, errors.New("command result exceeds card limit")
 	}
-	err = commandWriteOne(ctx, tx, `INSERT INTO command_replies(app_id,message_id,host_id,chat_id,chat_type,user_id,thread_id,kind,attempt_id,card_json,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,'ready',?)`, r.AppID, r.MessageID, r.HostID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.ID, r.Card, r.CreatedAtMS)
+	err = commandWriteOne(ctx, tx, `INSERT INTO command_replies(app_id,message_id,host_id,chat_id,chat_type,user_id,thread_id,kind,attempt_id,card_json,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, r.AppID, r.MessageID, r.HostID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.ID, r.Card, r.State, r.CreatedAtMS)
 	if err != nil {
 		return CommandReply{}, false, err
 	}

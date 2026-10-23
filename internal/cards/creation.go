@@ -362,7 +362,7 @@ func creation(v CreationView) string {
 	}
 	if state == "draft" {
 		if v.Token == "" || v.Revision <= 0 {
-			return render(append(els, publicBodyElements(v.Body, "normal")...))
+			return renderWidth(append(els, publicBodyElements(v.Body, "normal")...), "default")
 		}
 		form := []element{creationText("任务内容", "notation")}
 		if utf8.RuneCountInString(v.Body) <= creationInputMaxRunes {
@@ -414,7 +414,7 @@ func creation(v CreationView) string {
 		}
 		els = append(els, taskPanel("任务详情", []element{creationText(creationLiteral(details), "notation")}))
 	}
-	return render(els)
+	return renderWidth(els, "default")
 }
 
 // Leave room for the durable request marker and PATCH envelope below the

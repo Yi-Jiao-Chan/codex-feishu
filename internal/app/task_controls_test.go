@@ -269,6 +269,121 @@ func TestTaskStopCallbackIsLocalAndNeverRetargetsAppReplacement(t *testing.T) {
 	}
 }
 
+func TestTaskToolSummaryChangesInvalidateOldStopAndReplaySameClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before codexclient.Item
+		after  codexclient.Item
+	}{
+		{"command classification", codexclient.Item{Type: "commandExecution", ID: "tool", Status: "completed", CommandActions: []codexclient.CommandAction{{Type: "read"}}}, codexclient.Item{Type: "commandExecution", ID: "tool", Status: "completed", CommandActions: []codexclient.CommandAction{{Type: "search"}}}},
+		{"command purpose", codexclient.Item{Type: "commandExecution", ID: "tool", Status: "completed", Command: "git status --short"}, codexclient.Item{Type: "commandExecution", ID: "tool", Status: "completed", Command: "go test ./internal/fixture"}},
+		{"tool descriptor", codexclient.Item{Type: "mcpToolCall", ID: "tool", Status: "completed", Server: "fixture", Tool: "read"}, codexclient.Item{Type: "mcpToolCall", ID: "tool", Status: "completed", Server: "fixture", Tool: "search"}},
+		{"file name", codexclient.Item{Type: "fileChange", ID: "tool", Status: "completed", Changes: []codexclient.FileChange{{Path: "/fixture/first.go", Kind: json.RawMessage(`{"type":"add"}`)}}}, codexclient.Item{Type: "fileChange", ID: "tool", Status: "completed", Changes: []codexclient.FileChange{{Path: "/fixture/second.go", Kind: json.RawMessage(`{"type":"add"}`)}}}},
+		{"file operation", codexclient.Item{Type: "fileChange", ID: "tool", Status: "completed", Changes: []codexclient.FileChange{{Path: "/fixture/file.go", Kind: json.RawMessage(`{"type":"add"}`)}}}, codexclient.Item{Type: "fileChange", ID: "tool", Status: "completed", Changes: []codexclient.FileChange{{Path: "/fixture/file.go", Kind: json.RawMessage(`{"type":"update"}`)}}}},
+		{"new tool type", codexclient.Item{}, codexclient.Item{Type: "webSearch", ID: "tool"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTaskFixture(t, true, "inProgress")
+			if tc.before.ID != "" {
+				f.native.turns[0].Items = append(f.native.turns[0].Items, tc.before)
+			}
+			f.prepare(t, 200)
+			shown := f.deliver(t, 1000)
+			old := f.view(t)
+			if tc.before.ID != "" {
+				f.native.turns[0].Items[len(f.native.turns[0].Items)-1] = tc.after
+			} else {
+				f.native.turns[0].Items = append(f.native.turns[0].Items, tc.after)
+			}
+			f.prepare(t, 201)
+			current := f.view(t)
+			if current.Token != old.Token || current.Revision <= old.Revision {
+				t.Fatal("changed tool summary retained the previous control revision")
+			}
+			callback := &TaskControls{Store: f.s, HostID: "host", AppID: "app"}
+			if _, err := callback.Claim(context.Background(), "chat", shown.RemoteID, "stop", old.Token, old.Revision); !errors.Is(err, store.ErrSubmissionStale) {
+				t.Fatal("old tool-summary card authorized a stop", err)
+			}
+			updated := f.deliver(t, 4000)
+			for range 2 {
+				if _, err := callback.Claim(context.Background(), "chat", updated.RemoteID, "stop", current.Token, current.Revision); err != nil {
+					t.Fatal("updated nested stop or its replay was rejected", err)
+				}
+			}
+			claims, err := f.s.TaskControlClaims(context.Background(), store.SubmissionScope{HostID: "host", AppID: "app", ThreadID: "thread"})
+			if err != nil || len(claims) != 1 || claims[0].TurnID != "original-turn" || len(f.native.interrupts) != 0 {
+				t.Fatal("summary update changed the target, duplicated a claim or dispatched RPC in the callback", err)
+			}
+		})
+	}
+}
+
+func TestTaskFileToolFingerprintExcludesPrivateDiff(t *testing.T) {
+	turn := codexclient.Turn{ID: "turn", Status: "inProgress", Items: []codexclient.Item{{
+		Type: "fileChange", ID: "file-tool", Status: "completed",
+		Changes: []codexclient.FileChange{{Path: "/fixture/file.go", Kind: json.RawMessage(`{"type":"update"}`), Diff: "PRIVATE_BEFORE"}},
+	}}}
+	before := taskFingerprint(turn)
+	turn.Items[0].Changes[0].Diff = "PRIVATE_AFTER"
+	if taskFingerprint(turn) != before {
+		t.Fatal("private file diff changed a metadata-only task control revision")
+	}
+}
+
+func TestTaskCommandFingerprintUsesSafePurposeWithoutPrivateArguments(t *testing.T) {
+	turn := codexclient.Turn{ID: "turn", Status: "inProgress", Items: []codexclient.Item{{
+		Type: "commandExecution", ID: "command-tool", Status: "completed",
+		Command: "FIXTURE_TOKEN=PRIVATE_BEFORE git -C /private/first status --short",
+	}}}
+	before := taskFingerprint(turn)
+	turn.Items[0].Command = "FIXTURE_TOKEN=PRIVATE_AFTER git -C /private/second status --porcelain"
+	if taskFingerprint(turn) != before {
+		t.Fatal("private arguments changed the control revision without changing its safe action")
+	}
+	turn.Items[0].Command = "go test ./internal/fixture"
+	if taskFingerprint(turn) == before {
+		t.Fatal("a different visible command purpose did not invalidate the control revision")
+	}
+}
+
+func TestTaskToolGroupBoundaryChangesInvalidateStopWithoutHashingPrivateText(t *testing.T) {
+	finalPhase := "final_answer"
+	for _, boundary := range []codexclient.Item{
+		{Type: "userMessage", ID: "boundary", Text: "private input"},
+		{Type: "agentMessage", ID: "boundary", Phase: &finalPhase, Text: "private final reply"},
+	} {
+		t.Run(boundary.Type, func(t *testing.T) {
+			f := newTaskFixture(t, true, "inProgress")
+			items := f.native.turns[0].Items
+			first := codexclient.Item{Type: "commandExecution", ID: "tool-first", Status: "completed"}
+			last := codexclient.Item{Type: "commandExecution", ID: "tool-last", Status: "completed"}
+			f.native.turns[0].Items = append(append([]codexclient.Item(nil), items...), first, last)
+			f.prepare(t, 200)
+			shown := f.deliver(t, 1000)
+			old := f.view(t)
+			f.native.turns[0].Items = append(append([]codexclient.Item(nil), items...), first, boundary, last)
+			f.prepare(t, 201)
+			current := f.view(t)
+			if current.Revision <= old.Revision {
+				t.Fatal("new tool-group boundary did not invalidate the old control")
+			}
+			updated := f.deliver(t, 4000)
+			if updated.RemoteID != shown.RemoteID {
+				t.Fatal("tool-group correction replaced the existing progress message")
+			}
+			callback := &TaskControls{Store: f.s, HostID: "host", AppID: "app"}
+			if _, err := callback.Claim(context.Background(), "chat", updated.RemoteID, "stop", old.Token, old.Revision); !errors.Is(err, store.ErrSubmissionStale) {
+				t.Fatal("old control remained valid after the corrected card was delivered", err)
+			}
+			fingerprint := taskFingerprint(f.native.turns[0])
+			f.native.turns[0].Items[len(items)+1].Text = "different private text"
+			if taskFingerprint(f.native.turns[0]) != fingerprint {
+				t.Fatal("private boundary text affected the public progress fingerprint")
+			}
+		})
+	}
+}
+
 func TestTaskStoppedWithPendingAppQueueReusesProgressForContinue(t *testing.T) {
 	f := newTaskFixture(t, true, "inProgress")
 	f.native.queue = []codexclient.Queued{{ID: "app-pending"}, {ID: "app-pending-2"}}

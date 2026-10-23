@@ -2,6 +2,12 @@
 
 负责 `internal/feishu/`、`compat/feishu-permissions.json`、脱敏事件样例。依赖 00、02；封装平台行为，业务模块不直接操作 SDK。
 
+## 原生 CoT 进度通道
+
+正式网关支持 `CreateCOT`、`AppendCOT`、`CompleteCOT`，复用现有 tenant token、超时与安全错误分类。创建使用 `POST /open-apis/im/v1/message_cot?receive_id_type=chat_id`，保存返回的 message_id 与 cot_id；普通群引用本轮输入，话题仅在校验原根后传原 root 与 reply_in_thread=true，不降级到主群。追加使用同路径 PUT，每批至多 50 个事件；content 是经过 JSON 编码的对象字符串，按整个事件序列化后的 UTF-8 字节保守限制为 4096。结束调用 `/message_cot/complete/{cot_id}`，只允许 done/error。
+
+创建没有已核实的幂等键。三类操作均先记录冻结请求；未知结果不重发、不新建替代 CoT。普通消息 GET 返回 post 兼容占位，不能证明内部事件或生命周期状态；不能复用 Card JSON 的 marker 读回确认。原生停止发送普通 `/stop`，需继续操作者、绑定和轮次核验；群聊默认隐藏停止入口时仍可在对应任务群/话题使用 `/stop`。停止后新消息可以继续会话，也保留 `/continue` 显式继续队列。基础消息能力与可灰度的自定义 statusText 分开；本实现不依赖后者。参考 [官方内部接入契约](https://bytedance.larkoffice.com/wiki/ZfyXwOQImiLURtkRPtWcf2B2nNh)。
+
 ## 接入与发布条件
 
 使用飞书企业自建应用，启用机器人，通过官方 Go SDK 长连接接收事件，不要求公网回调服务。当前 M0 锁定 Go SDK v3.12.0，使用 ws + event dispatcher + core.Request，以避免 Channel 发送降级和不明确的重试；该版本已有 Channel，但本项目不使用其出站默认分支。SDK 版本升级须重新核验生命周期和发送语义。[官方 SDK Channel 文档](https://github.com/larksuite/oapi-sdk-go/blob/v3_main/doc/channel.zh.md)

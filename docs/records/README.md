@@ -8,6 +8,7 @@
 
 | 文档 | 日期 / 版本 |
 | --- | --- |
+| [执行卡布局、停止按钮与工具摘要：本地候选部署](task-progress-deployment-2026-10-22.md) | 2026-10-22 |
 | [异步问答联调与默认配置](feishu-async-question-defaults-2026-10-21.md) | 2026-10-21 |
 | [Codex 0.162.1 候选部署兼容性](codex-0.162.1-compatibility-2026-10-13.md) | 2026-10-13 |
 | [置顶群名、近期发现窗口与空闲降频](pinned-group-names-and-windowed-discovery-2026-10-16.md) | 2026-10-16 |

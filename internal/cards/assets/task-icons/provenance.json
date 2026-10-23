@@ -1,0 +1,34 @@
+{
+  "repository": "lucide-icons/lucide",
+  "commit": "c31f22723f3fed5f3921eee3d514a3cd1bd5df72",
+  "license": "ISC",
+  "license_url": "https://raw.githubusercontent.com/lucide-icons/lucide/c31f22723f3fed5f3921eee3d514a3cd1bd5df72/LICENSE",
+  "icons": {
+    "tool-case.svg": {
+      "source_url": "https://raw.githubusercontent.com/lucide-icons/lucide/c31f22723f3fed5f3921eee3d514a3cd1bd5df72/icons/tool-case.svg",
+      "sha256": "8a06de4aaacc45accbad40b18b43a8ebe9d899a3bfd27bd0e94f746ca2ea1d77",
+      "viewBox": "0 0 24 24"
+    },
+    "code-xml.svg": {
+      "source_url": "https://raw.githubusercontent.com/lucide-icons/lucide/c31f22723f3fed5f3921eee3d514a3cd1bd5df72/icons/code-xml.svg",
+      "sha256": "a6d2110227be375be21da7324d3c09262c1bf019d06bdeab356d515342ab7cce",
+      "viewBox": "0 0 24 24"
+    },
+    "book-open.svg": {
+      "source_url": "https://raw.githubusercontent.com/lucide-icons/lucide/c31f22723f3fed5f3921eee3d514a3cd1bd5df72/icons/book-open.svg",
+      "sha256": "9b9bed0ff057283d5c5c5a1c71f8d3e927db26a56639603a92fdf7b25961510e",
+      "viewBox": "0 0 24 24"
+    },
+    "pencil.svg": {
+      "source_url": "https://raw.githubusercontent.com/lucide-icons/lucide/c31f22723f3fed5f3921eee3d514a3cd1bd5df72/icons/pencil.svg",
+      "sha256": "7e1ca7a6f5c1eb949671df762f2baadd32f5bd841d43153c3a15279af7d78d0c",
+      "viewBox": "0 0 24 24"
+    },
+    "search.svg": {
+      "source_url": "https://raw.githubusercontent.com/lucide-icons/lucide/c31f22723f3fed5f3921eee3d514a3cd1bd5df72/icons/search.svg",
+      "sha256": "283d371c2e433817bb9c0c8310caa6c77fa4177c0f4f1168d9c83b97af7389dc",
+      "viewBox": "0 0 24 24"
+    }
+  },
+  "license_sha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+}

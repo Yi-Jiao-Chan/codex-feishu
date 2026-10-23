@@ -20,7 +20,7 @@ var (
 )
 
 // WithRequestMarker marks a free top-level markdown element, falling back to
-// a collapsed history body. Existing panel IDs remain stable across updates.
+// native panel and column bodies. Existing panel IDs remain stable across updates.
 // Legacy cards are returned unchanged.
 func WithRequestMarker(base, marker string) (rendered string, marked bool, err error) {
 	if !validRequestMarker(marker) {
@@ -85,12 +85,28 @@ func freeRequestMarkdown(elements []any) map[string]any {
 	}
 	for _, value := range elements {
 		e, ok := value.(map[string]any)
-		if !ok || e["tag"] != "collapsible_panel" {
+		if !ok {
 			continue
 		}
-		if children, ok := e["elements"].([]any); ok {
-			if target := freeRequestMarkdown(children); target != nil {
-				return target
+		switch e["tag"] {
+		case "collapsible_panel":
+			if children, ok := e["elements"].([]any); ok {
+				if target := freeRequestMarkdown(children); target != nil {
+					return target
+				}
+			}
+		case "column_set":
+			columns, _ := e["columns"].([]any)
+			for _, value := range columns {
+				column, ok := value.(map[string]any)
+				if !ok || column["tag"] != "column" {
+					continue
+				}
+				if children, ok := column["elements"].([]any); ok {
+					if target := freeRequestMarkdown(children); target != nil {
+						return target
+					}
+				}
 			}
 		}
 	}

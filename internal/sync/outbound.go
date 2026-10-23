@@ -4,9 +4,11 @@ package sync
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
+	"codex-feishu/internal/cot"
 	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/store"
 )
@@ -27,6 +29,12 @@ type TopicResultGateway interface {
 
 type MembershipGateway interface {
 	MemberIDs(context.Context, string) ([]string, error)
+}
+
+type COTGateway interface {
+	CreateCOT(context.Context, string, string, bool) (feishu.COTMessage, error)
+	AppendCOT(context.Context, string, string, []feishu.COTEvent) error
+	CompleteCOT(context.Context, string, string, string) error
 }
 
 // Outbound dispatches public cards. Optional notifications must have been
@@ -120,6 +128,13 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 			return DeliveryResult{}, false, errors.New("topic reply gateway unavailable")
 		}
 	}
+	if _, nativeCOT, err := cot.Parse(m.Card); err != nil {
+		return DeliveryResult{}, false, err
+	} else if nativeCOT {
+		if _, ok := o.Gateway.(COTGateway); !ok {
+			return DeliveryResult{}, false, errors.New("native progress gateway unavailable")
+		}
+	}
 	leaseCtx := ctx
 	release := func() {}
 	if o.BeginWrite != nil {
@@ -180,37 +195,72 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 	}
 	var remoteID string
 	var sendErr error
-	switch a.Operation {
-	case "send":
-		remoteID, sendErr = o.Gateway.SendCard(leaseCtx, "chat_id", a.ChatID, a.Card, a.ID)
-	case "reply":
-		if a.FollowMode == "topic" {
-			if gateway, ok := o.Gateway.(TopicResultGateway); ok {
-				response, err := gateway.ReplyTopicCardResult(leaseCtx, a.ParentMessageID, a.Card, a.ID)
-				remoteID, sendErr = response.MessageID, err
-				if err == nil && response.MessageID != "" && response.ThreadID != "" {
-					if persistErr := o.Store.RecordBindingPlatformThread(leaseCtx, host, thread, response.ThreadID); persistErr != nil {
-						if errors.Is(persistErr, store.ErrConflict) {
-							if markErr := o.Store.MarkBindingRepair(leaseCtx, host, thread, "topic_identity_conflict"); markErr != nil {
-								return result, true, markErr
+	cotID := a.COTID
+	if a.COTStep != "" {
+		gateway := o.Gateway.(COTGateway)
+		switch a.COTStep {
+		case "create":
+			response, err := gateway.CreateCOT(leaseCtx, a.ChatID, a.ParentMessageID, a.FollowMode == "topic")
+			remoteID, cotID, sendErr = response.MessageID, response.COTID, err
+			if err == nil && (remoteID == "" || cotID == "") {
+				sendErr = &feishu.Unknown{Operation: "native progress identity incomplete"}
+			}
+		case "append":
+			var events []feishu.COTEvent
+			if json.Unmarshal([]byte(a.COTEvents), &events) != nil {
+				sendErr = errors.New("invalid frozen progress events")
+			} else {
+				sendErr = gateway.AppendCOT(leaseCtx, a.TargetMessageID, a.COTID, events)
+			}
+			remoteID = a.TargetMessageID
+		case "complete":
+			doc, _, err := cot.Parse(a.Card)
+			if err != nil {
+				sendErr = err
+			} else {
+				reason := "error"
+				if doc.Status == "completed" {
+					reason = "done"
+				}
+				sendErr = gateway.CompleteCOT(leaseCtx, a.TargetMessageID, a.COTID, reason)
+			}
+			remoteID = a.TargetMessageID
+		default:
+			sendErr = errors.New("unsupported frozen progress operation")
+		}
+	} else {
+		switch a.Operation {
+		case "send":
+			remoteID, sendErr = o.Gateway.SendCard(leaseCtx, "chat_id", a.ChatID, a.Card, a.ID)
+		case "reply":
+			if a.FollowMode == "topic" {
+				if gateway, ok := o.Gateway.(TopicResultGateway); ok {
+					response, err := gateway.ReplyTopicCardResult(leaseCtx, a.ParentMessageID, a.Card, a.ID)
+					remoteID, sendErr = response.MessageID, err
+					if err == nil && response.MessageID != "" && response.ThreadID != "" {
+						if persistErr := o.Store.RecordBindingPlatformThread(leaseCtx, host, thread, response.ThreadID); persistErr != nil {
+							if errors.Is(persistErr, store.ErrConflict) {
+								if markErr := o.Store.MarkBindingRepair(leaseCtx, host, thread, "topic_identity_conflict"); markErr != nil {
+									return result, true, markErr
+								}
 							}
+							result.State = "unknown"
+							return result, true, persistErr
 						}
-						result.State = "unknown"
-						return result, true, persistErr
 					}
+				} else {
+					remoteID, sendErr = o.Gateway.(TopicMessageGateway).ReplyTopicCard(leaseCtx, a.ParentMessageID, a.Card, a.ID)
 				}
 			} else {
-				remoteID, sendErr = o.Gateway.(TopicMessageGateway).ReplyTopicCard(leaseCtx, a.ParentMessageID, a.Card, a.ID)
+				remoteID, sendErr = o.Gateway.ReplyCard(leaseCtx, a.ParentMessageID, a.Card, a.ID)
 			}
-		} else {
-			remoteID, sendErr = o.Gateway.ReplyCard(leaseCtx, a.ParentMessageID, a.Card, a.ID)
+		case "update":
+			sendErr = o.Gateway.UpdateCard(leaseCtx, a.TargetMessageID, a.Card)
+			remoteID = a.TargetMessageID
+		default:
+			// Schema constraints and ClaimMirror make this unreachable.
+			sendErr = errors.New("unsupported persisted outbound operation")
 		}
-	case "update":
-		sendErr = o.Gateway.UpdateCard(leaseCtx, a.TargetMessageID, a.Card)
-		remoteID = a.TargetMessageID
-	default:
-		// Schema constraints and ClaimMirror make this unreachable.
-		sendErr = errors.New("unsupported persisted outbound operation")
 	}
 	var limited *feishu.RateLimited
 	if errors.As(sendErr, &limited) {
@@ -246,11 +296,17 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 			return result, true, err
 		}
 	}
-	if err := o.Store.FinishMirrorAttempt(leaseCtx, a.ID, result.State, remoteID); err != nil {
+	var finishErr error
+	if a.COTStep != "" {
+		finishErr = o.Store.FinishCOTAttempt(leaseCtx, a.ID, result.State, remoteID, cotID)
+	} else {
+		finishErr = o.Store.FinishMirrorAttempt(leaseCtx, a.ID, result.State, remoteID)
+	}
+	if finishErr != nil {
 		// The gateway may already have accepted the operation. Never
 		// turn a failed local commit into another remote request.
 		result.State = "unknown"
-		return result, true, err
+		return result, true, finishErr
 	}
 	result.MessageID = remoteID
 	return result, true, nil
