@@ -20,6 +20,10 @@ schema 32→33 的副本演练和停服升级通过；原 58 表/179285 行的�
 
 进程及稳定 CLI 身份一致，PID 359051，systemd active/running/enabled，Codex 和飞书连接均恢复。部署前后 doctor/status 仅有原来的 bindings_reconciled / operations_known 两项 required pending，没有新增 required fail/pending；`phase1_released=false`。同页查找、默认工作树与附件预览/删除的合成布局已确认，部署后用户进一步确认本轮创建卡测试通过，并授权提交 PR 合入 main。该确认不扩展为手机、双话题或完整一期矩阵通过。详见[本次部署记录](../records/creation-card-deployment-2026-10-23.md)。
 
+## 2026-10-23 Goal 同步与工作树隔离更新
+
+16:56 已将现有桥更新到 `f86c0422922c6b1bf5114593e757d6b9f5ea52ad`，schema 31、原配置与共享 daemon 保持。核验原生来源后的 goal 无输入续跑可直接投递到原绑定，故障会话水位已恢复推进，新增最终卡 confirmed 且平台读回身份与目标群一致。新工作树改用桥数据库同级的持久目录，旧冻结路径继续原地核验。全仓业务测试及来源读取/同步 race 通过；新目录的真实创建和 goal 客户端 UI 保持 pending，原有两项 required pending 与 `phase1_released=false` 不变。构建摘要、目录生命周期证据和恢复读回见 [实施记录](../records/goal-sync-and-worktree-lifecycle-2026-10-23.md)。下列构建信息保留为此前阶段记录。
+
 ## 2026-10-23 原生 CoT 前次部署记录
 
 用户已确认本人私聊原生 CoT 样式并授权正式接入。新活动轮次默认使用 CoT；已有 Card JSON 过程卡继续更新原消息，不替换未知投递或补建终态历史。当前本地 build 为 `4b9316497ea8+attachment-stop-fix-20261023-144245-cdf314cc`，二进制 SHA-256 `901c38eecdc814dbf2828dbe0553b14a3690336e75b2184a46f7ab4466ea000a`，schema 31，PID 3627889，systemd active/running/enabled；稳定 CLI 与进程一致。本次停桥一致备份 56 表/176423 行，quick_check 与外键检查通过，保持 schema 31；首次 30→31 显式迁移及旧数据核验见历史记录。配置、manifest 和共享 daemon 保持。

@@ -1,6 +1,6 @@
 # Goal 续跑同步与工作树生命周期修复
 
-日期：2026-10-23。适用：共享 daemon 0.162.1、桥 schema 31。状态：实现完成；合成回归及真实只读来源/历史投影已验证，客户端 UI 保持 pending。对应 [01 客户端](../codex-feishu/01-codex-client.md)、[02 存储](../codex-feishu/02-store-and-recovery.md)、[05 同步](../codex-feishu/05-message-sync.md)和 [09 创建任务](../codex-feishu/09-feishu-task-creation.md)。
+日期：2026-10-23。适用：共享 daemon 0.162.1、桥 schema 31。状态：已部署，goal 最终卡已确认发送并完成平台读回；合成回归及真实只读来源/历史投影已验证，客户端 UI 保持 pending。对应 [01 客户端](../codex-feishu/01-codex-client.md)、[02 存储](../codex-feishu/02-store-and-recovery.md)、[05 同步](../codex-feishu/05-message-sync.md)和 [09 创建任务](../codex-feishu/09-feishu-task-creation.md)。
 
 ## 断点与证据
 
@@ -26,4 +26,12 @@
 - `go test -race ./internal/codexclient ./internal/sync`：通过来源读取与同步并发检查。
 - `python3 scripts/check_docs.py` 与 `git diff --check`：通过。
 
-真实只读来源与纯投影不能替代飞书消息投递或客户端 UI。缺失旧工作树仍需逐个核验对应的恢复快照；新目录规则不等于旧目录已经恢复。完整一期发布状态不因本修复变为通过。
+## 现有桥部署与恢复读回
+
+16:56:01（Asia/Shanghai）通过正式 service stop/install/start 流程替换既有候选桥。源码 commit 为 `f86c0422922c6b1bf5114593e757d6b9f5ea52ad`，二进制 SHA-256 为 `73cfd497d17b82ee405f40ed4b681c3f87cf955ea8e04fd2c409915a18c34ed9`。停桥后完成一致 SQLite 备份；schema 31、配置字节、共享 daemon 和绑定均保持，私有部署日志先于各次状态变更落盘。
+
+原故障 goal 轮次在部署时已经完成。同步水位从 15:49:26 推进到 16:58:21，新增最终卡的 revision 与 delivered_revision 均为 1，outbound confirmed。平台 GET 读回核对了同一原绑定群、同一 App、interactive 卡、未删除、无回复父消息；原 33 个最终镜像变为 34 个，没有新增人类镜像。没有补建已终态轮次的 CoT 过程卡。
+
+实例、Codex 与飞书连接健康；status 仍返回原有 `bindings_reconciled`、`operations_known` 两项 required pending，没有提升完整发布状态。未运行新的真实任务创建探针；新工作树路径的验证来自回归测试，旧故障工作树曾由外部流程恢复的证据单独保留。
+
+平台读回不能替代客户端 UI。缺失旧工作树仍需逐个核验对应的恢复快照；新目录规则不等于旧目录已经恢复。完整一期发布状态不因本修复变为通过，`phase1_released=false`。
