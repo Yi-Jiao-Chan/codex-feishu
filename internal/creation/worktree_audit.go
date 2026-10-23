@@ -189,8 +189,24 @@ func (a WorktreeAuditor) inspect(ctx context.Context, scope WorktreeAuditReport,
 		return e, ErrWorktreeAudit
 	}
 	e.Identity, err = worktreeOwnerIdentity(ctx, p)
-	if err != nil || verifyCreationWorktreeGeneration(ctx, i, w) != nil {
+	if err != nil {
 		return e, ErrWorktreeAudit
+	}
+	if verifyCreationWorktreeGeneration(ctx, i, w) != nil {
+		// A snapshot restore deliberately has a new physical generation.
+		// Preserve the immutable birth proof and authorize only its separately
+		// confirmed successor, including in plans used for owner repair.
+		restored, err := a.Store.LatestConfirmedWorktreeRestoreAttempt(ctx, store.SubmissionScope{HostID: i.HostID, AppID: i.AppID, ThreadID: i.NativeThreadID})
+		var plan WorktreeRestorePlan
+		var result WorktreeRestoreResult
+		if err != nil || json.Unmarshal([]byte(restored.ParamsJSON), &plan) != nil || json.Unmarshal([]byte(restored.ResultJSON), &result) != nil ||
+			plan.Identity.Root != i.WorktreePath || plan.Identity.RawCWD != i.ExecutionDirectory() || plan.Identity.SourceRoot != i.GitRoot ||
+			plan.Identity.CommonDir != i.GitCommonDir || plan.Identity.ThreadID != i.NativeThreadID || ValidateRestoredWorktree(ctx, plan, result) != nil {
+			return e, ErrWorktreeAudit
+		}
+		restoredDigest, _ := json.Marshal([]string{e.IntentDigest, restored.ID, restored.ParamsJSON, restored.ResultJSON})
+		digest := sha256.Sum256(restoredDigest)
+		e.IntentDigest = hex.EncodeToString(digest[:])
 	}
 	e.ObservedOwner, err = readWorktreeOwner(ctx, p)
 	if err != nil {

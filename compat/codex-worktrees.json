@@ -30,6 +30,21 @@
     "git_lock_blocks_force_cleanup_fallback": false,
     "owner_is_reread_immediately_before_delete": false
   },
+  "snapshot_restore": {
+    "schema_version": 34,
+    "trigger": "persisted, definitely unsent ordinary Feishu input for the existing bound thread",
+    "snapshot_ref": "refs/codex/snapshots/<sha1 of exact original worktree root string>",
+    "canonicalize_before_snapshot_hash": false,
+    "checkout": "detached HEAD at frozen snapshot commit; original root and relative cwd",
+    "staging": "unpublished named bucket; no-replace atomic rename; repair only its dedicated Git backlink",
+    "owner": "fresh Git identity and original thread; preserve original creation birth proof",
+    "unknown": "read-only physical reconciliation before any next phase; never blindly repeat add",
+    "desktop_attachment_transition": false,
+    "already_queued_desktop_cleanup_canceled": false,
+    "stale_registration_automatically_pruned": false,
+    "real_app_and_feishu_ui_verified": false,
+    "evidence": "../docs/records/feishu-worktree-auto-restore-2026-10-23.md"
+  },
   "desktop_version_automatically_discoverable": false,
   "real_desktop_cleanup_ui_verified": false,
   "evidence": "../docs/records/managed-worktree-ownership-2026-10-23.md"

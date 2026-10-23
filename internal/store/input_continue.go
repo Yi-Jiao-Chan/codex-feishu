@@ -67,6 +67,9 @@ func (s *Store) ReceiveSubmissionInput(ctx context.Context, scope SubmissionScop
 	}
 	r, fresh, err := claimInputTx(ctx, tx, scope, chat, in.MessageID, in.Body, "received")
 	if err == nil {
+		err = stageWorktreeRestoreGrantTx(ctx, tx, scope, r.ID)
+	}
+	if err == nil {
 		err = stageInputContinueTx(ctx, tx, scope, r)
 	}
 	if err != nil {

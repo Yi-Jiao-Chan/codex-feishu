@@ -6,6 +6,7 @@ import "strconv"
 // Active means a currently verified native turn; unknown/idle never offers steer.
 type QueueView struct {
 	State, Token, QueueID         string
+	WorktreeRestore               string
 	Revision                      int64
 	QueueOrdinal                  int
 	Active, Stopped, LocalPending bool
@@ -17,6 +18,16 @@ func QueueInput(state, token, queueID string, revision int64) string {
 }
 func QueueInputView(v QueueView) string {
 	labels := map[string]string{"received": "已收到 · 待提交", "submitting": "正在提交", "accepted": "已进入会话", "queued": "已排队 · 等待执行状态核验", "consumed": "已进入会话", "steering": "正在追加引导", "removing": "正在移除", "steered": "已追加引导", "removed": "已移除", "unknown": "正在核验 · 请勿重复提交", "failed": "提交失败"}
+	worktreeRestoreLabels := map[string]string{
+		"restoring":           "工作树已回收，正在从快照恢复。原消息已保存，无需重发。",
+		"snapshot_missing":    "未找到工作树快照，暂时无法自动恢复。原消息已保存；可在 Codex App 恢复工作树后继续。",
+		"identity_unverified": "暂时无法确认工作树的恢复位置。原消息已保存；请先在 Codex App 恢复工作树。",
+		"conflict":            "工作树位置已被占用，自动恢复已停止。原消息已保存。",
+		"unknown":             "正在核验工作树恢复结果。原消息已保存，请勿重复发送。",
+		"unsupported":         "当前工作树暂不支持自动恢复。原消息已保存；可在 Codex App 恢复后继续。",
+		"restored":            "工作树已恢复，正在提交原消息。",
+		"failed":              "工作树恢复暂未完成。原消息已保存，可在 Codex App 恢复后继续。",
+	}
 	label := labels[v.State]
 	if label == "" {
 		label = labels["unknown"]
@@ -35,6 +46,9 @@ func QueueInputView(v QueueView) string {
 	}
 	if v.State == "received" && v.LocalPending {
 		label = "已收到 · 尚未提交，可取消本地待提交消息"
+		if restoreLabel := worktreeRestoreLabels[v.WorktreeRestore]; restoreLabel != "" {
+			label = restoreLabel
+		}
 	}
 	els := []element{{"tag": "markdown", "content": label, "text_size": "notation"}}
 	els = append(els, queueControls(v)...)

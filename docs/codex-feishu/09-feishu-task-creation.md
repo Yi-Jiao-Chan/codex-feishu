@@ -71,9 +71,21 @@ schema 29 冻结工作方式、精确 ref、commit、Git 根/common-dir 与唯�
 
 存量使用 `worktrees audit --config PATH --report PRIVATE_JSON` 生成私有计划，再在桥停止后用 `worktrees repair --config PATH --report PRIVATE_JSON` 补齐证据完整、物理代际未变且 owner 缺失的记录；写入前仍重新读取可信 creation intent、原生 threadSource/cwd 与 Git 身份。同 owner 可核验恢复，冲突不覆盖，缺失目录不重建。已暴露目录的补登记不能撤销桌面已有清理队列，也不能修复桌面缓存的旧 gitdir；具体处理与限制见[存量修复方案](../records/managed-worktree-ownership-2026-10-23.md#存量修复方案)。
 
-创建后的 Runtime 授权同样精确比较冻结的 `ExecutionDirectory()`，不拿原仓库 cwd 比较新工作树。原选择目录及整个 Git 根仍须在 creation.allowed_roots 内，私有工作树不必直接位于可浏览范围；收发前只读核验完整草稿 marker、准确注册的 checkout/common-dir 与实际 cwd/RWX。目录被移除或被其他任务复用时拒绝执行，不重建工作树、线程或群。已确认的原输入通过历史收据核对，尚未 dispatch 的普通输入沿用原收据提交。
+创建后的 Runtime 授权同样精确比较冻结的 `ExecutionDirectory()`，不拿原仓库 cwd 比较新工作树。原选择目录及整个 Git 根仍须在 creation.allowed_roots 内，私有工作树不必直接位于可浏览范围；收发前只读核验完整草稿 marker、准确注册的 checkout/common-dir 与实际 cwd/RWX。目录被移除时，只有下述普通消息恢复流程可还原原快照；被其他任务复用时拒绝执行。已确认的原输入通过历史收据核对，尚未 dispatch 的普通输入沿用原收据提交。
 
 已通过实际 Git、崩溃恢复、目录范围与 schema 28→29 保留测试；0.162.1 共享 daemon 已验证新工作树、原项目身份、首条输入及持久化后第二连接 resume。飞书新控件已通过真实平台 PATCH/GET 校验并部署候选，本轮创建卡在部署后获用户测试通过确认；创建到 App 工作树展示、客户端继续等未逐项覆盖的场景仍须独立取证，不据此提升完整 P2 或一期发布状态。
+
+## 已回收工作树的消息恢复
+
+普通飞书输入已经持久接收、确认从未提交且原托管 cwd 缺失时，actor 在 `thread/resume` 前恢复；已附着会话后来丢失目录也走同一入口。App 创建和桥创建的既有绑定均可使用。只接受原 daemon `codexHome/worktrees/<bucket>/<checkout>` 内可验证的原位置：桥会话使用冻结 creation intent，App 会话使用健康时保存的身份，旧会话可结合已授权 observation 的源仓库与唯一精确快照回填。绑定、原生 source/cwd 和当前目录允许规则每次重新核验。
+
+快照 ref 是 `refs/codex/snapshots/<SHA-1(原始工作树根字符串)>`，不能先 canonicalize 再算哈希，也不能用当前 HEAD 替代。读取后冻结 commit，以 detached HEAD 还原快照内容；快照捕获的未提交文件会成为检出内容，不恢复原来的 staged/unstaged 区分。cwd 子目录须存在于快照中，必要时只物化该目录，不修改源仓库的 sparse 配置。
+
+恢复先在未发布的命名临时 bucket 检出，保存新的物理代际、登记实际原线程 owner 并读回，再以不覆盖目标的原子移动回原路径，只修复该次检出的专属 Git 回指。已有同路径 Git 注册、目标占用、异主或身份漂移均停止；不自动 prune、不覆盖目录、不运行会扫描其他工作树的全局 repair。原创建 birth 收据保留，新恢复日志用于后续授权与审计。结果 unknown 先核验，证据不足时保留原消息并显示核验状态。
+
+命名 bucket 恢复时暂不发布 `.codex-worktree-name`，原输入的真实 user item 可见且线程活跃或该轮已终态后才发布；原消息若已取消，只能由后续普通消息的真实执行证据完成发布。旧四位 hex / 时间戳路径本来就在桌面扫描范围内，无法获得这层保护。桥不能撤销 App 已排队的删除任务，也不能清理桌面缓存的旧 gitdir。
+
+此实现复用原线程、群、收据及 `queue/add`，不创建替代聊天，不覆盖 cwd 或会话策略。它不操作桌面私有的 `archived_worktree → worktree` 附件及 PR 关联状态；App Server 0.162.1 未公开对应接口，客户端展示仍需真实验收。历史数据库同级目录不在本次自动恢复范围内。实现与验证见[恢复记录](../records/feishu-worktree-auto-restore-2026-10-23.md)。
 
 ## 附件预览与移除
 

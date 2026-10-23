@@ -6,7 +6,7 @@
 
 1. 在 App 连接的同一远程系统用户下调用真实命令 `codex app-server daemon version`，解析 status、socketPath、cliVersion、appServerVersion。
 2. 连接现有 socket 上的 Unix WebSocket；不另起 stdio app-server 来“恢复”活跃任务，不重启现有 daemon。
-3. 发送 `initialize`，clientInfo 使用桥自己的名称，启用 `capabilities.experimentalApi=true`；保存响应中的实际 `codexHome`，成功后发送 `initialized` 通知。该路径用于 goal 来源读取和托管工作树创建/核验，不从桥进程的 HOME / CODEX_HOME 猜测；字段缺失不影响普通连接，但不能提供这些证明。连接 generation 同时保留 discovery 的实际 `appServerVersion`，工作树兼容层只接受 0.162.1，见 [09](09-feishu-task-creation.md#新建工作树)。
+3. 发送 `initialize`，clientInfo 使用桥自己的名称，启用 `capabilities.experimentalApi=true`；保存响应中的实际 `codexHome`，成功后发送 `initialized` 通知。该路径用于 goal 来源读取和托管工作树创建、核验与快照恢复，不从桥进程的 HOME / CODEX_HOME 猜测；字段缺失不影响普通连接，但不能提供这些证明。连接 generation 同时保留 discovery 的实际 `appServerVersion`，工作树兼容层只接受 0.162.1，见 [09](09-feishu-task-creation.md#新建工作树)。
 4. 单 reader 持续收 JSON-RPC 响应、通知和服务端请求；request ID 关联等待者。未知事件保留方法名供诊断，不让解码错误断开全部任务。
 5. 加入已有线程用 `thread/resume`，参数只含 threadId、excludeTurns=true；不传 cwd、model、approvalPolicy、sandbox 等覆盖值。
 6. 断线后重查 socket 和实际服务端版本，重新初始化、加入已绑定会话，然后交给恢复器补齐历史与队列。

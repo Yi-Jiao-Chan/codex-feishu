@@ -133,7 +133,7 @@ func TestWorktreesRepairLocksExistingDatabaseAndPreservesSchema(t *testing.T) {
 	}
 	defer db.Close()
 	var attempts int
-	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM creation_attempts`).Scan(&attempts); err != nil || schema != 31 || attempts != 0 {
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM creation_attempts`).Scan(&attempts); err != nil || schema != store.SchemaVersion || attempts != 0 {
 		t.Fatal("empty repair changed schema or created unrelated attempts", schema, attempts, err)
 	}
 }

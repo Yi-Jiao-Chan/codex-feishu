@@ -198,6 +198,9 @@ func (s *Store) ReceiveAttachmentInput(ctx context.Context, in AttachmentInput, 
 		if err != nil {
 			return b, false, err
 		}
+		if err = stageWorktreeRestoreGrantTx(ctx, tx, in.Scope, r.ID); err != nil {
+			return b, false, err
+		}
 		if err = stageInputContinueTx(ctx, tx, in.Scope, r); err != nil {
 			return b, false, err
 		}
@@ -230,6 +233,9 @@ func (s *Store) ReceiveAttachmentInput(ctx context.Context, in AttachmentInput, 
 	}
 	r, fresh, err := claimInputTx(ctx, tx, in.Scope, chat, in.MessageID, in.Body, "draft")
 	if err != nil || !fresh {
+		return b, false, err
+	}
+	if err = stageWorktreeRestoreGrantTx(ctx, tx, in.Scope, r.ID); err != nil {
 		return b, false, err
 	}
 	if err = mirrorWriteOne(ctx, tx, `INSERT INTO attachment_events(app_id,message_id,batch_id,receipt_id) VALUES(?,?,?,?)`, in.Scope.AppID, in.MessageID, b.ID, r.ID); err != nil {

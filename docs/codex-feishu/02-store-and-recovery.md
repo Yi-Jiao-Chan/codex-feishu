@@ -2,6 +2,16 @@
 
 负责 `internal/store/`、迁移、恢复协调器。依赖 00；必须在输入提交与自动建群之前可用。
 
+## Schema 34：工作树快照恢复
+
+新增 `thread_worktree_identities`、`worktree_restore_grants`、`worktree_restore_attempts`。第一张表保存已授权会话的原始 cwd、工作树根、源仓库、common-dir、相对子目录及不可变绑定；普通飞书输入首次入账时，在同一事务保存恢复授权。恢复日志冻结原收据、快照 commit、原目标路径、临时检出路径和物理身份，不复制消息正文。旧表、会话设置表单、原生 unknown 与出站日志保持原值。
+
+迁移本身不发消息、不恢复目录。actor 只给确认从未提交的普通待处理收据补记 `legacy-pending` 授权；创建首条输入、异步答案、原生 attempt、queue/history/M0 写入证据均排除。collecting 附件保留 FIFO，封存且全部就绪后才能恢复；没有普通待处理输入的历史唤醒不触发恢复。
+
+每线程最多一个未完成恢复，状态为 `prepared / dispatching / unknown / confirmed / blocked`。每个文件系统写阶段先保存 checkpoint；重启将 dispatching 作为 unknown，只读核验准确路径、快照、私有代际收据及双向 Git 指针。足够证据确认某阶段完成后才继续下一阶段；无法证明结果时保留 unknown，不重复 worktree add，不改投新线程。原创建 birth 不变，新恢复代际独立记录并参与 Runtime 与审计授权。
+
+恢复中本地取消仍只取消原输入。后续写阶段重新检查收据；若核验已完成恢复，只记录物理事实，不提交取消的消息。未移动的完整阶段可记录 blocked/input-canceled 并保留临时目录，释放后续普通输入；已移动但无法确认的结果继续核验。命名工作树延迟发布，原输入取消后，只允许严格晚于它的普通收据在真实原生历史可见后完成发布。存在 schema 34 或恢复记录时不得回退不理解此协议的旧二进制，也不得用旧数据库覆盖新活动。详见[恢复记录](../records/feishu-worktree-auto-restore-2026-10-23.md)。
+
 ## Schema 33：会话设置表单
 
 `session_settings_forms` 与 schema 32 的 `session_settings_requests`、`reply_settings_sources` 并存。每次不带参数的 `/model` 在同一事务中保存命令收据、表单和初始 UI mirror/outbox；表单阶段为 `loading`、`editing`、`saving`、`canceling`、`closed`。`loading` 完成后才发布编辑表单，编辑中的草稿不调用原生设置接口，也不阻塞普通队列输入或停止。
