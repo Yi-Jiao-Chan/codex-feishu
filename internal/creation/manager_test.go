@@ -22,6 +22,8 @@ import (
 type creationAddCall struct{ thread, body, client string }
 type managerNative struct {
 	h                      *managerHarness
+	appServerVersion       string
+	autoConsumeWorktree    bool
 	starts                 []codexclient.CreationSpec
 	adds                   []creationAddCall
 	startErrors, addErrors []error
@@ -37,6 +39,7 @@ type managerNative struct {
 	creationReadErr        error
 	creationReads          int
 	afterStart             func(string)
+	beforeAdd              func(string, string, string)
 }
 
 func (n *managerNative) ListProjects(context.Context) ([]codexclient.Project, error) {
@@ -45,6 +48,12 @@ func (n *managerNative) ListProjects(context.Context) ([]codexclient.Project, er
 }
 
 func (n *managerNative) CodexHome() string { return n.h.codexHome }
+func (n *managerNative) AppServerVersion() string {
+	if n.appServerVersion == "" {
+		return "0.162.1"
+	}
+	return n.appServerVersion
+}
 func (n *managerNative) StartCreation(ctx context.Context, s codexclient.CreationSpec) (codexclient.CreationResult, error) {
 	n.h.requireDispatch(ctx, "native")
 	params, err := codexclient.CreationRequestJSON(s)
@@ -69,6 +78,10 @@ func (n *managerNative) StartCreation(ctx context.Context, s codexclient.Creatio
 	source, _ := codexclient.CreationThreadSource(s.IntentID)
 	label, _ := json.Marshal(source)
 	thread := codexclient.Thread{ID: fmt.Sprintf("native-%d", len(n.starts)), CWD: s.CWD, Ephemeral: false, ThreadSource: label}
+	var workspaceMode string
+	if err := n.h.s.DB.QueryRowContext(ctx, `SELECT workspace_mode FROM creation_workflows WHERE intent_id=?`, s.IntentID).Scan(&workspaceMode); err == nil && workspaceMode == "worktree" {
+		thread.Status.Type = "active"
+	}
 	if s.ProjectID != "" {
 		id := s.ProjectID
 		thread.ProjectID = &id
@@ -104,6 +117,9 @@ func (n *managerNative) Add(ctx context.Context, thread, body, client string) (c
 	if err := n.h.s.DB.QueryRowContext(ctx, `SELECT state FROM submission_attempts WHERE client_id=? ORDER BY rowid DESC LIMIT 1`, client).Scan(&state); err != nil || state != "dispatching" {
 		n.h.t.Fatal("input was not journaled before dispatch", state, err)
 	}
+	if n.beforeAdd != nil {
+		n.beforeAdd(thread, body, client)
+	}
 	n.adds = append(n.adds, creationAddCall{thread, body, client})
 	n.h.order = append(n.h.order, "add")
 	if len(n.addErrors) > 0 {
@@ -116,6 +132,13 @@ func (n *managerNative) Add(ctx context.Context, thread, body, client string) (c
 	input, _ := json.Marshal(codexclient.TextInput(body))
 	q := codexclient.Queued{ID: "q-" + store.ID(), ClientUserMessageID: &client, Input: input}
 	n.queue = append(n.queue, q)
+	var workspaceMode string
+	if err := n.h.s.DB.QueryRowContext(ctx, `SELECT workspace_mode FROM creation_workflows WHERE native_thread_id=?`, thread).Scan(&workspaceMode); err == nil && workspaceMode == "worktree" && n.autoConsumeWorktree {
+		id := store.ID()
+		part, _ := json.Marshal(codexclient.TextInput(body)[0])
+		n.turns = append(n.turns, codexclient.Turn{ID: "turn-" + id, Status: "inProgress", ItemsView: "full", Items: []codexclient.Item{{ID: "user-" + id, Type: "userMessage", ClientID: &client, Content: []json.RawMessage{part}}}})
+		n.queue = n.queue[:len(n.queue)-1]
+	}
 	return q, nil
 }
 func (n *managerNative) Metadata(_ context.Context, id string) (codexclient.Thread, error) {
@@ -316,7 +339,7 @@ func newManagerHarness(t *testing.T) *managerHarness {
 	if _, err = h.s.BeginBaseline(context.Background(), "host", "app", h.clock.Unix()); err != nil {
 		t.Fatal(err)
 	}
-	h.n = &managerNative{h: h, threads: map[string]codexclient.Thread{}}
+	h.n = &managerNative{h: h, appServerVersion: "0.162.1", autoConsumeWorktree: true, threads: map[string]codexclient.Thread{}}
 	h.g = &managerGateway{h: h}
 	var cfg config.Config
 	cfg.Host.ID = "host"

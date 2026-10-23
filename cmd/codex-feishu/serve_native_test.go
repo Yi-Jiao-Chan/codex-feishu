@@ -185,7 +185,30 @@ func TestServeNativeFactoryAcceptsVerifiedDotOneWithLocalUnixWebSocket(t *testin
 	if err != nil || native == nil || dials.Load() != 1 || socket.accepted.Load() != 1 {
 		t.Fatalf("verified 0.162.1 was not accepted by the local Unix WebSocket gate: native=%v err=%v dials=%d accepted=%d", native != nil, err, dials.Load(), socket.accepted.Load())
 	}
+	versioned, ok := native.(interface{ AppServerVersion() string })
+	if !ok {
+		t.Fatal("native wrapper does not expose the discovered daemon version")
+	}
+	if version := versioned.AppServerVersion(); version != "0.162.1" {
+		t.Fatalf("native wrapper lost the discovered daemon version: %q", version)
+	}
 	native.Close()
+}
+
+func TestServeNativeFactoryCreationRequiresVerifiedDotOneBeforeConnect(t *testing.T) {
+	root := t.TempDir()
+	socket := newServeVersionSocket(t, root)
+	var dials atomic.Int32
+	factory := serveNativeConnect("local-cli", func(context.Context, string) (codexclient.Daemon, error) {
+		return codexclient.Daemon{Status: "running", AppServerVersion: "0.162.0", SocketPath: socket.path}, nil
+	}, func(ctx context.Context, path string) (*codexclient.Client, error) {
+		dials.Add(1)
+		return codexclient.Connect(ctx, path)
+	}, true)
+	native, err := factory(context.Background())
+	if native != nil || err == nil || !strings.Contains(err.Error(), "creation protocol version is not verified") || dials.Load() != 0 || socket.accepted.Load() != 0 {
+		t.Fatalf("creation-incompatible daemon reached native connect: native=%v err=%v dials=%d accepted=%d", native != nil, err, dials.Load(), socket.accepted.Load())
+	}
 }
 
 func TestServeNativeFactoryRechecksVersionAfterDisconnectWithoutNativeWrites(t *testing.T) {

@@ -9,11 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
 	"unicode"
 
+	"codex-feishu/compat"
 	"codex-feishu/internal/cards"
 	"codex-feishu/internal/rules"
 	"codex-feishu/internal/store"
@@ -26,6 +28,7 @@ var (
 	ErrWorktreeStorage    = errors.New("creation worktree storage is unavailable")
 	ErrWorktreeIdentity   = errors.New("creation worktree identity cannot be verified")
 	ErrWorktreeScope      = errors.New("creation worktree requires an authorized repository root")
+	ErrWorktreeProtocol   = errors.New("managed worktree lifecycle is not verified")
 )
 
 type gitCheckout struct{ Root, Common string }
@@ -226,9 +229,26 @@ func nativeWorktreeHome(n Native) (string, error) {
 	return home, nil
 }
 
+func managedWorktreeHome(n Native) (string, error) {
+	v, ok := n.(interface{ AppServerVersion() string })
+	if !ok || !compat.VerifiedWorktreeCodexVersion(v.AppServerVersion()) {
+		return "", ErrWorktreeProtocol
+	}
+	return nativeWorktreeHome(n)
+}
+
+var legacyScannedWorktreeName = regexp.MustCompile(`(?i)^\d{6}-\d{4}-[0-9a-f]{8}$`)
+
+func managedWorktreePath(home, root, draftID string) (string, error) {
+	if len(draftID) != 32 || strings.Trim(draftID, "0123456789abcdef") != "" {
+		return "", ErrWorktreeStorage
+	}
+	return filepath.Join(home, "worktrees", "codex-feishu-"+draftID, worktreeName(root, draftID)), nil
+}
+
 func worktreeName(root, draftID string) string {
 	name := filepath.Base(root)
-	if name == "." || name == string(filepath.Separator) || name == ".codex-worktree-name" || name == ".codex-feishu-"+draftID+".json" {
+	if name == "." || name == string(filepath.Separator) || name == ".codex-worktree-name" || name == ".codex-feishu-"+draftID+".json" || legacyScannedWorktreeName.MatchString(name) {
 		return "workspace"
 	}
 	return name
@@ -236,7 +256,11 @@ func worktreeName(root, draftID string) string {
 
 // Planning reads only Git metadata. The exact commit and destination are
 // frozen with the creation intent before any filesystem or native writes.
-func (m *Manager) planWorktree(ctx context.Context, _ Native, d store.CreationDraft, i *store.CreationIntent) error {
+func (m *Manager) planWorktree(ctx context.Context, n Native, d store.CreationDraft, i *store.CreationIntent) error {
+	home, err := managedWorktreeHome(n)
+	if err != nil {
+		return err
+	}
 	checkout, err := inspectCheckout(ctx, d.Directory)
 	if err != nil {
 		return err
@@ -248,7 +272,7 @@ func (m *Manager) planWorktree(ctx context.Context, _ Native, d store.CreationDr
 	if err != nil {
 		return err
 	}
-	path, err := legacyWorktreePath(m.Config.Storage.DatabaseFile, d.ID)
+	path, err := managedWorktreePath(home, checkout.Root, d.ID)
 	if err != nil || rules.Inside(checkout.Common, path) {
 		return ErrWorktreeStorage
 	}
@@ -397,22 +421,31 @@ func ValidateCreatedWorktree(ctx context.Context, i store.CreationIntent) error 
 	if i.WorkspaceMode != "worktree" || i.WorktreePath == "" || i.ExecutionDirectory() == "" {
 		return ErrWorktreeIdentity
 	}
-	return verifyWorktree(ctx, frozenWorktree(i), false)
+	p := frozenWorktree(i)
+	if err := verifyWorktree(ctx, p, false); err != nil {
+		return err
+	}
+	owner, err := readWorktreeOwner(ctx, p)
+	if err != nil || owner != "" && owner != i.NativeThreadID || i.ManagedWorktreePublication() && owner != i.NativeThreadID {
+		return ErrWorktreeIdentity
+	}
+	return nil
 }
 
 func (m *Manager) ensureWorktree(ctx context.Context, n Native, i store.CreationIntent) (bool, error) {
+	home, err := managedWorktreeHome(n)
+	if err != nil {
+		return false, err
+	}
 	legacy, err := legacyWorktreePath(m.Config.Storage.DatabaseFile, i.DraftID)
 	if err != nil {
 		return false, err
 	}
 	if i.WorktreePath != legacy {
-		home, err := nativeWorktreeHome(n)
-		if err != nil {
-			return false, err
-		}
 		parent := filepath.Dir(i.WorktreePath)
 		bucket := filepath.Base(parent)
-		if filepath.Dir(parent) != filepath.Join(home, "worktrees") || len(bucket) != 4 || strings.Trim(bucket, "0123456789abcdef") != "" || filepath.Base(i.WorktreePath) != worktreeName(i.GitRoot, i.DraftID) {
+		oldBucket := len(bucket) == 4 && strings.Trim(bucket, "0123456789abcdef") == ""
+		if filepath.Dir(parent) != filepath.Join(home, "worktrees") || !oldBucket && !i.ManagedWorktreePublication() || filepath.Base(i.WorktreePath) != worktreeName(i.GitRoot, i.DraftID) {
 			return false, ErrWorktreeStorage
 		}
 	}
@@ -430,16 +463,28 @@ func (m *Manager) ensureWorktree(ctx context.Context, n Native, i store.Creation
 		return false, err
 	}
 	if a.State == "confirmed" {
-		return true, verifyWorktree(ctx, p, false)
+		if err := verifyWorktree(ctx, p, false); err != nil {
+			return false, err
+		}
+		return true, verifyCreationWorktreeGeneration(ctx, i, a)
 	}
 	if a.State == "unknown" {
 		if verifyWorktree(ctx, p, true) != nil {
 			return false, nil // An absent checkout is not permission to repeat add.
 		}
-		return true, m.Store.FinishCreationAttempt(ctx, a, "confirmed", p.Destination, `{}`)
+		result, err := creationWorktreeResult(ctx, p, false)
+		if err != nil {
+			return false, err
+		}
+		return true, m.Store.FinishCreationAttempt(ctx, a, "confirmed", p.Destination, result)
 	}
 	if a.State == "rejected" {
 		return false, nil
+	}
+	if !i.ManagedWorktreePublication() {
+		// Historical destinations may be verified in place, but no new
+		// checkout may use an exposed bucket or leave the managed root.
+		return false, ErrWorktreeProtocol
 	}
 	ok, err := m.Store.DispatchCreationAttempt(ctx, a)
 	if err != nil || !ok {
@@ -456,8 +501,11 @@ func (m *Manager) ensureWorktree(ctx context.Context, n Native, i store.Creation
 	}
 	_, runErr := worktreeGit(ctx, p.Repository, "worktree", "add", "--detach", "--", p.Destination, p.Commit)
 	outcome := "unknown"
+	result := `{}`
 	if runErr == nil && verifyWorktree(ctx, p, true) == nil {
-		outcome = "confirmed"
+		if identity, err := creationWorktreeResult(ctx, p, true); err == nil {
+			outcome, result = "confirmed", identity
+		}
 	}
 	remote := ""
 	if outcome == "confirmed" {
@@ -465,5 +513,5 @@ func (m *Manager) ensureWorktree(ctx context.Context, n Native, i store.Creation
 	}
 	// A cancelled call may no longer write SQLite. Recovery leaves its durable
 	// dispatch unknown and proves the checkout; it never runs git add again.
-	return outcome == "confirmed", m.Store.FinishCreationAttempt(ctx, a, outcome, remote, `{}`)
+	return outcome == "confirmed", m.Store.FinishCreationAttempt(ctx, a, outcome, remote, result)
 }

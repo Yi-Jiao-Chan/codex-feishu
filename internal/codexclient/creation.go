@@ -149,6 +149,8 @@ type CreationResult struct {
 // results. Keep this connection for the initial queue/add: a new empty thread
 // need not have a readable rollout yet. Even validation errors retain decoded
 // response evidence, including a returned thread ID, and are always unknown.
+// A returned ID does not register a managed worktree. The creation manager
+// must durably register and read back its owner before submitting first input.
 func (c *Client) StartCreation(ctx context.Context, s CreationSpec) (CreationResult, error) {
 	params, err := CreationRequestJSON(s)
 	if err != nil {

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -101,6 +102,51 @@ func TestCreationWorktreeIntentAndAttemptAreFrozen(t *testing.T) {
 		t.Fatal("unknown worktree dispatch allowed a retry", err)
 	}
 	if err := s.FinishCreationAttempt(ctx, a, "confirmed", i.WorktreePath, `{}`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagedCreationRequiresOwnerAndPublicationBeforeCompletion(t *testing.T) {
+	s := creationTestStore(t)
+	ctx := context.Background()
+	d := creationTestDraft("managed-worktree-gates", 300)
+	d.WorkspaceMode, d.BaseBranch = "worktree", "refs/heads/main"
+	d = receiveCreationTestDraft(t, s, d)
+	path := filepath.Join("/daemon", "worktrees", "codex-feishu-"+d.ID, "project")
+	plan := CreationIntent{
+		OwnerID: "owner", Members: []string{"owner", "bot"}, GitRoot: "/project", GitCommonDir: "/project/.git",
+		BaseCommit: strings.Repeat("1", 40), WorktreePath: path,
+	}
+	i, claimed, err := s.ClaimCreationIntent(ctx, d, plan, 301)
+	if err != nil || !claimed {
+		t.Fatalf("claim managed worktree intent: claimed=%v err=%v", claimed, err)
+	}
+	if i.WorktreePath != path {
+		t.Fatalf("managed path was not frozen: got %q want %q", i.WorktreePath, path)
+	}
+	confirmCreationStep(t, s, d.ID, "group", `{"chat":"task-chat"}`, "task-chat", 302)
+	confirmCreationStep(t, s, d.ID, "root", `{"parent":"task-chat"}`, "task-root", 303)
+	confirmCreationStep(t, s, d.ID, "native", `{"thread":"task-root"}`, "native-thread", 304)
+	confirmCreationStep(t, s, d.ID, "worktree", `{"path":"managed"}`, path, 305)
+	if _, _, err := s.MaterializeCreation(ctx, d.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("managed worktree materialized without owner confirmation: %v", err)
+	}
+	confirmCreationStep(t, s, d.ID, "worktree-owner", `{"thread":"native-thread","identity":"v1:synthetic"}`, "native-thread", 306)
+	_, receipt, err := s.MaterializeCreation(ctx, d.ID)
+	if err != nil {
+		t.Fatalf("owner confirmation did not permit materialization: %v", err)
+	}
+	if err := s.StageSubmissions(ctx, SubmissionScope{HostID: creationTestHost, AppID: creationTestApp, ThreadID: "native-thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE submission_inputs SET state='accepted' WHERE receipt_id=?`, receipt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompleteCreation(ctx, d.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("managed worktree completed without publication confirmation: %v", err)
+	}
+	confirmCreationStep(t, s, d.ID, "worktree-publish", `{"thread":"native-thread","identity":"v1:synthetic"}`, "native-thread", 307)
+	if err := s.CompleteCreation(ctx, d.ID); err != nil {
 		t.Fatal(err)
 	}
 }

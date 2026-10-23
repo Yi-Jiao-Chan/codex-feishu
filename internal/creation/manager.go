@@ -381,6 +381,9 @@ func (m *Manager) tickUI(ctx context.Context) error {
 }
 
 func actionError(err error) string {
+	if errors.Is(err, ErrWorktreeProtocol) {
+		return "worktree-protocol"
+	}
 	if errors.Is(err, ErrAttachmentsDisabled) {
 		return "attachments-disabled"
 	}
@@ -839,6 +842,14 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 		if a.State == "confirmed" {
 			i.NativeThreadID = a.RemoteID
 		} else {
+			if i.WorkspaceMode == "worktree" && !i.ManagedWorktreePublication() {
+				legacy, err := legacyWorktreePath(m.Config.Storage.DatabaseFile, i.DraftID)
+				if err != nil || i.WorktreePath != legacy {
+					// An exposed historical checkout needs ownership repair;
+					// starting an idle thread cannot protect its creation gap.
+					return m.Store.SetCreationError(ctx, d.ID, "worktree-protocol")
+				}
+			}
 			ok, err := m.Store.DispatchCreationAttempt(ctx, a)
 			if err != nil || !ok {
 				return err
@@ -852,6 +863,15 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 				return nil
 			}
 			i.NativeThreadID = result.Thread.ID
+		}
+	}
+	if i.WorkspaceMode == "worktree" {
+		ready, err := m.ensureCreationWorktreeOwner(ctx, n, i)
+		if err != nil {
+			return m.Store.SetCreationError(ctx, d.ID, actionError(err))
+		}
+		if !ready {
+			return nil
 		}
 	}
 	// The binding is saved before input, but the ordinary actor is activated
@@ -871,6 +891,11 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 	if c == nil {
 		c = &submissions.Controller{Store: m.Store, Native: n, HostID: b.HostID, AppID: i.AppID, ThreadID: b.ThreadID}
 		c.BeginWrite = func(ctx context.Context) (context.Context, func(), error) {
+			if i.WorkspaceMode == "worktree" {
+				if err := m.checkCreationWorktreeOwner(ctx, i); err != nil {
+					return nil, nil, err
+				}
+			}
 			if err := m.verifyCreationRoot(ctx, i); err != nil {
 				return nil, nil, err
 			}
@@ -886,6 +911,15 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 	}
 	switch now.State {
 	case "accepted", "queued", "consumed", "steered":
+		if i.WorkspaceMode == "worktree" {
+			ready, err := m.publishCreationWorktree(ctx, n, i, r)
+			if err != nil {
+				return m.Store.SetCreationError(ctx, d.ID, actionError(err))
+			}
+			if !ready {
+				return nil
+			}
+		}
 		if err = m.Store.CompleteCreation(ctx, d.ID); err != nil {
 			return err
 		}
@@ -1367,6 +1401,10 @@ func (m *Manager) workgroupOptions(ctx context.Context, v *cards.CreationView) {
 
 func creationErrorText(code string) string {
 	switch code {
+	case "worktree-protocol":
+		return "当前工作树尚不能安全接入 Codex 管理，请核验版本或已有归属后继续。"
+	case "worktree-owner-unknown", "worktree-publish-unknown":
+		return "正在核验工作树归属与创建结果，请勿重复创建。"
 	case "worktree-scope":
 		return "工作树需要整个 Git 仓库在允许范围内，请选择已授权仓库，或取消勾选工作树。"
 	case "worktree-repository":

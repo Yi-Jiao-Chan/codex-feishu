@@ -8,6 +8,7 @@
 
 | 文档 | 日期 / 版本 |
 | --- | --- |
+| [托管工作树归属登记、清理竞态与存量修复](managed-worktree-ownership-2026-10-23.md) | 2026-10-23 |
 | [Goal 续跑同步与工作树生命周期修复](goal-sync-and-worktree-lifecycle-2026-10-23.md) | 2026-10-23 |
 | [会话模型设置卡片：保存与取消终态部署](model-settings-card-deployment-2026-10-23.md) | 2026-10-23 |
 | [会话模型设置与指令帮助本地部署](session-settings-help-deployment-2026-10-23.md) | 2026-10-23 |

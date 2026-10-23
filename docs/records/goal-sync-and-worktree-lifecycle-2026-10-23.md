@@ -2,6 +2,8 @@
 
 日期：2026-10-23。适用：共享 daemon 0.162.1、桥 schema 31。状态：已部署，goal 最终卡已确认发送并完成平台读回；合成回归及真实只读来源/历史投影已验证，客户端 UI 保持 pending。对应 [01 客户端](../codex-feishu/01-codex-client.md)、[02 存储](../codex-feishu/02-store-and-recovery.md)、[05 同步](../codex-feishu/05-message-sync.md)和 [09 创建任务](../codex-feishu/09-feishu-task-creation.md)。
 
+后续更正：同日用户提供本机 App 自动清理的确切日志，并要求保留 Codex 托管目录；下文迁出管理目录的工作树方案已被[归属与发布协议修复](managed-worktree-ownership-2026-10-23.md)替代。Goal 修复和当时部署记录保持有效。
+
 ## 断点与证据
 
 合法 goal 自动续跑没有新的 `userMessage`，启动记录明确为 `turn_attribution.turn_trigger=goal`。旧同步器要求所有公开轮次都有用户输入或既存回复锚点，因而整份历史不能入库，后续普通轮次也被阻断。v2 的 `rootTurnId` 自指不构成自动续跑证明。

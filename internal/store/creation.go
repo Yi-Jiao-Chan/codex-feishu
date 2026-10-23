@@ -96,6 +96,12 @@ type CreationIntent struct {
 	CreatedAtMS                                                                                         int64
 }
 
+// This immutable destination convention selects the versioned desktop
+// publication protocol without reinterpreting historical frozen paths.
+func (i CreationIntent) ManagedWorktreePublication() bool {
+	return i.WorkspaceMode == "worktree" && filepath.Base(filepath.Dir(i.WorktreePath)) == "codex-feishu-"+i.DraftID
+}
+
 // ExecutionDirectory preserves a selected project subdirectory in the new
 // checkout. The frozen worktree identity is validated before it is persisted.
 func (i CreationIntent) ExecutionDirectory() string {
@@ -416,7 +422,7 @@ func (s *Store) FinishCreationAttempt(ctx context.Context, a CreationAttempt, ou
 	if n != 1 {
 		return ErrConflict
 	}
-	if a.Step == "group" || a.Step == "root" || a.Step == "native" || a.Step == "worktree" {
+	if a.Step == "group" || a.Step == "root" || a.Step == "native" || a.Step == "worktree" || a.Step == "worktree-owner" || a.Step == "worktree-publish" {
 		state, code := "working", ""
 		if outcome != "confirmed" {
 			state, code = outcome, a.Step+"-"+outcome
@@ -424,7 +430,7 @@ func (s *Store) FinishCreationAttempt(ctx context.Context, a CreationAttempt, ou
 		if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET state=?,error_code=? WHERE draft_id=?`, state, code, a.DraftID); err != nil {
 			return err
 		}
-		if outcome == "confirmed" && a.Step != "worktree" {
+		if outcome == "confirmed" && (a.Step == "group" || a.Step == "root" || a.Step == "native") {
 			column := map[string]string{"group": "chat_id", "root": "root_message_id", "native": "native_thread_id"}[a.Step]
 			if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET `+column+`=? WHERE draft_id=? AND (`+column+`='' OR `+column+`=?)`, remote, a.DraftID, remote); err != nil {
 				return err
@@ -471,7 +477,7 @@ func (s *Store) recoverCreationLanes(ctx context.Context, host, app string, ui, 
 	if _, err = tx.ExecContext(ctx, `UPDATE creation_attempts SET state='unknown' WHERE state='dispatching' AND ((? AND step LIKE 'entry:%') OR (? AND step NOT LIKE 'entry:%')) AND draft_id IN (SELECT draft_id FROM creation_drafts WHERE host_id=? AND app_id=?)`, ui, workflows, host, app); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET state='unknown',error_code='recovery-unknown' WHERE ? AND host_id=? AND app_id=? AND EXISTS(SELECT 1 FROM creation_attempts a WHERE a.draft_id=creation_workflows.draft_id AND a.step IN ('group','root','native','worktree') AND a.state='unknown')`, workflows, host, app); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE creation_workflows SET state='unknown',error_code='recovery-unknown' WHERE ? AND host_id=? AND app_id=? AND EXISTS(SELECT 1 FROM creation_attempts a WHERE a.draft_id=creation_workflows.draft_id AND a.step IN ('group','root','native','worktree','worktree-owner','worktree-publish') AND a.state='unknown')`, workflows, host, app); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE creation_drafts SET error_code='recovery-unknown',revision=revision+1 WHERE ? AND host_id=? AND app_id=? AND error_code<>'recovery-unknown' AND EXISTS(SELECT 1 FROM creation_workflows i WHERE i.draft_id=creation_drafts.draft_id AND i.state='unknown' AND i.error_code='recovery-unknown')`, workflows, host, app); err != nil {
@@ -602,6 +608,17 @@ func (s *Store) CompleteCreation(ctx context.Context, draft string) error {
 		return err
 	}
 	defer tx.Rollback()
+	i, err := scanCreationIntent(tx.QueryRowContext(ctx, `SELECT `+creationIntentColumns+` FROM creation_workflows WHERE draft_id=?`, draft))
+	if err != nil {
+		return err
+	}
+	if i.ManagedWorktreePublication() {
+		for _, step := range []string{"worktree-owner", "worktree-publish"} {
+			if err := requireWorktreeStepTx(ctx, tx, i, step); err != nil {
+				return err
+			}
+		}
+	}
 	var count int
 	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM creation_workflows i JOIN submission_inputs n ON n.receipt_id=i.receipt_id WHERE i.draft_id=? AND i.native_thread_id<>'' AND n.state IN ('accepted','queued','consumed','steered')`, draft).Scan(&count); err != nil {
 		return err
@@ -642,6 +659,11 @@ func (s *Store) MaterializeCreation(ctx context.Context, draft string) (Binding,
 		var state, path string
 		if err = tx.QueryRowContext(ctx, `SELECT state,remote_id FROM creation_attempts WHERE draft_id=? AND step='worktree' ORDER BY rowid DESC LIMIT 1`, draft).Scan(&state, &path); err != nil || state != "confirmed" || path != i.WorktreePath {
 			return Binding{}, Receipt{}, ErrConflict
+		}
+		if i.ManagedWorktreePublication() {
+			if err := requireWorktreeStepTx(ctx, tx, i, "worktree-owner"); err != nil {
+				return Binding{}, Receipt{}, err
+			}
 		}
 	}
 	chat := i.ChatID
@@ -696,6 +718,14 @@ func (s *Store) MaterializeCreation(ctx context.Context, draft string) (Binding,
 		}
 	}
 	return b, r, tx.Commit()
+}
+
+func requireWorktreeStepTx(ctx context.Context, tx *sql.Tx, i CreationIntent, step string) error {
+	var state, owner string
+	if err := tx.QueryRowContext(ctx, `SELECT state,remote_id FROM creation_attempts WHERE draft_id=? AND step=? ORDER BY rowid DESC LIMIT 1`, i.DraftID, step).Scan(&state, &owner); err != nil || state != "confirmed" || owner != i.NativeThreadID || owner == "" {
+		return ErrConflict
+	}
+	return nil
 }
 
 // BridgeCreationThread is stronger than a source label: the local intent,
