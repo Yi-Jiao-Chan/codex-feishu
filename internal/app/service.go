@@ -628,6 +628,13 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	r.BeginDelivery = s.beginCardDelivery
 	r.CreationAuthorize = s.authorizeCreation
 	r.CanAttach = s.creationAttachGate
+	if source, ok := native.(interface {
+		Metadata(context.Context, string) (codexclient.Thread, error)
+		CodexHome() string
+	}); ok {
+		goals := codexclient.NewGoalTurnReader(source.Metadata, source.CodexHome())
+		r.ReadGoalTurns = goals.Read
+	}
 	if gateway, ok := s.Gateway.(bindings.GroupNameGateway); ok {
 		names := &bindings.GroupNames{Store: s.Store, Gateway: gateway, AppID: s.Config.Feishu.AppID,
 			OwnerID: s.Config.Access.OwnerOpenID, Now: s.Now, BeginWrite: s.beginCardDelivery}

@@ -39,7 +39,11 @@ type Engine struct {
 	PrepareHuman           func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
 	// PreparePublic registers local file references before they enter durable
 	// cards. It changes only a display copy, never native history or input.
-	PreparePublic    func(context.Context, string, string) (string, error)
+	PreparePublic func(context.Context, string, string) (string, error)
+	// ReadGoalTurns proves automatic goal starts from native session metadata.
+	// It must not infer an origin from a missing user message or current goal state.
+	ReadGoalTurns    func(context.Context, string, []string) (map[string]bool, error)
+	goalTurns        map[string]bool
 	humanAttachments map[string][]cards.AttachmentView
 	// ProgressRender is pure; the actor prepares its durable control state first.
 	// An empty interrupted render suppresses a new historical progress card.
@@ -76,6 +80,12 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 	old, err := e.Store.Mirrors(ctx, e.HostID, thread)
 	if err != nil {
 		return err
+	}
+	if ids := goalProofRequired(turns, old); len(ids) > 0 && e.ReadGoalTurns != nil {
+		e.goalTurns, err = e.ReadGoalTurns(ctx, thread, ids)
+		if err != nil {
+			return &HistoryError{Cause: err}
+		}
 	}
 	replySources, err := e.Store.ReplySettingsSources(ctx, e.HostID, thread)
 	if err != nil {
@@ -247,6 +257,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 		turn.Items = items
 		mark.TurnID = turn.ID
 		var parentKey, parentID string
+		direct := false
 		firstInput := true
 		active := map[string]bool{}
 		for _, i := range turn.Items {
@@ -296,13 +307,22 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 		if parentKey == "" && parentID == "" {
 			// Empty drafts and standalone compaction turns have no public
 			// message or reply anchor. Their items still advance the scan
-			// checkpoint; other nonempty turns require the initiating input.
+			// checkpoint. Public turns need an input anchor or verified goal origin.
+			internalOnly := true
 			for _, item := range turn.Items {
 				if item.Type != "contextCompaction" {
-					return snapshotPlan{}, errors.New("public turn has no initiating human input")
+					internalOnly = false
 				}
 			}
-			continue
+			if internalOnly {
+				continue
+			}
+			if !e.goalTurns[turn.ID] {
+				return snapshotPlan{}, errors.New("public turn has no initiating human input")
+			}
+			// Goal continuations have no initiating human message. Deliver to
+			// this binding directly; never borrow another turn's reply anchor.
+			direct = true
 		}
 		key := mirrorKey("progress", turn.ID)
 		previousProgress, hadProgress := existing[key]
@@ -351,7 +371,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 				return snapshotPlan{}, err
 			}
 			if card != "" {
-				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, ProgressObservedAt: clocks, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
+				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, ProgressObservedAt: clocks, Terminal: turn.Status != "inProgress", Replay: replay, Direct: direct, ParentKey: parentKey, ParentMessageID: parentID})
 			}
 		}
 		body := finalBody(turn)
@@ -375,7 +395,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			}
 			for n, part := range parts {
 				key := mirrorKey("final", turn.ID, fmt.Sprint(n))
-				doc := store.Mirror{Key: key, TurnID: turn.ID, Kind: "final", Card: part.Card, Terminal: true, Replay: replay, ParentKey: parentKey, ParentMessageID: parentID}
+				doc := store.Mirror{Key: key, TurnID: turn.ID, Kind: "final", Card: part.Card, Terminal: true, Replay: replay, Direct: direct, ParentKey: parentKey, ParentMessageID: parentID}
 				if n == 0 && (turn.Status == "completed" || turn.Status == "failed") {
 					doc.EventType = turn.Status
 					if turn.CompletedAt != nil && *turn.CompletedAt > 0 && *turn.CompletedAt <= observedAtMS/1000 {
@@ -398,6 +418,29 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 		}
 	}
 	return snapshotPlan{Docs: docs, Links: links, Mark: mark}, nil
+}
+
+func goalProofRequired(turns []codexclient.Turn, old []store.Mirror) []string {
+	previouslyUnanchored := map[string]bool{}
+	hasPrevious := map[string]bool{}
+	for _, m := range old {
+		if m.Kind != "human" && !hasPrevious[m.TurnID] {
+			hasPrevious[m.TurnID] = true
+			previouslyUnanchored[m.TurnID] = m.ParentKey == "" && m.ParentMessageID == ""
+		}
+	}
+	var ids []string
+	for _, turn := range turns {
+		human, public := false, false
+		for _, item := range turn.Items {
+			human = human || item.Type == "userMessage"
+			public = public || item.Type != "contextCompaction"
+		}
+		if public && (previouslyUnanchored[turn.ID] || !hasPrevious[turn.ID] && !human) {
+			ids = append(ids, turn.ID)
+		}
+	}
+	return ids
 }
 
 func mirrorKey(kind string, parts ...string) string {

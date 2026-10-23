@@ -141,10 +141,14 @@ func (r *QuestionResultReader) Read(ctx context.Context, request InteractiveRequ
 // Pin each directory component; a daemon path cannot redirect this reader to
 // arbitrary files via traversal or symlinks. Do not change Codex file modes.
 func (r *QuestionResultReader) open(path string) (*os.File, error) {
+	return openNativeRollout(path, r.Roots)
+}
+
+func openNativeRollout(path string, roots []string) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, ErrQuestionResultUnavailable
 	}
-	for _, configuredRoot := range r.Roots {
+	for _, configuredRoot := range roots {
 		root, err := filepath.EvalSymlinks(configuredRoot)
 		if err != nil {
 			continue

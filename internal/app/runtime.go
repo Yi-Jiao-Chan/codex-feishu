@@ -54,6 +54,7 @@ type Runtime struct {
 	ProgressTimeZone           string
 	PrepareHuman               func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
 	PreparePublic              func(context.Context, string, string) (string, error)
+	ReadGoalTurns              func(context.Context, string, []string) (map[string]bool, error)
 	SyncGroupName              func(context.Context, store.Binding, string) error
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
@@ -442,6 +443,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
 	engine.PrepareHuman = r.PrepareHuman
 	engine.PreparePublic = r.PreparePublic
+	engine.ReadGoalTurns = r.ReadGoalTurns
 	engine.ProgressRender = r.RenderProgress
 	engine.NativeCOT = r.NativeCOT
 	engine.SuppressAsyncQuestions = r.SuppressAsyncQuestions
