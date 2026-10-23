@@ -511,6 +511,87 @@ func TestCOTStopCommandKeepsFeedbackWhenControlIsBlocked(t *testing.T) {
 	}
 }
 
+func TestCOTStopCommandIgnoresTerminalTurnWithUncompletedDelivery(t *testing.T) {
+	for _, outcome := range []string{"pending", "rejected", "unknown"} {
+		for _, ambiguous := range []bool{false, true} {
+			name := outcome + "/unique-active"
+			if ambiguous {
+				name = outcome + "/ambiguous-active"
+			}
+			t.Run(name, func(t *testing.T) {
+				ctx := context.Background()
+				s, req, now := cotTestCommandFixture(t)
+				old := cotTestSmallDocument("inProgress", "synthetic old tool", "inProgress")
+				cotTestStage(t, s, 100, old, false)
+				cotTestFinish(t, s, cotTestClaim(t, s, 1000))
+				cotTestFinish(t, s, cotTestClaim(t, s, 4000))
+
+				// The native stop and its terminal public events are known even
+				// when the separate Feishu Complete operation has not succeeded.
+				old.Status = "interrupted"
+				cotTestStage(t, s, 101, old, true)
+				terminal := cotTestClaim(t, s, 7000)
+				if terminal.COTStep != "append" || !strings.Contains(terminal.COTEvents, "RUN_FINISHED") || !strings.Contains(terminal.COTEvents, "interrupted") {
+					t.Fatal("old turn did not append its interrupted terminal events")
+				}
+				cotTestFinish(t, s, terminal)
+				if outcome != "pending" {
+					complete := cotTestClaim(t, s, 10000)
+					if complete.COTStep != "complete" {
+						t.Fatalf("expected a separate Complete attempt, got %q", complete.COTStep)
+					}
+					if err := s.FinishCOTAttempt(ctx, complete.ID, outcome, "", ""); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before := cotTestMirrorState(t, s)
+				beforeID, beforeState, beforeCompleted := cotTestDelivery(t, s)
+				if !before.Terminal || before.RemoteID == "" || beforeID == "" || beforeCompleted {
+					t.Fatal("fixture lost the known terminal turn or its unfinished delivery")
+				}
+				active := cotTestSmallDocument("inProgress", "synthetic current tool", "inProgress")
+				active.TurnID = "current-turn"
+				cotTestStageKey(t, s, 102, "cot-current", active, false)
+				if ambiguous {
+					other := active
+					other.TurnID = "other-active-turn"
+					cotTestStageKey(t, s, 103, "cot-other-active", other, false)
+				}
+
+				reply, fresh, err := s.ApplyLocalCommand(ctx, req, now)
+				if err != nil || !fresh {
+					t.Fatalf("stop command: fresh=%v err=%v", fresh, err)
+				}
+				var actions int
+				if err := s.DB.QueryRow(`SELECT COUNT(*) FROM submission_actions WHERE host_id=? AND app_id=? AND thread_id=?`, req.HostID, req.AppID, req.ThreadID).Scan(&actions); err != nil {
+					t.Fatal(err)
+				}
+				if ambiguous {
+					if actions != 0 || !strings.Contains(reply.Card, "未提交停止") {
+						t.Fatal("two nonterminal candidates did not fail closed")
+					}
+				} else {
+					if actions != 1 || reply.Card != "" || reply.State != "confirmed" {
+						t.Fatalf("terminal CoT delivery blocked the unique active turn: actions=%d", actions)
+					}
+					var expected, state string
+					if err := s.DB.QueryRow(`SELECT expected_turn_id,state FROM submission_actions WHERE host_id=? AND app_id=? AND thread_id=? AND kind='stop'`, req.HostID, req.AppID, req.ThreadID).Scan(&expected, &state); err != nil {
+						t.Fatal(err)
+					}
+					if expected != active.TurnID || state != "ready" {
+						t.Fatal("stop did not freeze the unique current native turn")
+					}
+				}
+				after := cotTestMirrorState(t, s)
+				afterID, afterState, afterCompleted := cotTestDelivery(t, s)
+				if after.State != before.State || after.RemoteID != before.RemoteID || after.Revision != before.Revision || after.DeliveredRevision != before.DeliveredRevision || afterID != beforeID || afterState != beforeState || afterCompleted != beforeCompleted {
+					t.Fatal("stop command changed the old CoT delivery evidence")
+				}
+			})
+		}
+	}
+}
+
 func TestCOTStopCommandRejectsAmbiguousOrMissingActiveTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name string

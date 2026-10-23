@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -13,7 +12,7 @@ import (
 
 func discoveryStore(t *testing.T) (*Store, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "discovery.db")
+	path := freshStorePath(t, "discovery.db")
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)

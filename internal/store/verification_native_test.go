@@ -13,7 +13,7 @@ import (
 
 func verificationNativeFixture(t *testing.T) (*Store, VerificationNative) {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "verification-native.db"))
+	s, err := Open(freshStorePath(t, "verification-native.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

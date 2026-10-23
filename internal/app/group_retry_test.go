@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -44,12 +43,17 @@ func TestRuntimeGroupDeadlinePreservesFinalAndWakesWithoutNewInput(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
+	// Persist birth before the initial active listing. Later discovery scans
+	// are disabled so only the actor's deadline can trigger the group retry.
+	if _, err := db.BeginBaseline(ctx, r.HostID, r.AppID, at.Load()); err != nil {
+		t.Fatal(err)
+	}
+	n.set("new", r.AllowedRoots[0], "inProgress")
+	if err := db.ObserveNew(ctx, r.HostID, "new", r.AllowedRoots[0], at.Load()/1000); err != nil {
+		t.Fatal(err)
+	}
 	go func() { done <- r.Run(ctx) }()
 	runtimeWait(t, func() bool { _, complete, err := db.BaselineFence(ctx, "host"); return err == nil && complete })
-	n.set("new", r.AllowedRoots[0], "inProgress")
-	meta, _ := n.Metadata(ctx, "new")
-	body, _ := json.Marshal(map[string]any{"thread": meta})
-	n.events <- codexclient.Event{Method: "thread/started", Params: body}
 	var intent string
 	var due int64
 	runtimeWait(t, func() bool {

@@ -13,7 +13,7 @@ import (
 
 func verificationBindingFixture(t *testing.T, completeBaseline bool) (*Store, VerificationNative, VerificationGroup, string, int64) {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "verification-binding.db"))
+	s, err := Open(freshStorePath(t, "verification-binding.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

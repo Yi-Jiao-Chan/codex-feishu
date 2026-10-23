@@ -17,7 +17,7 @@ import (
 
 func notificationStoreFixture(t *testing.T) (*Store, rules.Policy) {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "notifications.db"))
+	s, err := Open(freshStorePath(t, "notifications.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

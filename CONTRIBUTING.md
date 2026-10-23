@@ -52,6 +52,8 @@ git switch -c codex/queue-recovery origin/main
 | 安装包路径或模板 | 文档检查及 `go test ./internal/devpackage` |
 | 真实交互或发布声明 | 按验收矩阵逐项获取对应证据，自动测试不替代 UI |
 
+存储包的普通业务 fixture 复用进程内已迁移、已关闭的空库快照，每个用例复制到自己的 `t.TempDir`，再通过正常 `Open` 配置连接。首次空库初始化、旧 schema 升级和重启恢复用例中的待测 `Open` 仍须真实执行；快照只用于准备初始状态，不能覆盖待升级文件或替代迁移断言。调整 fixture 时同时核验副本隔离、连接设置和迁移回归。
+
 ```sh
 # 仅格式化本次改动的 Go 文件，以下路径是示例。
 gofmt -w internal/submissions/controller.go internal/submissions/controller_test.go

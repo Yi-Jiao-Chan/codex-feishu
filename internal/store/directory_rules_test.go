@@ -13,7 +13,7 @@ import (
 
 func directoryStoreFixture(t *testing.T) (*Store, string) {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "directory.db"))
+	s, err := Open(freshStorePath(t, "directory.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

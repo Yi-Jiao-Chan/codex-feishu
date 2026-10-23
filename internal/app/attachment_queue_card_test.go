@@ -12,19 +12,20 @@ func TestAttachmentQueueReusesDeliveredCardAndChecksCallbackIdentity(t *testing.
 	for _, action := range []string{"steer", "remove"} {
 		t.Run(action, func(t *testing.T) {
 			r, db := receiverFixture(t)
-			r.Config.Attachments.Enabled = true
+			r.Config.Attachments.Enabled, r.Config.Attachments.ReceiveStandalone = true, true
 			ctx := context.Background()
 			scope := store.SubmissionScope{HostID: "host", AppID: "app", ThreadID: "thread"}
-			if err := r.Message(ctx, attachmentEvent(t, "image-post", "ou_operator", "post", map[string]any{
-				"content": [][]map[string]string{{{"tag": "at", "user_id": "@_user_1"}, {"tag": "text", "text": "inspect this image"}, {"tag": "img", "image_key": "img_fixture"}}},
-			}, true)); err != nil {
+			if err := r.Message(ctx, attachmentEvent(t, "image-post", "ou_operator", "image", map[string]string{"image_key": "img_fixture"}, false)); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Message(ctx, attachmentEvent(t, "instruction", "ou_operator", "text", map[string]string{"text": "@_user_1 inspect this image"}, true)); err != nil {
 				t.Fatal(err)
 			}
 			inputs, err := db.Submissions(ctx, scope)
-			if err != nil || len(inputs) != 1 || inputs[0].State != "collecting" {
+			if err != nil || len(inputs) != 2 || inputs[1].State != "collecting" {
 				t.Fatal("attachment input missing", err)
 			}
-			n := inputs[0]
+			n := inputs[1]
 			card, err := db.SubmissionCard(ctx, scope, n.ID)
 			if err != nil || !strings.HasPrefix(card.Key, "ui:attachments:") {
 				t.Fatal("initial attachment card missing", err)

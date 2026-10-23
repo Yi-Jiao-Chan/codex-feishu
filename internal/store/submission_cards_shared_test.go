@@ -66,7 +66,7 @@ func assertNoSeparateQueueCard(t *testing.T, s *Store, scope SubmissionScope, re
 }
 
 func TestSharedSubmissionCardReusesAttachmentReplyAndPatch(t *testing.T) {
-	s, scope, b, n := sharedCardFixture(t, false)
+	s, scope, b, n := sharedCardFixture(t, true)
 	ctx := context.Background()
 	original := claimSharedCard(t, s, scope, AttachmentCardKey(b.ID), 5000)
 	if original.Operation != "reply" || original.ParentMessageID != b.FirstMessageID {
@@ -220,7 +220,7 @@ func TestSharedSubmissionCardKeepsLegacyUnknownQueueJournalAuthoritative(t *test
 }
 
 func TestSharedSubmissionCardOfflineRefreshCannotRestoreNativeButtons(t *testing.T) {
-	s, scope, b, n := sharedCardFixture(t, false)
+	s, scope, b, n := sharedCardFixture(t, true)
 	ctx := context.Background()
 	first := claimSharedCard(t, s, scope, AttachmentCardKey(b.ID), 5000)
 	if err := s.FinishMirrorAttempt(ctx, first.ID, "confirmed", "shared-remote-card"); err != nil {
@@ -283,10 +283,13 @@ func TestSharedSubmissionCardOfflineKeepsLocalAttachmentManagement(t *testing.T)
 		t.Run(state, func(t *testing.T) {
 			s, _, scope, _ := submissionStore(t)
 			body := "inspect"
-			if state == "open" {
+			if state == "open" || state == "collecting" {
 				body = ""
 			}
 			b := receiveAttachment(t, s, attachmentInput(scope, "alice", "source", body, AttachmentPart{Kind: "image", ResourceKey: "img_fixture"}))
+			if state == "collecting" {
+				b = receiveAttachment(t, s, attachmentInput(scope, "alice", "instruction", "inspect", AttachmentPart{Kind: "text", Text: "inspect"}))
+			}
 			ctx := context.Background()
 			if state == "failed" {
 				p, claimed, err := s.ClaimAttachmentDownload(ctx, "host", "app", 100)
@@ -315,6 +318,59 @@ func TestSharedSubmissionCardOfflineKeepsLocalAttachmentManagement(t *testing.T)
 			if err != nil || after.Card != before.Card || after.Revision != before.Revision {
 				t.Fatalf("offline replaced %s attachment management: %v", state, err)
 			}
+		})
+	}
+}
+
+func TestAutomaticAttachmentCreatesCardWhenManagementIsNeeded(t *testing.T) {
+	for _, tc := range []struct{ state, content string }{
+		{"queued", "第 2 条"},
+		{"unknown", "正在核验"},
+		{"rejected", "提交失败"},
+		{"offline", "cancel_pending"},
+		{"download-failed", "attachment_retry"},
+	} {
+		t.Run(tc.state, func(t *testing.T) {
+			s, scope, b, n := sharedCardFixture(t, false)
+			ctx := context.Background()
+			if _, err := s.SubmissionCard(ctx, scope, n.ID); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("automatic input created an early receipt card: %v", err)
+			}
+			if tc.state == "download-failed" {
+				p, claimed, err := s.ClaimAttachmentDownload(ctx, "host", "app", 100)
+				if err != nil || !claimed {
+					t.Fatal("download not claimed", err)
+				}
+				if err := s.FinishAttachmentDownload(ctx, p, "download-rejected", false, 100); err != nil {
+					t.Fatal(err)
+				}
+				refreshAttachments(t, s)
+			} else {
+				readySharedCard(t, s)
+			}
+			switch tc.state {
+			case "queued":
+				if err := s.ObserveSubmission(ctx, scope, n.ID, "queued", "native-q", 2, "", ""); err != nil {
+					t.Fatal(err)
+				}
+			case "unknown", "rejected":
+				a, claimed, err := s.ClaimSubmissionAttempt(ctx, scope, n.ID, "", "add")
+				if err != nil || !claimed {
+					t.Fatal("native add not claimed", err)
+				}
+				if err := s.FinishSubmissionAttempt(ctx, scope, a.ID, tc.state, "", -1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			options := QueueCardOptions{LocalPending: tc.state == "offline", Offline: tc.state == "offline"}
+			if err := s.StageQueueCardWithOptions(ctx, scope, n.ID, options); err != nil {
+				t.Fatal(err)
+			}
+			card, err := s.SubmissionCard(ctx, scope, n.ID)
+			if err != nil || card.Key != AttachmentCardKey(b.ID) || card.ParentMessageID != b.FirstMessageID || !strings.Contains(card.Card, tc.content) {
+				t.Fatal("automatic attachment lost its required management card", err)
+			}
+			assertNoSeparateQueueCard(t, s, scope, n.ID)
 		})
 	}
 }
