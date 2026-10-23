@@ -93,9 +93,13 @@ func TestWorktreeCreationPinsBranchAndKeepsSourceChanges(t *testing.T) {
 	}
 	before := worktreeTestGit(t, h.root, "status", "--porcelain=v1", "--untracked-files=all")
 	d := worktreeDraft(t, h, "worktree-input")
+	// New planning is independent of the native/App Codex home. Keep the
+	// provider path unavailable so a hidden handshake dependency is caught.
+	h.codexHome = filepath.Join(t.TempDir(), "missing-codex-home")
 	i := claimWorktreeTestIntent(t, h, d, map[string]any{"creation_branch": "refs/heads/feature/测试"})
-	if filepath.Dir(filepath.Dir(i.WorktreePath)) != filepath.Join(h.codexHome, "worktrees") || filepath.Base(i.WorktreePath) != filepath.Base(h.root) || len(filepath.Base(filepath.Dir(i.WorktreePath))) != 4 {
-		t.Fatal("new worktree does not use the server Codex home, short ID and repository name")
+	expected, err := legacyWorktreePath(h.db, d.ID)
+	if err != nil || i.WorktreePath != expected || filepath.Dir(filepath.Dir(filepath.Dir(i.WorktreePath))) != filepath.Dir(h.db) || strings.Contains(i.WorktreePath, filepath.Join(h.codexHome, "worktrees")) {
+		t.Fatal("new worktree does not use the bridge database sibling storage")
 	}
 	if i.BaseCommit != feature || i.BaseBranch != "refs/heads/feature/测试" {
 		t.Fatal("chosen branch was not resolved before dispatch")
@@ -251,7 +255,7 @@ func TestWorktreeRejectsNonGitAndSymlinkStorage(t *testing.T) {
 	d = worktreeDraft(t, h, "symlink-storage")
 	i := claimWorktreeTestIntent(t, h, d, nil)
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(h.codexHome, "worktrees")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(filepath.Dir(h.db), "worktrees")); err != nil {
 		t.Fatal(err)
 	}
 	h.tick()
@@ -366,7 +370,8 @@ func TestWorktreeRepositoryNameCannotCollideWithMarker(t *testing.T) {
 	d := worktreeDraft(t, h, "marker-name-repository")
 	i := claimWorktreeTestIntent(t, h, d, nil)
 	h.tick()
-	if h.intent(d).State != "confirmed" || filepath.Base(i.WorktreePath) != "creation.json" {
+	expected, err := legacyWorktreePath(h.db, d.ID)
+	if err != nil || h.intent(d).State != "confirmed" || i.WorktreePath != expected {
 		t.Fatal("repository basename collided with the private marker")
 	}
 }
@@ -427,22 +432,33 @@ func TestWorktreeAllocationLeavesAppBucketsUntouched(t *testing.T) {
 	}
 }
 
-func TestWorktreeAllocationRaceDoesNotWriteInForeignBucket(t *testing.T) {
+func TestWorktreeFrozenCodexHomeForeignBucketWithoutBridgeMarkerIsRejected(t *testing.T) {
 	h := newManagerHarness(t)
 	initWorktreeTestRepo(t, h.root)
-	d := worktreeDraft(t, h, "native-bucket-race")
+	d := worktreeDraft(t, h, "foreign-codexhome-bucket")
 	i := claimWorktreeTestIntent(t, h, d, nil)
-	foreign := filepath.Dir(i.WorktreePath)
+	foreign := filepath.Join(h.codexHome, "worktrees", d.ID[:4])
 	if err := os.MkdirAll(foreign, 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(foreign, ".codex-worktree-name"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	h.tick()
+	frozen := filepath.Join(foreign, worktreeName(h.root, d.ID))
+	if _, err := h.s.DB.Exec(`UPDATE creation_workflows SET worktree_path=? WHERE draft_id=?`, frozen, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	i.WorktreePath = frozen
+	ready, err := h.m.ensureWorktree(context.Background(), h.n, i)
+	if err != nil || ready {
+		t.Fatalf("foreign App bucket was accepted: ready=%v err=%v", ready, err)
+	}
 	entries, err := os.ReadDir(foreign)
-	if err != nil || len(entries) != 1 || entries[0].Name() != ".codex-worktree-name" || h.intent(d).State != "rejected" || len(h.n.starts) != 0 || h.g.groups != 0 {
-		t.Fatal("allocation race modified or used another App worktree", err)
+	if err != nil || len(entries) != 1 || entries[0].Name() != ".codex-worktree-name" {
+		t.Fatalf("foreign App bucket was modified: entries=%v err=%v", entries, err)
+	}
+	if got := h.intent(d); got.State != "rejected" || len(h.n.starts) != 0 || h.g.groups != 0 {
+		t.Fatalf("foreign App bucket rejection created downstream resources: %+v", got)
 	}
 }
 
@@ -481,5 +497,75 @@ func TestWorktreeLegacyUnknownKeepsOriginalPathAndJournal(t *testing.T) {
 	actual, err := h.s.CreationAttempt(context.Background(), d.ID, "worktree")
 	if err != nil || actual.Params != string(raw) || actual.RemoteID != legacy {
 		t.Fatal("legacy journal was rewritten", err)
+	}
+}
+
+func TestWorktreeFrozenCodexHomeUnknownKeepsOriginalPathAndJournal(t *testing.T) {
+	h := newManagerHarness(t)
+	initWorktreeTestRepo(t, h.root)
+	d := worktreeDraft(t, h, "legacy-checkout-recovery")
+	i := claimWorktreeTestIntent(t, h, d, nil)
+	frozen := filepath.Join(h.codexHome, "worktrees", d.ID[:4], worktreeName(h.root, d.ID))
+	if _, err := h.s.DB.Exec(`UPDATE creation_workflows SET worktree_path=? WHERE draft_id=?`, frozen, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	i.WorktreePath = frozen
+	h.g.expectedDirectory = i.ExecutionDirectory()
+	p := frozenWorktree(i)
+	raw, _ := json.Marshal(p)
+	a, err := h.s.PrepareCreationAttempt(context.Background(), d.ID, "worktree", string(raw), h.clock.UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := h.s.DispatchCreationAttempt(context.Background(), a); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if err := worktreeMarker(p, true); err != nil {
+		t.Fatal(err)
+	}
+	worktreeTestGit(t, h.root, "worktree", "add", "--detach", p.Destination, p.Commit)
+	h.tick()
+	got := h.intent(d)
+	if got.State != "confirmed" || got.WorktreePath != frozen || len(h.n.starts) != 1 || h.n.starts[0].CWD != frozen {
+		t.Fatal("frozen CodexHome workflow was relocated or recreated", got.State)
+	}
+	actual, err := h.s.CreationAttempt(context.Background(), d.ID, "worktree")
+	if err != nil || actual.Params != string(raw) || actual.RemoteID != frozen {
+		t.Fatal("legacy journal was rewritten", err)
+	}
+}
+
+func TestWorktreeFrozenCodexHomeConfirmedPathIsVerifiedInPlace(t *testing.T) {
+	h := newManagerHarness(t)
+	initWorktreeTestRepo(t, h.root)
+	d := worktreeDraft(t, h, "confirmed-codexhome-recovery")
+	i := claimWorktreeTestIntent(t, h, d, nil)
+	frozen := filepath.Join(h.codexHome, "worktrees", d.ID[:4], worktreeName(h.root, d.ID))
+	if _, err := h.s.DB.Exec(`UPDATE creation_workflows SET worktree_path=? WHERE draft_id=?`, frozen, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	i.WorktreePath = frozen
+	p := frozenWorktree(i)
+	raw, _ := json.Marshal(p)
+	a, err := h.s.PrepareCreationAttempt(context.Background(), d.ID, "worktree", string(raw), h.clock.UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := h.s.DispatchCreationAttempt(context.Background(), a); err != nil || !ok {
+		t.Fatal("could not claim frozen CodexHome worktree", err)
+	}
+	if err := worktreeMarker(p, true); err != nil {
+		t.Fatal(err)
+	}
+	worktreeTestGit(t, h.root, "worktree", "add", "--detach", p.Destination, p.Commit)
+	if err := h.s.FinishCreationAttempt(context.Background(), a, "confirmed", p.Destination, `{}`); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := h.m.ensureWorktree(context.Background(), h.n, i)
+	if err != nil || !ready {
+		t.Fatalf("confirmed frozen CodexHome worktree was not verified in place: %v", err)
+	}
+	if got := h.intent(d); got.WorktreePath != frozen {
+		t.Fatal("confirmed frozen worktree path changed")
 	}
 }

@@ -3,15 +3,12 @@ package creation
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -237,29 +234,9 @@ func worktreeName(root, draftID string) string {
 	return name
 }
 
-func plannedWorktreePath(home, draftID, root string) (string, error) {
-	if !filepath.IsAbs(home) || len(draftID) != 32 || strings.Trim(draftID, "0123456789abcdef") != "" {
-		return "", ErrWorktreeStorage
-	}
-	for attempt := 0; attempt < 256; attempt++ {
-		bucket := draftID[:4]
-		if attempt > 0 {
-			digest := sha256.Sum256([]byte(draftID + ":" + strconv.Itoa(attempt)))
-			bucket = hex.EncodeToString(digest[:2])
-		}
-		parent := filepath.Join(home, "worktrees", bucket)
-		if _, err := os.Lstat(parent); os.IsNotExist(err) {
-			return filepath.Join(parent, worktreeName(root, draftID)), nil
-		} else if err != nil {
-			return "", ErrWorktreeStorage
-		}
-	}
-	return "", ErrWorktreeStorage
-}
-
 // Planning reads only Git metadata. The exact commit and destination are
 // frozen with the creation intent before any filesystem or native writes.
-func (m *Manager) planWorktree(ctx context.Context, n Native, d store.CreationDraft, i *store.CreationIntent) error {
+func (m *Manager) planWorktree(ctx context.Context, _ Native, d store.CreationDraft, i *store.CreationIntent) error {
 	checkout, err := inspectCheckout(ctx, d.Directory)
 	if err != nil {
 		return err
@@ -271,11 +248,7 @@ func (m *Manager) planWorktree(ctx context.Context, n Native, d store.CreationDr
 	if err != nil {
 		return err
 	}
-	home, err := nativeWorktreeHome(n)
-	if err != nil {
-		return err
-	}
-	path, err := plannedWorktreePath(home, d.ID, checkout.Root)
+	path, err := legacyWorktreePath(m.Config.Storage.DatabaseFile, d.ID)
 	if err != nil || rules.Inside(checkout.Common, path) {
 		return ErrWorktreeStorage
 	}

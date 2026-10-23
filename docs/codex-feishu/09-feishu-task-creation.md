@@ -57,7 +57,7 @@ mute 只阻止自动建群，用户主动创建不因此被拒绝。selected_dir
 
 本机 0.162.1 的 `thread/start` 没有创建工作树参数。桥先创建自己的持久 Git 工作树，再向原共享 daemon 传入该工作树的实际 cwd 和经核验的原 projectId。工作树基于所选分支的**已提交内容**，以 detached HEAD 检出；原目录未提交或未跟踪的文件不会复制，环境 setup 和 `.worktreeinclude` 也不在本次实现中。这与 [Codex App 工作树](https://learn.chatgpt.com/docs/environments/git-worktrees)的自动复制和环境流程有明确区别，复选框的悬浮提示说明使用已提交内容。
 
-新工作树保存在 `<initialize.codexHome>/worktrees/<4位ID>/<仓库名>`，对齐 Codex App 的默认目录形式；Codex Home 取实际共享服务握手，不读取桥的 HOME / CODEX_HOME 作为替代。规划时跳过已有目录，创建时以原子 mkdir 领取；若被其他工作树抢占，拒绝写入。桥使用自己的私有 marker，不改 App 元数据，也不接管 App 的清理、环境 setup 或 handoff 生命周期。此前冻结的数据库同级 `worktrees/<draftID>/checkout` 保留原路径、marker 和请求参数，不移动已有会话。
+新工作树保存在桥数据库同级的 `worktrees/<draftID>/checkout` 独立持久目录，与 Codex App 的 worktrees 托管生命周期隔离；新规划不读取桥或 App 的 HOME / CODEX_HOME，也不使用 App 的 worktree 分配器。文件预览须显式允许该目录。桥使用自己的私有 marker，不改 App 元数据，也不接管 App 的清理、环境 setup 或 handoff 生命周期。此前冻结在 App 托管目录或数据库同级目录的路径均保留原路径、marker 和请求参数；缺失时需另行核验原路径的恢复快照，桥不会从 base 重建并冒充恢复。
 
 用户所选目录与整个 Git 根目录都必须在 creation.allowed_roots 内；只允许 `/repo/sub` 不授予检出整个 `/repo` 的权限。允许整个仓库时，选择子目录会保留相同相对 cwd。新路径不扩大普通目录浏览权限，项目关系仍从原目录和原生 catalog 核验。
 
