@@ -628,6 +628,22 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	r.BeginDelivery = s.beginCardDelivery
 	r.CreationAuthorize = s.authorizeCreation
 	r.CanAttach = s.creationAttachGate
+	if workspace, ok := native.(workspaceRestoreNative); ok {
+		r.PrepareWorkspace = func(ctx context.Context, thread string) error {
+			return s.prepareWorkspace(ctx, workspace, thread)
+		}
+		r.RememberWorkspace = func(ctx context.Context, thread codexclient.Thread) error {
+			return s.rememberWorkspace(ctx, workspace, thread)
+		}
+		r.WorkspaceAuthorize = s.authorizeRestoredWorkspace
+	}
+	if source, ok := native.(interface {
+		Metadata(context.Context, string) (codexclient.Thread, error)
+		CodexHome() string
+	}); ok {
+		goals := codexclient.NewGoalTurnReader(source.Metadata, source.CodexHome())
+		r.ReadGoalTurns = goals.Read
+	}
 	if gateway, ok := s.Gateway.(bindings.GroupNameGateway); ok {
 		names := &bindings.GroupNames{Store: s.Store, Gateway: gateway, AppID: s.Config.Feishu.AppID,
 			OwnerID: s.Config.Access.OwnerOpenID, Now: s.Now, BeginWrite: s.beginCardDelivery}
@@ -665,7 +681,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		if c == nil {
 			c = &submissions.Controller{Store: s.Store, Native: native, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, ThreadID: thread}
 			c.BeginWrite = func(ctx context.Context) (context.Context, func(), error) {
-				return s.beginThreadDelivery(ctx, thread)
+				return s.beginSubmissionWrite(ctx, native, thread)
 			}
 			controllers[thread] = c
 		}
@@ -739,7 +755,15 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		s.mu.Unlock()
 		return nil
 	}
-	r.AfterDelivery = feedback.Sync
+	r.AfterDelivery = func(ctx context.Context, thread string, turns []codexclient.Turn) error {
+		if err := feedback.Sync(ctx, thread, turns); err != nil {
+			return err
+		}
+		if workspace, ok := native.(workspaceRestoreNative); ok {
+			return s.publishRestoredWorkspace(ctx, workspace, thread, turns)
+		}
+		return nil
+	}
 	return r
 }
 

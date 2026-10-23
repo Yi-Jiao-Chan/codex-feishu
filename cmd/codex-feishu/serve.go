@@ -234,6 +234,15 @@ func validateLockedServeConfig(path string, identity string) (config.Config, err
 // Each generation rechecks the existing daemon before opening its native
 // connection. The injected calls are the same production discovery and dial
 // operations; tests can exercise this boundary without a shared daemon.
+type discoveredNative struct {
+	*codexclient.Client
+	serverVersion string
+}
+
+// AppServerVersion belongs to this discovered connection generation. Neither
+// the CLI version nor a caller's environment authorizes filesystem protocols.
+func (n *discoveredNative) AppServerVersion() string { return n.serverVersion }
+
 func serveNativeConnect(cli string, discover func(context.Context, string) (codexclient.Daemon, error), connect func(context.Context, string) (*codexclient.Client, error), creationEnabled ...bool) func(context.Context) (app.ServiceNative, error) {
 	return func(ctx context.Context) (app.ServiceNative, error) {
 		inspectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -248,6 +257,10 @@ func serveNativeConnect(cli string, discover func(context.Context, string) (code
 		if len(creationEnabled) > 0 && creationEnabled[0] && !compat.VerifiedCreationCodexVersion(daemon.AppServerVersion) {
 			return nil, errors.New("native creation protocol version is not verified")
 		}
-		return connect(ctx, daemon.SocketPath)
+		client, err := connect(ctx, daemon.SocketPath)
+		if err != nil {
+			return nil, err
+		}
+		return &discoveredNative{Client: client, serverVersion: daemon.AppServerVersion}, nil
 	}
 }

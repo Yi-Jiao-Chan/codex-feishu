@@ -28,11 +28,15 @@
 | serve --config PATH | 前台常驻组合根；单部署锁、重连、优雅退出 |
 | status --config PATH --json | 两侧连接、服务、绑定数、队列、outbox 和 unknown 操作摘要 |
 | attachments status / cleanup --config PATH --json | 读取附件开关、磁盘额度与聚合用量；cleanup 须停桥并取得双锁，只清理无活动引用的生成文件 |
+| worktrees audit --config PATH --report PRIVATE_JSON --json | 只读核验桥创建记录、原生 metadata 与当前 Git 身份，排他写入 0600 私有审计计划；标准输出仅聚合计数 |
+| worktrees repair --config PATH --report PRIVATE_JSON --json | 停桥取得应用/监听双锁，重新核对同一计划和物理代际，只补缺失 owner；冲突、未知或目录缺失保留待核验 |
 | file-preview show-secret --config PATH | 显式向标准输出打印当前网页预览口令；拒绝 JSON 模式，仍核验私有口令文件 |
 | verify --config PATH --target self --json | 依授权范围运行本人测试卡/私有测试群/独立 Codex 测试线程，产出验收记录 |
 | verify --config PATH --acceptance-report PATH --json | 只读核验明确提供的当前构建案例报告及私有证据摘要；人工 UI 来源单列，不执行测试或自动发布 |
 
 所有路径用绝对路径。setup/verify 的文件输入可走受控 stdin，但密钥正文不通过命令行参数。帮助与 --json 不打印长期密钥或全量对话。version 输出必须提供权限与兼容清单的内容或实际可读位置，不能要求配置 Agent 猜发布包内路径。
+
+工作树维护复用已有 daemon，仅连接读取 metadata；不启动 app-server、不 resume、不新建工作树或聊天。兼容层限定 App Server 0.162.1 / 桌面 26.1016.62342，桌面版本无法由远程协议自动检测。`repair` 的独立步骤先落盘后写 owner，unknown 只核验原结果；不会恢复其他 creation lane 或改写已完成 workflow。服务未停止返回 `stop-required` / 退出 6，有冲突或 unknown 返回 `repair-pending` / 退出 5。私有报告不可覆盖，修复后使用新报告路径再次 audit。已排队的桌面删除不能靠补 owner 撤销；维护窗口、冲突处置和回归边界见[实施记录](../records/managed-worktree-ownership-2026-10-23.md)。
 
 verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`、`--allow-test-binding` 四个显式标志；无标志只复用配置 doctor 的 GET 与管理健康 / 只读快照，不新开 native 客户端或接收器、不创建 / chmod / 迁移数据库。完整 P1 场景证据尚未整合，必需项 pending、退出 5；连接与权限通过不表示验收通过。CLI 不从“用户愿意配置”自动推断能给任意人发消息。
 

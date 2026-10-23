@@ -6,7 +6,7 @@
 
 1. 在 App 连接的同一远程系统用户下调用真实命令 `codex app-server daemon version`，解析 status、socketPath、cliVersion、appServerVersion。
 2. 连接现有 socket 上的 Unix WebSocket；不另起 stdio app-server 来“恢复”活跃任务，不重启现有 daemon。
-3. 发送 `initialize`，clientInfo 使用桥自己的名称，启用 `capabilities.experimentalApi=true`；保存响应中的实际 `codexHome`，成功后发送 `initialized` 通知。工作树使用该服务端目录，不从桥进程的 HOME / CODEX_HOME 猜测；字段缺失不影响普通连接，但不能新规划工作树。
+3. 发送 `initialize`，clientInfo 使用桥自己的名称，启用 `capabilities.experimentalApi=true`；保存响应中的实际 `codexHome`，成功后发送 `initialized` 通知。该路径用于 goal 来源读取和托管工作树创建、核验与快照恢复，不从桥进程的 HOME / CODEX_HOME 猜测；字段缺失不影响普通连接，但不能提供这些证明。连接 generation 同时保留 discovery 的实际 `appServerVersion`，工作树兼容层只接受 0.162.1，见 [09](09-feishu-task-creation.md#新建工作树)。
 4. 单 reader 持续收 JSON-RPC 响应、通知和服务端请求；request ID 关联等待者。未知事件保留方法名供诊断，不让解码错误断开全部任务。
 5. 加入已有线程用 `thread/resume`，参数只含 threadId、excludeTurns=true；不传 cwd、model、approvalPolicy、sandbox 等覆盖值。
 6. 断线后重查 socket 和实际服务端版本，重新初始化、加入已绑定会话，然后交给恢复器补齐历史与队列。
@@ -100,3 +100,9 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 0.162.1 的 `serverRequest/resolved` 不携带答案，typed 历史也没有原生问答 output。`QuestionResultReader` 仅读取 daemon 提供的 rollout 路径：验证所属用户、可信 sessions 根目录、session ID、明确 turn 边界、唯一 call/output 和规范化后的原问题；结果独立保存为收据。重复 JSON key、身份歧义、目标 turn 内的历史重写、部分答案和中断后的迟到输出均返回 unavailable。文件和单行有界，不修改原生记录或全局配置。
 
 实际工具结果优先于飞书提交意图。读取成功只证明工具返回了这些回答，不说明哪端赢得竞态。该结果用于飞书已处理卡；App 的外部选择态回显保持已知限制，不使用会改变模型历史的 `thread/inject_items` 伪造 UI 状态。
+
+### Goal 自动续跑的来源证明
+
+0.162.1 的完整历史允许没有 `userMessage` 的 goal 自动续跑，但 v2 Turn 没有导出 `turn_trigger`；`rootTurnId` 自指或当前存在 goal 都不能单独证明来源。`GoalTurnReader` 从 daemon 返回的原生路径读取 `session_meta.id` 和唯一 `event_msg.task_started` / `turn_started` 的 `turn_attribution.turn_trigger=goal`，并要求启动记录与归因中的 `turn_id` 同时匹配目标轮次。不从模型文本、工具参数、压缩摘要或前一轮用户输入推断。
+
+可信根仅取同一连接 initialize 返回的 `codexHome/sessions` 和 `archived_sessions`，复用问答读取的普通文件、所属用户、逐级无 symlink 和无外部写权限校验。读取上限为 256 MiB、单行 32 MiB；只保留来源元数据，不保存或输出原始记录。重复 JSON key、重复启动身份、缺失或不匹配的 session 均不能证明目标轮次。缓存核对文件身份、大小、时间及内容摘要；活跃文件追加时复核已读取前缀没有变化，截断或重写须重新核验。成功结果交给消息同步器决定投递方式，不修改原生历史、goal 或会话策略。[兼容清单](../../compat/codex-goal-turns.json)

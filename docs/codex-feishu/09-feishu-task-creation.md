@@ -57,15 +57,35 @@ mute 只阻止自动建群，用户主动创建不因此被拒绝。selected_dir
 
 本机 0.162.1 的 `thread/start` 没有创建工作树参数。桥先创建自己的持久 Git 工作树，再向原共享 daemon 传入该工作树的实际 cwd 和经核验的原 projectId。工作树基于所选分支的**已提交内容**，以 detached HEAD 检出；原目录未提交或未跟踪的文件不会复制，环境 setup 和 `.worktreeinclude` 也不在本次实现中。这与 [Codex App 工作树](https://learn.chatgpt.com/docs/environments/git-worktrees)的自动复制和环境流程有明确区别，复选框的悬浮提示说明使用已提交内容。
 
-新工作树保存在 `<initialize.codexHome>/worktrees/<4位ID>/<仓库名>`，对齐 Codex App 的默认目录形式；Codex Home 取实际共享服务握手，不读取桥的 HOME / CODEX_HOME 作为替代。规划时跳过已有目录，创建时以原子 mkdir 领取；若被其他工作树抢占，拒绝写入。桥使用自己的私有 marker，不改 App 元数据，也不接管 App 的清理、环境 setup 或 handoff 生命周期。此前冻结的数据库同级 `worktrees/<draftID>/checkout` 保留原路径、marker 和请求参数，不移动已有会话。
+新工作树继续位于实际 daemon `initialize.codexHome` 下的 `worktrees/codex-feishu-<draftID>/<仓库名>`，不从桥进程的 HOME / CODEX_HOME 猜测。命名 bucket 符合桌面应用的命名规则；仓库名若符合旧时间戳目录格式，则改用 `workspace`，避免在发布前进入旧扫描分支。文件预览须允许该托管根。此前冻结在四位 hex bucket 或数据库同级目录的路径保持原值；缺失时核验 App 原快照，不从 base 重建或改变聊天 cwd。2026-10-23 早先的数据库同级新建方案已撤回，见[归属登记修复记录](../records/managed-worktree-ownership-2026-10-23.md)。
+
+当前兼容边界为 App Server **0.162.1** 与已核查桌面应用 **26.1016.62342**。该服务端没有受支持的工作树创建/归属 RPC；`set-worktree-owner-thread` 属于桌面 Git worker，桥不把它作为 App Server 方法调用。兼容层每次重新执行 `git -C <checkout> rev-parse --path-format=absolute --git-path codex-thread.json`，核验专属 gitdir、双向 `.git` / `gitdir` 指针、common-dir、注册路径和物理身份，再以 create-only 原子写入 `{version:1,ownerThreadId:<实际线程ID>}`，同步文件与目录并读回。文件不位于 checkout 根或公共 Git 目录；已有异主、损坏或符号链接记录均拒绝覆盖。桌面版本无法从该 RPC 自动取得，桌面升级需重验[兼容清单](../../compat/codex-worktrees.json)。
+
+旧路径仅支持核验已有工作树；尚未执行的旧目录规划暂停，不再于管理目录外或已暴露的四位 hex bucket 中新建。已暴露的历史工作树若还没有原生线程，不继续启动一个未受保护的聊天；保留原 intent 和工作树记录，待归属与恢复方案核验。
+
+创建期间不写 bucket 内的 `.codex-worktree-name`。已核查扫描器只在合法命名 bucket 中出现该普通文件后才纳入工作树，因此保护不依赖 Linux birthtime、新建宽限、Git 锁或置顶。先保存实际 thread ID，确认 `worktree-owner` 步骤，再投递首条输入；仅排队时仍不发布。读到该收据 clientId 对应的首轮用户 item，且线程 active 或该轮已终态后，才执行持久 `worktree-publish` 步骤，原子发布标记并完成创建。发布后，运行中或置顶 owner 使用桌面现有保护，普通闲置工作树继续参与正常清理，不修改保留数量或自动清理开关。
 
 用户所选目录与整个 Git 根目录都必须在 creation.allowed_roots 内；只允许 `/repo/sub` 不授予检出整个 `/repo` 的权限。允许整个仓库时，选择子目录会保留相同相对 cwd。新路径不扩大普通目录浏览权限，项目关系仍从原目录和原生 catalog 核验。
 
-schema 29 冻结工作方式、精确 ref、commit、Git 根/common-dir 与唯一目标路径。创建工作树作为独立 attempt，在 Git 命令前落盘；不切换原分支、不创建新分支、不修改全局 Git/Codex 配置。重启后只以私有 marker、准确注册路径/common-dir、固定 commit、无初始化锁且完整干净的检出确认 unknown，缺证据不重跑 add。之后已确认的工作树允许正常修改和提交，不再要求保持初始 HEAD。群描述、原生创建/恢复与持久绑定均使用实际执行 cwd。
+schema 29 冻结工作方式、精确 ref、commit、Git 根/common-dir 与唯一目标路径；归属与发布复用 schema 31 的 `creation_attempts`，不新增迁移。Git 命令前落盘，成功后在 bucket 的私有 identity 收据及 attempt result 冻结 checkout、`.git` 与 gitdir 的物理代际。unknown 只有完整干净检出、私有 marker、准确注册身份和原代际收据均匹配才可确认；缺失不重跑 add。登记和发布 unknown 只读回原结果，不重复创建工作树或聊天。之后允许正常修改和提交，不再要求保持初始 HEAD；同路径重建或旧 gitdir 槽位被其他工作树复用时，未完成创建不能沿用旧身份继续。群描述、原生创建/恢复与持久绑定均使用实际执行 cwd。
 
-创建后的 Runtime 授权同样精确比较冻结的 `ExecutionDirectory()`，不拿原仓库 cwd 比较新工作树。原选择目录及整个 Git 根仍须在 creation.allowed_roots 内，私有工作树不必直接位于可浏览范围；收发前只读核验完整草稿 marker、准确注册的 checkout/common-dir 与实际 cwd/RWX。目录被移除或被其他任务复用时拒绝执行，不重建工作树、线程或群。已确认的原输入通过历史收据核对，尚未 dispatch 的普通输入沿用原收据提交。
+存量使用 `worktrees audit --config PATH --report PRIVATE_JSON` 生成私有计划，再在桥停止后用 `worktrees repair --config PATH --report PRIVATE_JSON` 补齐证据完整、物理代际未变且 owner 缺失的记录；写入前仍重新读取可信 creation intent、原生 threadSource/cwd 与 Git 身份。同 owner 可核验恢复，冲突不覆盖，缺失目录不重建。已暴露目录的补登记不能撤销桌面已有清理队列，也不能修复桌面缓存的旧 gitdir；具体处理与限制见[存量修复方案](../records/managed-worktree-ownership-2026-10-23.md#存量修复方案)。
+
+创建后的 Runtime 授权同样精确比较冻结的 `ExecutionDirectory()`，不拿原仓库 cwd 比较新工作树。原选择目录及整个 Git 根仍须在 creation.allowed_roots 内，私有工作树不必直接位于可浏览范围；收发前只读核验完整草稿 marker、准确注册的 checkout/common-dir 与实际 cwd/RWX。目录被移除时，只有下述普通消息恢复流程可还原原快照；被其他任务复用时拒绝执行。已确认的原输入通过历史收据核对，尚未 dispatch 的普通输入沿用原收据提交。
 
 已通过实际 Git、崩溃恢复、目录范围与 schema 28→29 保留测试；0.162.1 共享 daemon 已验证新工作树、原项目身份、首条输入及持久化后第二连接 resume。飞书新控件已通过真实平台 PATCH/GET 校验并部署候选，本轮创建卡在部署后获用户测试通过确认；创建到 App 工作树展示、客户端继续等未逐项覆盖的场景仍须独立取证，不据此提升完整 P2 或一期发布状态。
+
+## 已回收工作树的消息恢复
+
+普通飞书输入已经持久接收、确认从未提交且原托管 cwd 缺失时，actor 在 `thread/resume` 前恢复；已附着会话后来丢失目录也走同一入口。App 创建和桥创建的既有绑定均可使用。只接受原 daemon `codexHome/worktrees/<bucket>/<checkout>` 内可验证的原位置：桥会话使用冻结 creation intent，App 会话使用健康时保存的身份，旧会话可结合已授权 observation 的源仓库与唯一精确快照回填。绑定、原生 source/cwd 和当前目录允许规则每次重新核验。
+
+快照 ref 是 `refs/codex/snapshots/<SHA-1(原始工作树根字符串)>`，不能先 canonicalize 再算哈希，也不能用当前 HEAD 替代。读取后冻结 commit，以 detached HEAD 还原快照内容；快照捕获的未提交文件会成为检出内容，不恢复原来的 staged/unstaged 区分。cwd 子目录须存在于快照中，必要时只物化该目录，不修改源仓库的 sparse 配置。
+
+恢复先在未发布的命名临时 bucket 检出，保存新的物理代际、登记实际原线程 owner 并读回，再以不覆盖目标的原子移动回原路径，只修复该次检出的专属 Git 回指。已有同路径 Git 注册、目标占用、异主或身份漂移均停止；不自动 prune、不覆盖目录、不运行会扫描其他工作树的全局 repair。原创建 birth 收据保留，新恢复日志用于后续授权与审计。结果 unknown 先核验，证据不足时保留原消息并显示核验状态。
+
+命名 bucket 恢复时暂不发布 `.codex-worktree-name`，原输入的真实 user item 可见且线程活跃或该轮已终态后才发布；原消息若已取消，只能由后续普通消息的真实执行证据完成发布。旧四位 hex / 时间戳路径本来就在桌面扫描范围内，无法获得这层保护。桥不能撤销 App 已排队的删除任务，也不能清理桌面缓存的旧 gitdir。
+
+此实现复用原线程、群、收据及 `queue/add`，不创建替代聊天，不覆盖 cwd 或会话策略。它不操作桌面私有的 `archived_worktree → worktree` 附件及 PR 关联状态；App Server 0.162.1 未公开对应接口，客户端展示仍需真实验收。历史数据库同级目录不在本次自动恢复范围内。实现与验证见[恢复记录](../records/feishu-worktree-auto-restore-2026-10-23.md)。
 
 ## 附件预览与移除
 
@@ -91,11 +111,14 @@ schema 29 冻结工作方式、精确 ref、commit、Git 根/common-dir 与唯�
   → 创建目标群，或创建任务根卡
   → 保存目标平台 ID
   → thread/start(cwd, 可选 projectId, 桥自建 threadSource)
-  → 保存原生 thread ID + binding
+  → 保存实际原生 thread ID
+  → 如选择工作树：持久登记真实 owner，fresh Git 路径读回
+  → 保存 binding
   → 如有附件：MaterializeCreation 同事务封存附件批次并建立 collecting 收据
   → 如有附件：等待全部 ready，冻结 input_json（图片 localImage，文件为转义名称+绝对路径）
   → queue/add 首条输入（复用 input_receipt）
-  → 核验首次执行 / 排队 + App 可见性
+  → 如选择工作树：核验首条输入已经出现、active 或终态，再发布桌面扫描标记
+  → 完整创建流程确认
   → 更新入口创建卡与目标任务卡
 ```
 
@@ -107,7 +130,7 @@ threadSource 使用该版本支持的自建来源字符串；discovery 同时按
 
 thread/start 响应丢失属于关键 unknown：本机尚未证明可通过唯一 client token 去重创建。需要先查询自建标记、目录、时间和可用元数据核验；不足以唯一定位时保持阻塞，不重复 thread/start。二期验收前若需要可靠自动恢复，应验证当前协议可用的持久创建标识；不可声称“多重条件相似”就是严格唯一。
 
-首条输入前 rollout 可能不存在，另一个客户端 resume/read 会暂时失败。拿到 thread ID 后先在原客户端提交首条输入，等待持久化/原生事件，再验证 App；不要重新 thread/start。App 侧可见性的稳定实现是二期发布门槛。
+首条输入前 rollout 可能不存在，另一个客户端 resume/read 会暂时失败。拿到 thread ID 后先完成工作树归属，再在原客户端提交首条输入，等待历史/状态核验后发布；不要重新 thread/start。实际桌面展示和清理 UI 仍需独立验收，合成并发测试不替代客户端观察。
 
 ## 验收
 

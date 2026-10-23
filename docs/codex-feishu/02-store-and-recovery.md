@@ -2,6 +2,16 @@
 
 负责 `internal/store/`、迁移、恢复协调器。依赖 00；必须在输入提交与自动建群之前可用。
 
+## Schema 34：工作树快照恢复
+
+新增 `thread_worktree_identities`、`worktree_restore_grants`、`worktree_restore_attempts`。第一张表保存已授权会话的原始 cwd、工作树根、源仓库、common-dir、相对子目录及不可变绑定；普通飞书输入首次入账时，在同一事务保存恢复授权。恢复日志冻结原收据、快照 commit、原目标路径、临时检出路径和物理身份，不复制消息正文。旧表、会话设置表单、原生 unknown 与出站日志保持原值。
+
+迁移本身不发消息、不恢复目录。actor 只给确认从未提交的普通待处理收据补记 `legacy-pending` 授权；创建首条输入、异步答案、原生 attempt、queue/history/M0 写入证据均排除。collecting 附件保留 FIFO，封存且全部就绪后才能恢复；没有普通待处理输入的历史唤醒不触发恢复。
+
+每线程最多一个未完成恢复，状态为 `prepared / dispatching / unknown / confirmed / blocked`。每个文件系统写阶段先保存 checkpoint；重启将 dispatching 作为 unknown，只读核验准确路径、快照、私有代际收据及双向 Git 指针。足够证据确认某阶段完成后才继续下一阶段；无法证明结果时保留 unknown，不重复 worktree add，不改投新线程。原创建 birth 不变，新恢复代际独立记录并参与 Runtime 与审计授权。
+
+恢复中本地取消仍只取消原输入。后续写阶段重新检查收据；若核验已完成恢复，只记录物理事实，不提交取消的消息。未移动的完整阶段可记录 blocked/input-canceled 并保留临时目录，释放后续普通输入；已移动但无法确认的结果继续核验。命名工作树延迟发布，原输入取消后，只允许严格晚于它的普通收据在真实原生历史可见后完成发布。存在 schema 34 或恢复记录时不得回退不理解此协议的旧二进制，也不得用旧数据库覆盖新活动。详见[恢复记录](../records/feishu-worktree-auto-restore-2026-10-23.md)。
+
 ## Schema 33：会话设置表单
 
 `session_settings_forms` 与 schema 32 的 `session_settings_requests`、`reply_settings_sources` 并存。每次不带参数的 `/model` 在同一事务中保存命令收据、表单和初始 UI mirror/outbox；表单阶段为 `loading`、`editing`、`saving`、`canceling`、`closed`。`loading` 完成后才发布编辑表单，编辑中的草稿不调用原生设置接口，也不阻塞普通队列输入或停止。
@@ -34,9 +44,13 @@ schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输�
 
 ## SQLite 结构
 
+goal 自动续跑复用 schema 31：`Mirror.Direct` 明确表示进度或最终卡直接投递到绑定，其持久编码是 `parent_key` 与 `parent_message_id` 均为空，读回时恢复该标志。只有同步器核验原生 goal 来源后才创建这类公开镜像；未明确标记 Direct 的 AI 镜像仍要求恰好一个父消息。投递方式与父锚点一样不可变，重启和后续 steer 不改挂新输入；topic 领取时继续冻结原根消息。存在此类镜像后，旧二进制不能正确投递它们，不能自动回退或用旧数据库覆盖新活动。
+
 2026-10-16 的发现覆盖检查点和置顶快照复用 `m0_operations` 的独立 kind（`codex.discovery_checkpoint`、`codex.pinned_snapshot`），不新增 schema 迁移。键按 host/app 分开，保存前核验 deployment；发现的 last scan/full 时间不改变 baseline 出生 fence。置顶仅在完整读取成功后原子保存分区 ID、完整会话 ID 集合和观察时间，失败不覆盖旧集合。ID 集合是私有恢复数据，不进入普通日志或 status 诊断。服务重连先恢复已绑定 actor 和最后确认分区，再独立更新快照，不能将首次未知身份当成未置顶。
 
 schema 29 为创建草稿保存 `workspace_mode` / `base_branch`，为创建 workflow 冻结基准 commit、Git 根/common-dir 与工作树路径。旧草稿和 workflow 保持 local，既有正文、远程 ID、收据和 attempt 不变。工作树同样使用 prepared / dispatching / unknown / rejected / confirmed 日志，只有明确 rejected 才能显式 retry；unknown 只核验既有完整检出。Materialize 必须有匹配目标路径的 confirmed 工作树收据，cwd 使用最终执行路径。详见 [09 新建工作树](09-feishu-task-creation.md#新建工作树)。
+
+托管工作树归属修复复用 schema 31：新的命名 bucket 路径在 intent 中冻结，`worktree` result 与外部私有 identity 收据记录物理代际，`worktree-owner` 冻结真实 thread ID 和身份摘要，`worktree-publish` 记录进入桌面扫描的标记发布。两个步骤均在文件操作前持久 dispatch；unknown 只核验，不补造缺失结果。新路径的 Materialize 必须有同 native ID 的 confirmed owner；Complete 必须再有 confirmed publish 和首条输入结果。旧已完成 workflow 不被重写，存量补登记使用独立 `worktree-owner-repair:<identity>` 日志且不改变其完成状态。旧二进制不了解新发布协议，未完成的托管创建不能交给旧版本续跑。
 
 schema 11 新增 `legacy_adoptions`。schema 1 须经显式接管，不能由普通启动自动升级；库存摘要、旧绑定与 confirmed 消息 ID 和正式表在同一事务保存，原日志保留。存储基础与纯历史 mapper 已通过隔离测试，迁移 CLI、一致备份及锁已通过隔离测试，真实切换仍待验收，见[M0 接管进展](../records/m3-legacy-adoption-2026-10-12.md)。
 

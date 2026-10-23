@@ -494,8 +494,8 @@ func TestModelSettingsSchema32UpgradePreservesLegacyJournals(t *testing.T) {
 		t.Fatal("schema33 changed frozen outbound attempt", err)
 	}
 	var version, count int
-	if err := next.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != 33 {
-		t.Fatal("schema33 upgrade missing", err)
+	if err := next.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version != SchemaVersion {
+		t.Fatal("schema upgrade missing", err)
 	}
 	if err := next.DB.QueryRow(`SELECT COUNT(*) FROM session_settings_forms`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("legacy request became an invented form", err)

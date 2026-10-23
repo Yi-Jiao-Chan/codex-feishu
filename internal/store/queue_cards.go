@@ -95,7 +95,21 @@ func (s *Store) StageQueueCard(ctx context.Context, scope SubmissionScope, recei
 
 // LocalPending creates the offline receipt card only when no native attempt
 // exists. Offline disables native controls regardless of old hydrated state.
-type QueueCardOptions struct{ LocalPending, Offline bool }
+// WorktreeRestore is an allowlisted recovery status for a received local
+// receipt. It never changes an already attempted/queued/unknown submission.
+type QueueCardOptions struct {
+	LocalPending, Offline bool
+	WorktreeRestore       string
+}
+
+func validWorktreeRestoreStatus(status string) bool {
+	switch status {
+	case "restoring", "snapshot_missing", "identity_unverified", "conflict", "unknown", "unsupported", "restored", "failed":
+		return true
+	default:
+		return false
+	}
+}
 
 // SubmissionQueueView shares verified queue facts with an asynchronous question card.
 func (s *Store) SubmissionQueueView(ctx context.Context, scope SubmissionScope, receiptID string, options QueueCardOptions) (cards.QueueView, error) {
@@ -123,7 +137,19 @@ func submissionQueueViewTx(ctx context.Context, tx *sql.Tx, scope SubmissionScop
 	if err != nil {
 		return cards.QueueView{}, err
 	}
-	view := cards.QueueView{State: n.State, Token: n.ActionToken, QueueID: n.QueueID, Revision: n.Revision, QueueOrdinal: n.QueueOrdinal, LocalPending: localPending && options.LocalPending}
+	worktreeRestore := ""
+	if n.State == "received" && localPending && validWorktreeRestoreStatus(options.WorktreeRestore) {
+		worktreeRestore = options.WorktreeRestore
+	}
+	view := cards.QueueView{
+		State:           n.State,
+		Token:           n.ActionToken,
+		QueueID:         n.QueueID,
+		WorktreeRestore: worktreeRestore,
+		Revision:        n.Revision,
+		QueueOrdinal:    n.QueueOrdinal,
+		LocalPending:    localPending && (options.LocalPending || worktreeRestore != ""),
+	}
 	if n.State == "received" && !localPending {
 		view.State = "unknown"
 	}

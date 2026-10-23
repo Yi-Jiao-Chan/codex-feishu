@@ -22,9 +22,11 @@ func renderWidth(body []element, width string) string {
 	return string(b)
 }
 
-// Escape mention XML from content. Only explicit policies may create mentions.
+// Safe escapes input tags before replacing email separators. The generated
+// <A> stays literal in code spans as well; only explicit policies create mentions.
 func Safe(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "<", "&lt;"), ">", "&gt;")
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "<", "&lt;"), ">", "&gt;")
+	return redactEmails(s)
 }
 func footer(s string) element {
 	return element{"tag": "markdown", "content": "> " + Safe(s), "text_size": "notation"}

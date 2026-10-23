@@ -1,0 +1,51 @@
+{
+  "native_versions": ["0.162.1"],
+  "desktop_versions": ["26.1016.62342"],
+  "mechanism": "desktop filesystem compatibility; no managed-worktree App Server RPC",
+  "native_schema_digest": "4248c44d68df2d0d55be53b15fffbb24d8c8cf41cb9993a1f79d5d03d3d2b5da",
+  "desktop_source_sha256": {
+    ".vite/build/worker.js": "6d233b3cdc282a638a4253d8a4f7866f181284f3b3e745f2ff1b995c7c061ef3",
+    ".vite/build/main-JI9qDiXp.js": "b8c5d07cc3c30fbf0abe729b05434e7d1ffa19ee6c4daa818ae8f855be66d1e1",
+    ".vite/build/src-CSKkIr_z.js": "4a939ae29c4f4010a62a7890797813363d4d2300afb43df4101872246cc7f0d6",
+    ".vite/build/src-CsH31EEu.js": "6a266611954c6f0c72aca09bb13c0c793959a69e8d6330778a7cdef21835a1db"
+  },
+  "owner_format": {"version": 1, "ownerThreadId": "actual confirmed thread ID"},
+  "owner_path_command": ["git", "-C", "<checkout>", "rev-parse", "--path-format=absolute", "--git-path", "codex-thread.json"],
+  "managed_path": "<initialize.codexHome>/worktrees/codex-feishu-<draftID>/<repository-name>",
+  "publication_marker": ".codex-worktree-name",
+  "publication_requires": [
+    "unique named bucket; child name excludes legacy timestamp pattern",
+    "confirmed native thread ID and exact creation source/cwd",
+    "fresh bidirectional Git identity and frozen physical generation",
+    "owner file persisted and read back before first queue/add",
+    "first user item matches receipt clientId; thread active or first turn terminal",
+    "durable publication attempt before atomic marker publication"
+  ],
+  "cleanup_semantics": {
+    "four_hex_bucket_scanned_without_marker": true,
+    "legacy_timestamp_child_scanned_without_marker": true,
+    "named_bucket_requires_marker": true,
+    "owned_active_or_pinned_protected": true,
+    "idle_owned_worktrees_participate_in_keep_count": true,
+    "git_lock_blocks_force_cleanup_fallback": false,
+    "owner_is_reread_immediately_before_delete": false
+  },
+  "snapshot_restore": {
+    "schema_version": 34,
+    "trigger": "persisted, definitely unsent ordinary Feishu input for the existing bound thread",
+    "snapshot_ref": "refs/codex/snapshots/<sha1 of exact original worktree root string>",
+    "canonicalize_before_snapshot_hash": false,
+    "checkout": "detached HEAD at frozen snapshot commit; original root and relative cwd",
+    "staging": "unpublished named bucket; no-replace atomic rename; repair only its dedicated Git backlink",
+    "owner": "fresh Git identity and original thread; preserve original creation birth proof",
+    "unknown": "read-only physical reconciliation before any next phase; never blindly repeat add",
+    "desktop_attachment_transition": false,
+    "already_queued_desktop_cleanup_canceled": false,
+    "stale_registration_automatically_pruned": false,
+    "real_app_and_feishu_ui_verified": false,
+    "evidence": "../docs/records/feishu-worktree-auto-restore-2026-10-23.md"
+  },
+  "desktop_version_automatically_discoverable": false,
+  "real_desktop_cleanup_ui_verified": false,
+  "evidence": "../docs/records/managed-worktree-ownership-2026-10-23.md"
+}

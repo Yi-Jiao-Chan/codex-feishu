@@ -2,6 +2,26 @@
 
 本页用于 M0 之后的候选部署验收，执行契约仍以 [Agent 配置指南](AGENT-SETUP.md) 和 [一期矩阵](11-integration-and-acceptance.md) 为准。它将需要用户查看 App / 飞书的操作合并，不能代替逐项取证。
 
+## 2026-10-23 卡片邮箱分隔符替换（修正版已部署）
+
+本地服务已部署 `c60a0ee65dac8e41e73eb230d3f9e9ac37f505ee`。卡片与原生 CoT 的公共文本出口只将邮箱中的 `@` 替换为字面量 `<A>`，保留用户名、域名及原生历史，并避免在邮箱或链接内部切分长文本。生成的尖括号不再编码为会在代码中原样显示的 HTML 实体；输入标签仍转义。全仓业务测试及文档检查通过，schema 34 和原配置保持。
+
+先前 `230028` 拒绝的最终回复经一次授权重发成功后，用户截图指出全邮箱替换与代码中的实体显示不符合要求。修正版已在同一消息完成一次 update confirmed，revision/delivered_revision 均为 3，没有新增 send/reply；两个旧 rejected attempt 和成功重发记录保留，unknown 数量未增加。22:16 CST 平台读回确认两个地址均保留用户名和域名、中间使用真实 `<A>`，没有 `&lt;A&gt;`，原群及父消息关系保持。服务 PID 2107624、active/running，两侧连接正常，仍仅原来的 bindings_reconciled / operations_known 两项 required pending。详见[部署与修正记录](../records/feishu-email-redaction-2026-10-23.md)。客户端 UI 与完整一期验收仍为 pending，`phase1_released=false`。
+
+## 2026-10-23 飞书输入触发工作树恢复（候选已部署）
+
+托管工作树被回收后，普通飞书消息先持久接收，再从原路径的 Codex 快照恢复，在原 cwd 附着同一线程并提交原收据。已经卡住且确认从未提交的普通消息也可恢复，进度或阻塞更新原消息的回复卡。schema 33→34 新增身份、输入授权和恢复日志，保留会话设置与既有收据；unknown 先核验，取消不重发，原创建 birth 不改写。
+
+已 rebase 最新 main 并部署构建 `c816b561399193ab6acf193fdde29f218045476d`。schema 33→34 副本演练及停桥迁移通过，59 张旧表和 179,623 行数据保持，新增恢复表为空。原配置保持，PID 1532952，systemd active/running/enabled，进程与稳定 CLI 身份一致，两侧连接正常。已恢复绑定由 61/104 增至 66/104，仍只有原来的两项 required pending，历史 unknown 未增加。
+
+两条既存普通输入已自动恢复原工作树并 consumed，各有一次 confirmed add 和一条原生历史关联；未额外创建测试资源或发送输入。实现、自动验证与运行证据见[恢复记录](../records/feishu-worktree-auto-restore-2026-10-23.md)。真实 App/飞书 UI、原聊天继续和客户端附件展示仍为 pending。兼容边界仍为 App Server 0.162.1 / 桌面 26.1016.62342；桌面私有附件状态、缓存 gitdir 与已排队清理不由桥修改，`phase1_released=false`。
+
+## 2026-10-23 托管工作树归属修复（待部署）
+
+新增工作树保留在真实 daemon 的 `codexHome/worktrees` 下，以命名 bucket 延迟发布：实际线程 owner 持久登记并读回后才提交首条输入，首轮可见后才进入桌面扫描范围。每次 fresh 解析并双向核验 Git 元数据路径，状态机覆盖重启、unknown 和同路径重建。另提供只读审计与停桥补缺失 owner 命令。此方案替代下文此前将新工作树放到桥数据库同级目录的做法；历史冻结路径不迁移。
+
+兼容边界为 App Server 0.162.1 / 桌面 26.1016.62342；本次实现、自动回归和存量审计见[实施记录](../records/managed-worktree-ownership-2026-10-23.md)。真实 App 创建、活跃/置顶保护及闲置回收 UI 均保持 pending，`phase1_released=false`。已有清理队列和恢复路径缓存仍需桌面修复，补登记不构成撤销既有删除任务的屏障。
+
 ## 2026-10-23 模型设置卡片当前部署
 
 用户确认单一 `/model` 表单和取消按钮后，原本地服务更新到 `348dd9935909+model-card-11a9c1d69374`，二进制 SHA-256 `22c15813c51c6b1a99f9715a182e29a89ddb45d0af61d2fae06d2ab3d3545130`。保存和取消后在原卡显示实际当前模型、思考强度及启用时的 fast；新回复引用区使用同样的紧凑格式。删除聊天 `/status`、`/reasoning`、`/fast`，`/help` 保留 12 条指令与详情。
@@ -19,6 +39,11 @@ schema 32→33 的副本演练和停服升级通过；原 58 表/179285 行的�
 用户明确授权后，现有服务已更新到 `f86c0422922c+creation-card-796ba293d814`，二进制 SHA-256 `588549e8c3d7cc139f4f84dc1d8dda1505307a9b5dbe3b885fcb348fb41d41f0`，保留此前的压缩轮、Goal 同步与桥工作树存储修复。schema 31、原配置与共享 daemon 保持；停桥一致备份 56 表/178532 行通过完整性、外键和逐表行数检查。
 
 进程及稳定 CLI 身份一致，PID 359051，systemd active/running/enabled，Codex 和飞书连接均恢复。部署前后 doctor/status 仅有原来的 bindings_reconciled / operations_known 两项 required pending，没有新增 required fail/pending；`phase1_released=false`。同页查找、默认工作树与附件预览/删除的合成布局已确认，部署后用户进一步确认本轮创建卡测试通过，并授权提交 PR 合入 main。该确认不扩展为手机、双话题或完整一期矩阵通过。详见[本次部署记录](../records/creation-card-deployment-2026-10-23.md)。
+
+## 2026-10-23 Goal 同步与工作树隔离更新
+
+16:56 已将现有桥更新到 `f86c0422922c6b1bf5114593e757d6b9f5ea52ad`，schema 31、原配置与共享 daemon 保持。核验原生来源后的 goal 无输入续跑可直接投递到原绑定，故障会话水位已恢复推进，新增最终卡 confirmed 且平台读回身份与目标群一致。新工作树改用桥数据库同级的持久目录，旧冻结路径继续原地核验。全仓业务测试及来源读取/同步 race 通过；新目录的真实创建和 goal 客户端 UI 保持 pending，原有两项 required pending 与 `phase1_released=false` 不变。构建摘要、目录生命周期证据和恢复读回见 [实施记录](../records/goal-sync-and-worktree-lifecycle-2026-10-23.md)。下列构建信息保留为此前阶段记录。
+
 
 ## 2026-10-23 原生 CoT 前次部署记录
 

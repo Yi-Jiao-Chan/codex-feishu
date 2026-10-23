@@ -54,6 +54,7 @@ type Runtime struct {
 	ProgressTimeZone           string
 	PrepareHuman               func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
 	PreparePublic              func(context.Context, string, string) (string, error)
+	ReadGoalTurns              func(context.Context, string, []string) (map[string]bool, error)
 	SyncGroupName              func(context.Context, store.Binding, string) error
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
@@ -61,6 +62,9 @@ type Runtime struct {
 	VerificationAuthorize      func(context.Context, codexclient.Thread, bool) (handled bool, err error)
 	CreationAuthorize          func(context.Context, codexclient.Thread, bool) (handled bool, err error)
 	CanAttach                  func(context.Context, string) error
+	PrepareWorkspace           func(context.Context, string) error
+	RememberWorkspace          func(context.Context, codexclient.Thread) error
+	WorkspaceAuthorize         func(context.Context, codexclient.Thread) error
 	ActorTick                  func(context.Context, string) error
 	HistoryPreparing           func(context.Context, string, []codexclient.Turn) error
 	HistoryStaged              func(context.Context, string, []codexclient.Turn) error
@@ -163,6 +167,11 @@ func (r *Runtime) Authorize(ctx context.Context, t codexclient.Thread, automatic
 }
 
 func (r *Runtime) authorize(ctx context.Context, t codexclient.Thread, automatic bool) (bool, error) {
+	if r.WorkspaceAuthorize != nil {
+		if err := r.WorkspaceAuthorize(ctx, t); err != nil {
+			return false, err
+		}
+	}
 	if r.CreationAuthorize != nil {
 		if handled, err := r.CreationAuthorize(ctx, t, automatic); handled || err != nil {
 			return handled, err
@@ -442,6 +451,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
 	engine.PrepareHuman = r.PrepareHuman
 	engine.PreparePublic = r.PreparePublic
+	engine.ReadGoalTurns = r.ReadGoalTurns
 	engine.ProgressRender = r.RenderProgress
 	engine.NativeCOT = r.NativeCOT
 	engine.SuppressAsyncQuestions = r.SuppressAsyncQuestions
@@ -557,6 +567,16 @@ actorLoop:
 			setCold(false)
 			dirty = false
 			lastRead = r.now()
+			if r.PrepareWorkspace != nil {
+				prepareCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+				err := r.PrepareWorkspace(prepareCtx, a.thread)
+				cancel()
+				if err != nil {
+					deliveryAuthorized = false
+					r.notice("worktree.restore_pending")
+					continue actorLoop
+				}
+			}
 			if !attached {
 				attachCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				var t codexclient.Thread
@@ -596,6 +616,11 @@ actorLoop:
 					continue actorLoop
 				}
 				deliveryAuthorized = true
+				if r.RememberWorkspace != nil {
+					if err := r.RememberWorkspace(readCtx, meta); err != nil {
+						r.notice("worktree.identity_pending")
+					}
+				}
 				// Name is the App's user-facing title. Refresh it from every
 				// authorized metadata read, including name-update wakeups.
 				title, nameStateKnown = r.groupTitle(meta, latestTurns)

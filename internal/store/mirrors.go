@@ -15,11 +15,14 @@ type Mirror struct {
 	HostID, ThreadID, Key, TurnID, Kind, Card string
 	Revision, DeliveredRevision               int64
 	Terminal, Retired, Replay                 bool
-	ParentKey, ParentMessageID, RemoteID      string
-	State                                     string
-	EventType                                 string
-	EventAt                                   int64            // Original terminal event, Unix seconds; zero means unknown.
-	ProgressObservedAt                        map[string]int64 // First local reception per public item; zero means unrecorded.
+	// Direct sends a progress/final card to the binding itself. The durable
+	// encoding is an empty pair of parent fields, previously forbidden for AI.
+	Direct                               bool
+	ParentKey, ParentMessageID, RemoteID string
+	State                                string
+	EventType                            string
+	EventAt                              int64            // Original terminal event, Unix seconds; zero means unknown.
+	ProgressObservedAt                   map[string]int64 // First local reception per public item; zero means unrecorded.
 }
 
 // Watermark records the end of a complete native history scan. It is a local
@@ -48,6 +51,7 @@ func scanMirror(row rowScanner) (m Mirror, err error) {
 	err = row.Scan(&m.HostID, &m.ThreadID, &m.Key, &m.TurnID, &m.Kind, &m.Card, &m.Revision, &m.DeliveredRevision, &m.Terminal, &m.Retired, &m.Replay, &m.ParentKey, &m.ParentMessageID, &m.RemoteID, &m.State, &m.EventType, &m.EventAt, &clocks)
 	if err == nil {
 		err = json.Unmarshal([]byte(clocks), &m.ProgressObservedAt)
+		m.Direct = (m.Kind == "progress" || m.Kind == "final") && m.ParentKey == "" && m.ParentMessageID == ""
 	}
 	return
 }
@@ -127,11 +131,15 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			return ErrConflict
 		}
 		if m.Kind == "human" {
-			if m.ParentKey != "" || m.ParentMessageID != "" {
+			if m.Direct || m.ParentKey != "" || m.ParentMessageID != "" {
 				return errors.New("human mirror cannot have a reply parent")
 			}
 		} else if m.Kind == "progress" || m.Kind == "final" {
-			if (m.ParentKey == "") == (m.ParentMessageID == "") || m.ParentKey == m.Key {
+			if m.Direct {
+				if m.ParentKey != "" || m.ParentMessageID != "" {
+					return errors.New("direct mirror cannot have a reply parent")
+				}
+			} else if (m.ParentKey == "") == (m.ParentMessageID == "") || m.ParentKey == m.Key {
 				return errors.New("reply mirror requires exactly one parent")
 			}
 		} else {
@@ -153,7 +161,7 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 		} else if readErr != nil {
 			return readErr
 		} else {
-			if old.Kind != m.Kind || old.TurnID != m.TurnID || old.ParentKey != m.ParentKey || old.ParentMessageID != m.ParentMessageID {
+			if old.Kind != m.Kind || old.TurnID != m.TurnID || old.Direct != m.Direct || old.ParentKey != m.ParentKey || old.ParentMessageID != m.ParentMessageID {
 				return ErrConflict
 			}
 			_, oldCOT, parseErr := cot.Parse(old.Card)
@@ -360,7 +368,7 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	switch {
 	case m.RemoteID != "":
 		a.Operation = "update"
-	case m.Kind == "human":
+	case m.Kind == "human" || m.Direct:
 		a.Operation = "send"
 	default:
 		a.Operation = "reply"

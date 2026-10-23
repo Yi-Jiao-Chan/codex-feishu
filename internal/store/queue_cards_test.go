@@ -190,3 +190,94 @@ func TestQueueCardMirrorCreationIsIndependentOfTaskLookup(t *testing.T) {
 		})
 	}
 }
+
+func TestQueueCardWorktreeRestoreReusesOriginalReplyAndIsIdempotent(t *testing.T) {
+	s, _, scope, r := submissionStore(t)
+	ctx := context.Background()
+	if err := s.StageQueueCardWithOptions(ctx, scope, r.ID, QueueCardOptions{WorktreeRestore: "restoring"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Mirror(ctx, scope.HostID, scope.ThreadID, QueueCardKey(r.ID))
+	if err != nil || first.ParentMessageID != r.MessageID || first.ParentKey != "" || !strings.Contains(first.Card, "工作树已回收，正在从快照恢复。原消息已保存，无需重发。") || !strings.Contains(first.Card, "cancel_pending") || strings.Contains(first.Card, r.Body) {
+		t.Fatalf("restore card did not preserve the original reply: %#v %v", first, err)
+	}
+	if err := s.StageQueueCardWithOptions(ctx, scope, r.ID, QueueCardOptions{WorktreeRestore: "restoring"}); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := s.Mirror(ctx, scope.HostID, scope.ThreadID, first.Key)
+	if err != nil || replayed.Revision != first.Revision || replayed.Card != first.Card {
+		t.Fatalf("same restore state was not idempotent: %#v %v", replayed, err)
+	}
+	a, claimed, err := s.ClaimMirror(ctx, scope.HostID, scope.ThreadID, first.Key, first.Revision, 5000)
+	if err != nil || !claimed || a.Operation != "reply" || a.ParentMessageID != r.MessageID {
+		t.Fatalf("restore card did not use the existing reply outbox: %#v claimed=%t err=%v", a, claimed, err)
+	}
+	if err := s.FinishMirrorAttempt(ctx, a.ID, "confirmed", "restore-card"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StageQueueCardWithOptions(ctx, scope, r.ID, QueueCardOptions{WorktreeRestore: "restored"}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.Mirror(ctx, scope.HostID, scope.ThreadID, first.Key)
+	if err != nil || updated.Key != first.Key || updated.RemoteID != "restore-card" || updated.Revision != first.Revision+1 || !strings.Contains(updated.Card, "工作树已恢复，正在提交原消息。") || !strings.Contains(updated.Card, "cancel_pending") {
+		t.Fatalf("restore update changed card identity: %#v %v", updated, err)
+	}
+	if err := s.StageQueueCardWithOptions(ctx, scope, r.ID, QueueCardOptions{WorktreeRestore: "restored"}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Mirror(ctx, scope.HostID, scope.ThreadID, first.Key)
+	if err != nil || again.Revision != updated.Revision {
+		t.Fatalf("restore update replay duplicated work: %#v %v", again, err)
+	}
+	mirrors, err := s.Mirrors(ctx, scope.HostID, scope.ThreadID)
+	if err != nil || len(mirrors) != 1 {
+		t.Fatalf("restore created a second mirror: %d %v", len(mirrors), err)
+	}
+}
+
+func TestQueueCardWorktreeRestoreOnlyAppliesToSafeReceivedInput(t *testing.T) {
+	ctx := context.Background()
+	for _, state := range []string{"queued", "unknown"} {
+		t.Run(state, func(t *testing.T) {
+			s, _, scope, r := submissionStore(t)
+			switch state {
+			case "queued":
+				if err := s.ObserveSubmission(ctx, scope, r.ID, "queued", "native-q", 1, "", ""); err != nil {
+					t.Fatal(err)
+				}
+			case "unknown":
+				a, claimed, err := s.ClaimSubmissionAttempt(ctx, scope, r.ID, "", "add")
+				if err != nil || !claimed {
+					t.Fatalf("claim native attempt=%t err=%v", claimed, err)
+				}
+				if err := s.FinishSubmissionAttempt(ctx, scope, a.ID, "unknown", "", -1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.StageQueueCardWithOptions(ctx, scope, r.ID, QueueCardOptions{WorktreeRestore: "restoring"}); err != nil {
+				t.Fatal(err)
+			}
+			m, err := s.Mirror(ctx, scope.HostID, scope.ThreadID, QueueCardKey(r.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(m.Card, "工作树") || strings.Contains(m.Card, "cancel_pending") {
+				t.Fatalf("%s state accepted restore/local controls: %s", state, m.Card)
+			}
+			if state == "queued" && !strings.Contains(m.Card, "已排队") || state == "unknown" && !strings.Contains(m.Card, "正在核验") {
+				t.Fatalf("%s state was not preserved: %s", state, m.Card)
+			}
+		})
+	}
+}
+
+func TestQueueCardWorktreeRestoreRejectsUnallowlistedStatusWithoutCreatingCard(t *testing.T) {
+	s, _, scope, r := submissionStore(t)
+	ctx := context.Background()
+	if err := s.StageQueueCardWithOptions(ctx, scope, r.ID, QueueCardOptions{WorktreeRestore: "raw error /tmp/private"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Mirror(ctx, scope.HostID, scope.ThreadID, QueueCardKey(r.ID)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("unallowlisted restore status created a card: %v", err)
+	}
+}

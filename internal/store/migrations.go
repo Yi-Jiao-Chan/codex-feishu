@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 33
+const SchemaVersion = 34
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -475,6 +475,14 @@ ALTER TABLE outbound_attempts ADD COLUMN platform_thread_id TEXT NOT NULL DEFAUL
 			return err
 		}
 		if _, err = tx.Exec("PRAGMA user_version=33"); err != nil {
+			return err
+		}
+	}
+	if version < 34 {
+		if _, err = tx.Exec(WorktreeRestoreSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=34"); err != nil {
 			return err
 		}
 	}
