@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 31
+const SchemaVersion = 33
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -459,6 +459,22 @@ ALTER TABLE outbound_attempts ADD COLUMN platform_thread_id TEXT NOT NULL DEFAUL
 			}
 		}
 		if _, err = tx.Exec("PRAGMA user_version=31"); err != nil {
+			return err
+		}
+	}
+	if version < 32 {
+		if _, err = tx.Exec(SessionSettingsSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=32"); err != nil {
+			return err
+		}
+	}
+	if version < 33 {
+		if _, err = tx.Exec(SessionSettingsFormsSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=33"); err != nil {
 			return err
 		}
 	}

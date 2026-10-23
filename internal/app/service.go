@@ -327,6 +327,7 @@ func (s *Service) Run(parent context.Context) error {
 	receiver := &Receiver{Store: s.Store, Config: s.Config, BotID: s.BotID, Wake: s.Wake, Command: commands.Handle, Notice: s.Notice, Verification: s.Verification, VerificationGroups: s.VerificationGroups}
 	receiver.TaskAction = s.claimTask
 	receiver.InteractionAction = s.claimInteraction
+	receiver.ModelSettingsAction = commands.ModelSettingsAction
 	receiver.ActionAllowed = s.actionAvailable
 	receiver.BeginBound = s.beginBound
 	if s.Config.Creation.Enabled {
@@ -518,6 +519,9 @@ func (s *Service) disconnected(ctx context.Context) {
 		}
 		if s.Gateway.Ready() && s.canDeliver(callCtx, b) == nil {
 			outbound := messages.Outbound{Store: s.Store, Gateway: s.Gateway, Membership: s.Gateway, BeginWrite: s.beginCardDelivery, Now: s.now, MinProgressIntervalMS: int64(s.Config.Sync.CardUpdateMinIntervalMS), Mentions: &store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn}}
+			if reader, ok := s.Gateway.(messages.MessageReadbackGateway); ok {
+				outbound.Readback = reader
+			}
 			for i := 0; i < 16 && callCtx.Err() == nil; i++ {
 				result, err := outbound.DispatchOne(callCtx, s.Config.Host.ID, b.ThreadID, s.now().UnixMilli())
 				if err != nil {
@@ -559,6 +563,9 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	s.interactions = interactive
 	s.mu.Unlock()
 	feedback := &Feedback{Store: s.Store, Gateway: s.Gateway, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, Now: s.now, BeginWrite: s.beginThreadDelivery}
+	settingsNative, _ := native.(sessionSettingsNative)
+	settings := SessionSettings{Store: s.Store, Native: settingsNative, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID,
+		Operators: s.Config.Access.OperatorOpenIDs, BeginWrite: s.beginThreadDelivery, Now: s.now}
 	controllers := map[string]*submissions.Controller{}
 	var controllerMu sync.Mutex
 	s.mu.Lock()
@@ -668,7 +675,10 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 				return err
 			}
 		}
-		return c.Tick(ctx)
+		settingsErr := settings.Tick(ctx, thread)
+		// An unresolved settings write must not disable stop, queue recovery,
+		// or ordinary messages. Only further settings mutations are blocked.
+		return errors.Join(settingsErr, c.Tick(ctx))
 	}
 	r.HistoryPreparing = func(ctx context.Context, thread string, turns []codexclient.Turn) error {
 		opctx, release, _, err := s.beginVerificationOperation(ctx, thread)

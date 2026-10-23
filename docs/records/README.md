@@ -8,6 +8,8 @@
 
 | 文档 | 日期 / 版本 |
 | --- | --- |
+| [会话模型设置卡片：保存与取消终态部署](model-settings-card-deployment-2026-10-23.md) | 2026-10-23 |
+| [会话模型设置与指令帮助本地部署](session-settings-help-deployment-2026-10-23.md) | 2026-10-23 |
 | [创建卡同页布局与附件预览部署](creation-card-deployment-2026-10-23.md) | 2026-10-23 |
 | [执行卡布局、停止按钮与工具摘要：本地候选部署](task-progress-deployment-2026-10-22.md) | 2026-10-22 |
 | [异步问答联调与默认配置](feishu-async-question-defaults-2026-10-21.md) | 2026-10-21 |

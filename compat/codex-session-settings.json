@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "protocol_evidence": {
+    "cli_version": "0.162.1",
+    "source": "offline app-server generate-json-schema --experimental",
+    "thread_settings_update_params_sha256": "749419634bb7ed66216d72bf9d8734ecf0e6efaa8cd46fe51a117d1b42ed9657",
+    "model_list_response_sha256": "2fb387a2ed258fc74258828ea342d68f89ce4e8e22cd0329ca59d2b423f9108b"
+  },
+  "methods": {
+    "thread/settings/update": ["threadId", "model", "effort", "serviceTier"],
+    "thread/resume": ["threadId", "excludeTurns"],
+    "model/list": ["limit", "cursor", "includeHidden"]
+  },
+  "chat_entrypoint": {
+    "command": "/model",
+    "arguments": false,
+    "form_fields": ["model", "reasoning_effort", "fast"],
+    "actions": ["save", "cancel"],
+    "save_writes": "one thread/settings/update after a durable local claim",
+    "cancel_writes": "none; read current settings and close the same card",
+    "phases": ["loading", "editing", "saving", "canceling", "closed"]
+  },
+  "semantics": {
+    "scope": "current thread defaults for subsequent turns",
+    "omitted_patch_fields": "unchanged",
+    "service_tier_null": "clear requested tier, not proof of fast off",
+    "fast_on": "catalog-advertised fast, otherwise priority",
+    "fast_off": "explicit default",
+    "unknown_write": "read original frozen fields; never resend",
+    "changed_since_open": "reject save and ask the user to reopen /model",
+    "reply_footer": "first final-observation thread settings snapshot, not per-turn execution telemetry",
+    "reply_footer_examples": ["gpt-6-astra · max", "gpt-6.1-sol · max · fast"],
+    "reply_footer_fast": "append fast only when enabled; omit labels and Fast-off text"
+  },
+  "validation": {
+    "synthetic_protocol_fixtures": "pass",
+    "live_app": "pending",
+    "live_feishu_desktop": "pending",
+    "live_feishu_mobile": "pending"
+  }
+}

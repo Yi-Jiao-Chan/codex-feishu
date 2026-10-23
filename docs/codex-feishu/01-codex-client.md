@@ -25,12 +25,24 @@
 | 原生队列 | thread/queue/list、add、delete、start |
 | 显式引导 | turn/steer；expectedTurnId 必填 |
 | 停止 | turn/interrupt；保留原生队列 |
+| 会话设置 | thread/settings/update；仅显式命令发送 model、effort、serviceTier 的部分更新，后续轮次生效 |
+| 模型选项 | model/list；分页读取模型、支持的思考强度与服务档位，不固定模型名称或强度列表 |
 | 二期新建 | thread/start；cwd、可选 projectId、自建 threadSource |
 | 二期项目选择 | project/list，必要时 project/read；实际字段从固定 schema 读取 |
 
 queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmission，其中原生项标识字段叫 **id**。queue/list 分页返回 data 和 nextCursor。删除参数字段叫 queuedSubmissionId，返回 deleted 布尔值。历史 userMessage 的相关字段叫 **clientId**，不要误写成 clientUserMessageId。
 
 空闲 queue/add 会自动执行，因此收到成功响应后立刻刷新队列/历史；若项已被消费，不能卡片永久显示“已排队”。queue/start 忙时会拒绝，不是 steer 的替代方法。
+
+## 当前会话的模型设置
+
+聊天入口只有不带参数的 `/model`。它在原任务群或准确任务话题中打开原生飞书表单；读取使用同一 daemon 上不带覆盖参数的 `thread/resume(threadId, excludeTurns=true)`，读取顶层 model、reasoningEffort、serviceTier，并核对返回线程身份。0.162.1 的 `thread/read` 不返回 serviceTier，Turn 也不提供每轮实际推理配置；因此回复引用区表示会话默认设置，不是逐次模型调用的遥测。
+
+表单草稿只在飞书卡片中编辑，保存前不写入原生设置；点击保存后才使用一次 `thread/settings/update`。请求在写入前冻结 model、effort、serviceTier 的部分更新，不通过 resume 覆盖权限、目录、hooks 或全局配置。省略字段保持原值；serviceTier 的省略、null 和字符串独立表示，不能把缺失或 null 当作 Fast 关闭。Fast 开启仅选择模型目录实际公布的 `fast`，或其 `priority` 档；关闭显式发送 `default`。更新 RPC 可以在当前轮次运行时发送，只改变后续默认设置，不重启或 steer 当前轮次。
+
+保存的远程结果丢失或未知时，先读回原线程并按已冻结字段核验，绝不重复发送；打开表单后原生设置若已变化则拒绝覆盖并要求重新发送 `/model`。取消只读回最新设置，不发送原生更新。模型选项由 `model/list` 的完整分页目录提供，表单中的模型、思考强度和 Fast 均按该目录校验。
+
+协议依据为本机 0.162.1 离线 experimental schema 和合成 WebSocket fixture，见[会话设置兼容清单](../../compat/codex-session-settings.json)。模型目录的结构也可参考 [OpenAI App Server](https://learn.chatgpt.com/docs/app-server#models)；准确版本字段以离线 schema 为准。新设置路径尚未进行真实 App / 飞书 UI 验收，不扩大既有版本发布结论。
 
 ## 事件适配
 

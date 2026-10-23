@@ -26,7 +26,8 @@ func TestLeadingFencedFinalActualOutboundMentionsAndMarkerFitTightBudget(t *test
 		t.Fatal(err)
 	}
 	body := "```go\n" + strings.Repeat("中文 code example <tag>\n", 200) + "```"
-	unsplit, err := cards.WithMentions(cards.Message("AI 回复", "Codex", body), e.MentionTargets)
+	source := cards.ModelSettingsText("", nil, nil, false)
+	unsplit, err := cards.WithMentions(cards.Message("", source, body), e.MentionTargets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestLeadingFencedFinalActualOutboundMentionsAndMarkerFitTightBudget(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	parts, err := cards.SplitMessage("AI 回复", "Codex", body, budget)
+	parts, err := cards.SplitMessage("", source, body, budget)
 	if err != nil || len(parts) < 2 || len(g.writes) != len(parts)+1 {
 		t.Fatal("tight native result did not use stable full segments", err)
 	}
@@ -88,7 +89,7 @@ func TestLeadingFencedFinalActualOutboundMentionsAndMarkerFitTightBudget(t *test
 			t.Fatal("actual result wire lost its body/source structure", err)
 		}
 		first, last := decoded.Body.Elements[0], decoded.Body.Elements[len(decoded.Body.Elements)-1]
-		if first.Tag != "markdown" || first.ElementID == "" || last.Tag != "markdown" || !strings.HasPrefix(last.Content, "> AI 回复 · Codex") || strings.Contains(last.Content, "<at ") {
+		if first.Tag != "markdown" || first.ElementID == "" || last.Tag != "markdown" || !strings.HasPrefix(last.Content, "> "+source) || strings.Contains(last.Content, "<at ") {
 			t.Fatal("request marker or trailing source was lost")
 		}
 		want := strings.Trim(cards.SafeMarkdown(part.Body), "\r\n")
