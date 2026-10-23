@@ -75,7 +75,7 @@ func TestCombinedSelectionPreservesDraftAndCreatesOnlyAfterSubmit(t *testing.T) 
 	if len(h.n.starts) != 0 || len(h.n.adds) != 0 || h.g.groups != 0 {
 		t.Fatal("directory navigation created remote objects")
 	}
-	h.submit(d)
+	h.submitLocal(d)
 	if len(h.n.starts) != 1 || len(h.n.adds) != 1 || h.n.starts[0].CWD != sub || h.n.adds[0].body != "task after browsing" {
 		t.Fatal("explicit creation did not use combined draft")
 	}
@@ -200,7 +200,7 @@ func TestSearchResultsCannotCreateInPreviousDirectory(t *testing.T) {
 	}
 	h.tick()
 	d = h.draft("search-submit")
-	if err := h.action(d, "creation_submit", map[string]any{"creation_search_choice": target}); err != nil {
+	if err := h.action(d, "creation_submit", localCreationForm(map[string]any{"creation_search_choice": target})); err != nil {
 		t.Fatal(err)
 	}
 	h.tick()
@@ -213,7 +213,7 @@ func TestSearchResultsCannotCreateInPreviousDirectory(t *testing.T) {
 	}
 	h.tick()
 	d = h.draft("search-submit")
-	h.submit(d)
+	h.submitLocal(d)
 	if len(h.n.starts) != 1 || h.n.starts[0].CWD != target {
 		t.Fatal("selected search cwd not used")
 	}
@@ -223,7 +223,7 @@ func TestQuickSelectionOfDefaultDirectoryResolvesExactProject(t *testing.T) {
 	h := newManagerHarness(t)
 	h.n.projects = []codexclient.Project{{ID: "default-project", Name: "Default Project", Roots: []codexclient.ProjectRoot{{Path: h.root}}}}
 	d := h.receive("same-project", "/new task")
-	if err := h.action(d, "creation_submit", map[string]any{"creation_directory": h.root}); err != nil {
+	if err := h.action(d, "creation_submit", localCreationForm(map[string]any{"creation_directory": h.root})); err != nil {
 		t.Fatal(err)
 	}
 	h.tick()

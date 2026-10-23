@@ -2,7 +2,13 @@
 
 本页用于 M0 之后的候选部署验收，执行契约仍以 [Agent 配置指南](AGENT-SETUP.md) 和 [一期矩阵](11-integration-and-acceptance.md) 为准。它将需要用户查看 App / 飞书的操作合并，不能代替逐项取证。
 
-## 2026-10-23 原生 CoT 当前部署
+## 2026-10-23 创建卡当前部署
+
+用户明确授权后，现有服务已更新到 `f86c0422922c+creation-card-796ba293d814`，二进制 SHA-256 `588549e8c3d7cc139f4f84dc1d8dda1505307a9b5dbe3b885fcb348fb41d41f0`，保留此前的压缩轮、Goal 同步与桥工作树存储修复。schema 31、原配置与共享 daemon 保持；停桥一致备份 56 表/178532 行通过完整性、外键和逐表行数检查。
+
+进程及稳定 CLI 身份一致，PID 359051，systemd active/running/enabled，Codex 和飞书连接均恢复。部署前后 doctor/status 仅有原来的 bindings_reconciled / operations_known 两项 required pending，没有新增 required fail/pending；`phase1_released=false`。同页查找、默认工作树与附件预览/删除的合成布局已确认，部署后用户进一步确认本轮创建卡测试通过，并授权提交 PR 合入 main。该确认不扩展为手机、双话题或完整一期矩阵通过。详见[本次部署记录](../records/creation-card-deployment-2026-10-23.md)。
+
+## 2026-10-23 原生 CoT 前次部署记录
 
 用户已确认本人私聊原生 CoT 样式并授权正式接入。新活动轮次默认使用 CoT；已有 Card JSON 过程卡继续更新原消息，不替换未知投递或补建终态历史。当前本地 build 为 `4b9316497ea8+attachment-stop-fix-20261023-144245-cdf314cc`，二进制 SHA-256 `901c38eecdc814dbf2828dbe0553b14a3690336e75b2184a46f7ab4466ea000a`，schema 31，PID 3627889，systemd active/running/enabled；稳定 CLI 与进程一致。本次停桥一致备份 56 表/176423 行，quick_check 与外键检查通过，保持 schema 31；首次 30→31 显式迁移及旧数据核验见历史记录。配置、manifest 和共享 daemon 保持。
 

@@ -312,8 +312,10 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 		switch kind {
 		case "creation_browse", "creation_goto", "creation_panel":
 			message = "正在打开目录…"
-		case "creation_lookup", "creation_filter", "creation_search", "creation_search_next":
+		case "creation_lookup", "creation_filter", "creation_search", "creation_search_next", "creation_find", "creation_find_next":
 			message = "正在查找目录…"
+		case "creation_remove_attachment":
+			message = "正在删除附件…"
 		case "creation_pick", "creation_path", "creation_search_pick":
 			message = "正在保存所选目录…"
 		case "creation_projects":

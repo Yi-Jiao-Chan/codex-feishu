@@ -202,10 +202,35 @@ func (s *Store) ReceiveCreationDraft(ctx context.Context, d CreationDraft) (Crea
 // UpdateCreationDraft applies only fields revalidated by the use case. It
 // never accepts a native thread or a remote object ID from a callback.
 func (s *Store) UpdateCreationDraft(ctx context.Context, d CreationDraft, expected int64, nowMS int64) (CreationDraft, error) {
+	return s.updateCreationDraft(ctx, d, expected, nowMS, "")
+}
+
+// RemoveCreationDraftAttachment removes only the indexed reference from the
+// stored revision. Callback data cannot add or replace resource descriptors.
+// The same guarded write saves the other validated form fields and advances
+// the revision, so a replay cannot remove the item that moved into this slot.
+func (s *Store) RemoveCreationDraftAttachment(ctx context.Context, d CreationDraft, expected int64, index int, nowMS int64) (CreationDraft, error) {
+	current, err := s.CreationDraft(ctx, d.ID)
+	if err != nil {
+		return d, err
+	}
+	if current.Revision != expected || index < 0 || index >= len(current.Attachments) {
+		return d, ErrSubmissionStale
+	}
+	parts := append([]CreationAttachment{}, current.Attachments[:index]...)
+	parts = append(parts, current.Attachments[index+1:]...)
+	raw, err := creationAttachmentsJSON(parts)
+	if err != nil {
+		return d, err
+	}
+	return s.updateCreationDraft(ctx, d, expected, nowMS, raw)
+}
+
+func (s *Store) updateCreationDraft(ctx context.Context, d CreationDraft, expected int64, nowMS int64, attachments string) (CreationDraft, error) {
 	if d.WorkspaceMode == "" {
 		d.WorkspaceMode = "local"
 	}
-	r, err := s.DB.ExecContext(ctx, `UPDATE creation_drafts SET body=?,directory=?,project_id=?,follow_mode=?,target_chat_id=?,view=?,browse_path=?,browse_cursor=?,error_code=?,workspace_mode=?,base_branch=?,revision=revision+1 WHERE draft_id=? AND host_id=? AND app_id=? AND creator_id=? AND token=? AND card_id=? AND revision=? AND state='draft' AND expires_at_ms>?`, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.View, d.BrowsePath, d.BrowseCursor, d.ErrorCode, d.WorkspaceMode, d.BaseBranch, d.ID, d.HostID, d.AppID, d.CreatorID, d.Token, d.CardID, expected, nowMS)
+	r, err := s.DB.ExecContext(ctx, `UPDATE creation_drafts SET body=?,directory=?,project_id=?,follow_mode=?,target_chat_id=?,view=?,browse_path=?,browse_cursor=?,error_code=?,workspace_mode=?,base_branch=?,attachments_json=CASE WHEN ?<>'' THEN ? ELSE attachments_json END,revision=revision+1 WHERE draft_id=? AND host_id=? AND app_id=? AND creator_id=? AND token=? AND card_id=? AND revision=? AND state='draft' AND expires_at_ms>?`, d.Body, d.Directory, d.ProjectID, d.FollowMode, d.TargetChatID, d.View, d.BrowsePath, d.BrowseCursor, d.ErrorCode, d.WorkspaceMode, d.BaseBranch, attachments, attachments, d.ID, d.HostID, d.AppID, d.CreatorID, d.Token, d.CardID, expected, nowMS)
 	if err != nil {
 		return d, err
 	}

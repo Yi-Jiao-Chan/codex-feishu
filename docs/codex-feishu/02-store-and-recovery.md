@@ -58,7 +58,9 @@ schema 27 将 `bindings` 扩展为可区分 group/topic 的 follow target，保�
 
 schema 28 新增 `creation_drafts`、`creation_workflows` 和 `creation_attempts`，并为 `m0_receipts` 增加 `reply_message_id`。草稿按 `(host, app, source_message_id)` 去重；workflow 与每个远程步骤分别保存冻结参数和状态，`unknown` 经恢复仍不可直接重发，明确 `rejected` 才可显式创建新 attempt。跨 chat 创建保留原 source message 用于去重，把新目标根消息写入 receipt reply anchor。健康接口在 schema 28 及以上才查询这些新表，并返回状态计数，不输出正文、目录、消息 / thread / attempt ID、payload 或凭据；旧 schema 保持空聚合且不访问新表。
 
-schema 30 为 `creation_drafts` 增加 `attachments_json`；旧草稿迁移为空附件。该字段保存不可编辑的有序资源描述（来源 `key`、`name`、`kind`），正文仍可在原创建卡编辑并显示附件计数。`MaterializeCreation` 在同一事务封存附件批次并建立 `collecting` 收据：原消息 ID 供资源 GET 使用，新根消息只作为回复锚点，避免跨群引用。取消或过期草稿不下载附件，也不创建远程资源。
+schema 30 为 `creation_drafts` 增加 `attachments_json`；旧草稿迁移为空附件。该字段保存有序资源描述（来源 `key`、`name`、`kind`），资源本身不可改写，草稿允许逐项移除。移除从数据库当前 revision 读取原序列，与正文、目录和其他有效表单字段通过同条 token/card/creator/状态/期限 CAS 更新；普通草稿更新不修改附件，旧版本回调不能再次删除移动到该索引的项目。`MaterializeCreation` 只封存确认时剩余的附件，在同一事务建立批次和 `collecting` 收据；原消息 ID 供资源 GET 使用，新根消息只作为回复锚点。
+
+新交互复用现有字段，不增加 schema：新草稿默认 `workspace_mode='worktree'`，旧草稿不变；主视图的 `browse_path` 保留查询输入，`browse_cursor` 的 JSON 独立保存已执行查询、搜索根和翻页位置，未点击查找的编辑不改变结果。创建附件预览复用私有 `m0_operations`，键按版本、host/app、原消息和资源摘要隔离。图片上传前原子领取 sending，done 缓存应用图片 key，sending/unknown/rejected 均不重传；文本预览只缓存有界内容。取消或过期后不再启动预览，也不开始完整下载、群或会话创建，既有缓存不回滚过去的请求。
 
 | 表 | 主键 / 唯一约束 | 主要字段 |
 | --- | --- | --- |

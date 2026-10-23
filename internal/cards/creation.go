@@ -11,6 +11,13 @@ import (
 
 const creationInputMaxRunes = 1000
 
+// Leave a small margin for the durable pending status prepended by
+// CreationPending while keeping the published card below the 28 KiB limit.
+const creationViewBytes = 27 * 1024
+
+// Reserve two components for pending feedback and request-marking overhead.
+const creationComponentLimit = 198
+
 // CreationPending keeps the last published layout stable while a claimed
 // action runs. The caller journals this snapshot through the same card writer.
 // It does not query the filesystem, infer completion, or authorize form data.
@@ -32,10 +39,13 @@ func CreationPending(base, status string, form map[string]any) (string, error) {
 		switch node := value.(type) {
 		case map[string]any:
 			tag, _ := node["tag"].(string)
-			if tag == "button" || tag == "input" || tag == "select_static" {
+			if tag == "button" || tag == "input" || tag == "select_static" || tag == "checker" {
 				node["disabled"] = true
 			}
 			name, _ := node["name"].(string)
+			if checked, ok := form[name].(bool); ok && tag == "checker" {
+				node["checked"] = checked
+			}
 			if text, ok := form[name].(string); ok && utf8.RuneCountInString(text) <= creationInputMaxRunes {
 				if tag == "input" {
 					node["default_value"] = text
@@ -66,7 +76,7 @@ func CreationPending(base, status string, form map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(raw) > 29*1024 {
+	if len(raw) > creationPickerBytes {
 		return "", fmt.Errorf("creation pending snapshot exceeds card budget")
 	}
 	return string(raw), nil
@@ -85,6 +95,11 @@ type CreationDirectoryPage struct {
 	Breadcrumbs        []CreationOption
 	Total, Offset      int
 }
+type CreationAttachmentView struct {
+	Index                             int
+	Kind, Name, ImageKey, Text, State string
+	Truncated                         bool
+}
 type CreationView struct {
 	State, Error, Host, Body, Directory, ProjectLabel, FollowMode, TargetChatID string
 	Token, ChatLink, ThreadID                                                   string
@@ -95,6 +110,8 @@ type CreationView struct {
 	Workgroups                                                                  []CreationOption
 	Branches                                                                    []CreationOption
 	QuickChoices                                                                []CreationDirectoryChoice
+	InlineDirectories                                                           *CreationDirectoryPage
+	Attachments                                                                 []CreationAttachmentView
 	SearchQuery                                                                 string
 	SearchPage                                                                  *CreationDirectoryPage
 	DirectoryPage                                                               *CreationDirectoryPage
@@ -102,35 +119,47 @@ type CreationView struct {
 }
 
 func creationWorkspace(v CreationView) []element {
-	local, isolated := "当前目录", "新建工作树"
-	if v.WorkspaceMode == "worktree" {
-		isolated = "✓ " + isolated
-	} else {
-		local = "✓ " + local
+	checker := element{
+		"tag": "checker", "name": "creation_use_worktree",
+		"checked": v.WorkspaceMode == "worktree", "overall_checkable": true,
+		"text":          element{"tag": "plain_text", "content": "工作树"},
+		"checked_style": element{"show_strikethrough": false, "opacity": 1},
+		"margin":        "0px", "padding": "0px",
+		"hover_tips": element{"tag": "plain_text", "content": "工作树使用所选分支的已提交内容"},
 	}
-	useLocal := creationButton(v, local, "creation_local", nil, true)
-	useWorktree := creationButton(v, isolated, "creation_worktree", nil, true)
-	if v.Directory == "" || v.WorktreeUnavailable != "" {
-		useWorktree["disabled"] = true
+	options := make([]element, 0, len(v.Branches))
+	for _, branch := range v.Branches {
+		label := branch.Label
+		if label == "" {
+			label = branch.Value
+		}
+		options = append(options, element{
+			"text":  element{"tag": "plain_text", "content": "基准分支 · " + interactionLine(label, 80)},
+			"value": branch.Value,
+		})
 	}
-	els := []element{creationText("工作方式", "notation"), creationRow(useLocal, useWorktree)}
-	if v.WorktreeUnavailable != "" {
-		els = append(els, creationText(creationLiteral(v.WorktreeUnavailable), "notation"))
+	selectBranch := element{
+		"tag": "select_static", "name": "creation_branch", "width": "fill", "type": "default",
+		"options": options, "placeholder": element{"tag": "plain_text", "content": "请选择基准分支"},
 	}
-	if v.WorkspaceMode == "worktree" {
-		options := make([]element, 0, len(v.Branches))
+	if v.BaseBranch != "" {
 		for _, branch := range v.Branches {
-			options = append(options, element{"text": element{"tag": "plain_text", "content": interactionLine(branch.Label, 80)}, "value": branch.Value})
-		}
-		els = append(els, creationText("基准分支", "notation"))
-		if len(options) > 0 {
-			selectBranch := element{"tag": "select_static", "name": "creation_branch", "width": "fill", "options": options, "placeholder": element{"tag": "plain_text", "content": "选择起始分支"}}
-			if v.BaseBranch != "" {
+			if branch.Value == v.BaseBranch {
 				selectBranch["initial_option"] = v.BaseBranch
+				break
 			}
-			els = append(els, selectBranch)
 		}
-		els = append(els, creationText("基于所选分支的已提交内容，创建独立工作树。", "notation"))
+	}
+	if len(options) == 0 {
+		selectBranch["disabled"] = true
+	}
+	row := element{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "8px", "margin": "0px", "columns": []element{
+		{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "padding": "0px", "elements": []element{checker}},
+		{"tag": "column", "width": "weighted", "weight": 3, "vertical_align": "center", "padding": "0px", "elements": []element{selectBranch}},
+	}}
+	els := []element{row}
+	if v.WorktreeUnavailable != "" {
+		els = append(els, creationText(creationLiteral(v.WorktreeUnavailable), "normal"))
 	}
 	return els
 }
@@ -197,9 +226,6 @@ func creationDirectorySummary(v CreationView, path, label string, action element
 	text := []element{creationText(label, "notation"), creationText("**"+creationLiteral(name)+"**", "normal")}
 	if parent != "" {
 		details := []element{creationText(creationLiteral(path), "notation")}
-		if v.Host != "" {
-			details = append(details, creationText("主机："+creationLiteral(v.Host), "notation"))
-		}
 		text = append(text, taskPanel(parent, details))
 	}
 	columns := []element{{"tag": "column", "width": "weighted", "weight": 1, "vertical_spacing": "2px", "elements": text}}
@@ -261,9 +287,157 @@ func creationSelectOptions(choices []CreationDirectoryChoice, writableOnly bool)
 	return options
 }
 
+func creationMainDirectoryChoices(v CreationView) []CreationDirectoryChoice {
+	if v.InlineDirectories != nil {
+		return append([]CreationDirectoryChoice(nil), v.InlineDirectories.Choices...)
+	}
+	choices := append([]CreationDirectoryChoice(nil), v.QuickChoices...)
+	if v.Directory != "" {
+		seen := false
+		for _, choice := range choices {
+			if choice.Path == v.Directory {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			choices = append(choices, CreationDirectoryChoice{Path: v.Directory, Label: v.ProjectLabel})
+		}
+	}
+	return choices
+}
+
+func creationMainDirectoryElements(v CreationView) []element {
+	choices := creationMainDirectoryChoices(v)
+	for index := range choices {
+		choices[index].Label = "" // A single complete path identifies each choice.
+	}
+	selectDirectory := element{
+		"tag": "select_static", "name": "creation_directory", "type": "default", "width": "fill",
+		"placeholder": element{"tag": "plain_text", "content": "请选择工作目录"},
+		"options":     creationSelectOptions(choices, false),
+	}
+	if len(selectDirectory["options"].([]element)) == 0 {
+		selectDirectory["disabled"] = true
+		if v.InlineDirectories != nil && v.InlineDirectories.Filter != "" {
+			selectDirectory["placeholder"] = element{"tag": "plain_text", "content": "未找到匹配目录"}
+		}
+	} else if v.Directory != "" {
+		for _, choice := range choices {
+			if choice.Path == v.Directory {
+				selectDirectory["initial_option"] = v.Directory
+				break
+			}
+		}
+	}
+	els := []element{creationText("工作目录", "normal"), selectDirectory}
+	query := v.SearchQuery
+	if utf8.RuneCountInString(query) > creationInputMaxRunes {
+		query = ""
+	}
+	queryInput := element{
+		"tag": "input", "name": "creation_query", "input_type": "text", "width": "fill",
+		"default_value": query, "max_length": creationInputMaxRunes,
+		"placeholder": element{"tag": "plain_text", "content": "目录名或完整路径"},
+	}
+	find := creationButton(v, "查找", "creation_find", nil, true)
+	find["width"] = "fill"
+	queryRow := element{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "8px", "margin": "0px", "columns": []element{
+		{"tag": "column", "width": "weighted", "weight": 3, "elements": []element{queryInput}},
+		{"tag": "column", "width": "weighted", "weight": 1, "elements": []element{find}},
+	}}
+	els = append(els, queryRow)
+	if v.InlineDirectories != nil && v.InlineDirectories.Next != "" {
+		next := creationButton(v, "下一批", "creation_find_next", element{"after": v.InlineDirectories.Next}, true)
+		next["size"] = "small"
+		els = append(els, creationRow(next))
+	}
+	return els
+}
+
+func creationAttachmentName(item CreationAttachmentView) string {
+	name := strings.TrimSpace(item.Name)
+	if name == "" {
+		name = fmt.Sprintf("附件 %d", item.Index+1)
+		if item.Kind == "image" {
+			name = fmt.Sprintf("图片 %d", item.Index+1)
+		}
+	}
+	return interactionLine(name, 160)
+}
+
+func creationAttachmentDelete(v CreationView, item CreationAttachmentView) element {
+	button := creationButton(v, "删除", "creation_remove_attachment", element{"index": item.Index}, true)
+	button["name"] = fmt.Sprintf("creation_remove_attachment_%d", item.Index)
+	button["type"] = "text"
+	button["size"] = "tiny"
+	return button
+}
+
+func creationAttachmentPreview(text string, limit int) (string, bool) {
+	if text == "" {
+		return "", false
+	}
+	if limit < 0 {
+		return text, false
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text, false
+	}
+	if limit <= 1 {
+		return string(runes[:limit]), true
+	}
+	return string(runes[:limit-1]) + "…", true
+}
+
+func creationAttachmentElements(v CreationView, previewLimit int) []element {
+	if len(v.Attachments) == 0 {
+		return nil
+	}
+	els := make([]element, 0, len(v.Attachments))
+	for _, item := range v.Attachments {
+		name := creationAttachmentName(item)
+		deleteButton := creationAttachmentDelete(v, item)
+		var content element
+		if key := strings.TrimSpace(item.ImageKey); key != "" && !humanDataURL(key) {
+			content = element{"tag": "img", "img_key": key, "preview": true, "size": "40px 40px", "scale_type": "crop_center", "corner_radius": "4px", "alt": element{"tag": "plain_text", "content": Safe(name)}, "margin": "0px"}
+		} else if previewLimit != 0 && (item.Text != "" || item.Kind == "file" && item.State == "ready") {
+			preview, shortened := creationAttachmentPreview(item.Text, previewLimit)
+			children := []element{}
+			if preview != "" {
+				children = append(children, creationText(creationLiteral(preview), "normal"))
+			} else if item.Text == "" && !item.Truncated {
+				children = append(children, creationText("（空文件）", "normal"))
+			}
+			if shortened || item.Truncated {
+				children = append(children, creationText("预览已截断", "notation"))
+			}
+			content = taskPanel(name, children)
+		} else {
+			content = creationText(creationLiteral(name), "normal")
+		}
+		var columns []element
+		if content["tag"] == "img" {
+			columns = []element{
+				{"tag": "column", "width": "auto", "vertical_align": "center", "elements": []element{content}},
+				{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": []element{creationText(creationLiteral(name), "normal")}},
+				{"tag": "column", "width": "auto", "vertical_align": "center", "elements": []element{deleteButton}},
+			}
+		} else {
+			columns = []element{
+				{"tag": "column", "width": "weighted", "weight": 1, "elements": []element{content}},
+				{"tag": "column", "width": "auto", "vertical_align": "center", "elements": []element{deleteButton}},
+			}
+		}
+		els = append(els, element{"tag": "column_set", "columns": columns})
+	}
+	return els
+}
+
 func creationFollowPanel(v CreationView) element {
 	if !v.TopicsEnabled || len(v.Workgroups) == 0 {
-		return creationText("跟进位置：新建专属群", "notation")
+		return creationText("跟进位置：新建专属群", "normal")
 	}
 	mode := v.FollowMode
 	if mode != "topic" {
@@ -306,23 +480,135 @@ func creationFollowPanel(v CreationView) element {
 // Creation renders a pure view. Every callback is revalidated against the
 // durable draft; displaying a path or a selected option grants no authority.
 func Creation(v CreationView) string {
-	for {
-		raw := creation(v)
-		if len(raw) <= 28*1024 || len(v.Branches) <= 1 {
+	v = cloneCreationView(v)
+	for _, previewLimit := range []int{-1, 4096, 2048, 1024, 512, 256, 128, 64, 0} {
+		if raw := creationWithAttachmentLimit(v, previewLimit); creationFits(v, raw) {
 			return raw
 		}
-		// The selected branch is first. Leave room for the request marker and
-		// pending status even with long task bodies and Git ref names.
-		v.Branches = v.Branches[:len(v.Branches)-1]
 	}
+	// Preview text is the first thing trimmed. Keep the attachment rows and
+	// their delete actions while reducing the option lists only afterwards.
+	for trimCreationDirectories(&v) || trimCreationBranches(&v) {
+		if raw := creationWithAttachmentLimit(v, 0); creationFits(v, raw) {
+			return raw
+		}
+	}
+	if raw := creationWithAttachmentLimit(v, 0); creationFits(v, raw) {
+		return raw
+	}
+	return creationCapacityFallback(v)
 }
 
-func creation(v CreationView) string {
+func creationFits(v CreationView, raw string) bool {
+	state := v.State
+	if state == "" {
+		state = "draft"
+	}
+	limit := creationViewBytes
+	if state == "draft" && (v.DirectoryPage != nil || v.SearchPage != nil) {
+		limit = creationPickerBytes
+	}
+	if len(raw) > limit {
+		return false
+	}
+	var root any
+	return json.Unmarshal([]byte(raw), &root) == nil && taskComponentCount(root) <= creationComponentLimit
+}
+
+func cloneCreationView(v CreationView) CreationView {
+	v.Branches = append([]CreationOption(nil), v.Branches...)
+	v.QuickChoices = append([]CreationDirectoryChoice(nil), v.QuickChoices...)
+	v.Attachments = append([]CreationAttachmentView(nil), v.Attachments...)
+	if v.InlineDirectories != nil {
+		page := *v.InlineDirectories
+		page.Choices = append([]CreationDirectoryChoice(nil), page.Choices...)
+		page.Breadcrumbs = append([]CreationOption(nil), page.Breadcrumbs...)
+		v.InlineDirectories = &page
+	}
+	return v
+}
+
+func trimCreationDirectoryChoices(choices *[]CreationDirectoryChoice, selected string) bool {
+	if choices == nil || len(*choices) <= 1 {
+		return false
+	}
+	for i := len(*choices) - 1; i >= 0; i-- {
+		if selected == "" || (*choices)[i].Path != selected {
+			*choices = append((*choices)[:i], (*choices)[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+func trimCreationDirectories(v *CreationView) bool {
+	if v.InlineDirectories != nil {
+		page := v.InlineDirectories
+		if page.Filter == "" {
+			return trimCreationDirectoryChoices(&page.Choices, v.Directory)
+		}
+		// A search page must retain a contiguous prefix. A selected option at
+		// its tail may remain visible, but the next cursor stays before every
+		// omitted result so capacity trimming cannot skip unseen directories.
+		for i := len(page.Choices) - 1; i > 0; i-- {
+			if page.Choices[i].Path == v.Directory {
+				continue
+			}
+			page.Next = page.Choices[i-1].Path
+			page.Choices = append(page.Choices[:i], page.Choices[i+1:]...)
+			return true
+		}
+		return false
+	}
+	return trimCreationDirectoryChoices(&v.QuickChoices, v.Directory)
+}
+
+func trimCreationBranches(v *CreationView) bool {
+	if len(v.Branches) <= 1 {
+		return false
+	}
+	for i := len(v.Branches) - 1; i >= 0; i-- {
+		if v.BaseBranch == "" || v.Branches[i].Value != v.BaseBranch {
+			v.Branches = append(v.Branches[:i], v.Branches[i+1:]...)
+			return true
+		}
+	}
+	// Duplicate selected values are harmless; retain one selected option.
+	v.Branches = v.Branches[:len(v.Branches)-1]
+	return true
+}
+
+func creationCapacityFallback(v CreationView) string {
+	els := []element{creationText("卡片内容过长，原任务已保留。请删除部分附件或查找更具体的目录。", "normal")}
+	if (v.State == "draft" || v.State == "") && v.Token != "" && v.Revision > 0 {
+		form := []element{}
+		if utf8.RuneCountInString(v.Body) <= creationInputMaxRunes {
+			form = append(form, element{"tag": "input", "name": "creation_body", "input_type": "multiline_text", "width": "fill", "default_value": v.Body, "max_length": creationInputMaxRunes})
+		}
+		minimal := v
+		minimal.Attachments = append([]CreationAttachmentView(nil), v.Attachments...)
+		for i := range minimal.Attachments {
+			item := &minimal.Attachments[i]
+			item.Name = interactionLine(creationAttachmentName(*item), 48)
+			item.ImageKey, item.Text, item.State = "", "", ""
+		}
+		form = append(form, creationAttachmentElements(minimal, 0)...)
+		form = append(form, element{"tag": "input", "name": "creation_query", "width": "fill", "placeholder": element{"tag": "plain_text", "content": "目录名或完整路径"}, "max_length": creationInputMaxRunes})
+		// Hidden directory/branch values must never be executable from this
+		// recovery view. Return to the full form through search before creating.
+		form = append(form, creationRow(creationButton(v, "查找", "creation_find", nil, true), creationButton(v, "取消", "creation_cancel", nil, true)))
+		els = append(els, creationForm("creation_form", form))
+	}
+	raw := renderWidth(els, "default")
+	if creationFits(v, raw) {
+		return raw
+	}
+	return renderWidth([]element{creationText("卡片内容过长，请缩短后重试。", "normal")}, "default")
+}
+
+func creationWithAttachmentLimit(v CreationView, previewLimit int) string {
 	if v.Busy != "" {
 		els := []element{creationText("**"+creationLiteral(v.Busy)+"**", "normal")}
-		if v.Host != "" {
-			els = append(els, creationText("主机："+creationLiteral(v.Host), "notation"))
-		}
 		path := v.Directory
 		if v.DirectoryPage != nil {
 			path = v.DirectoryPage.Path
@@ -354,9 +640,6 @@ func creation(v CreationView) string {
 		status = "创建状态待核验"
 	}
 	els := []element{creationText("**"+status+"**", "heading")}
-	if v.Images+v.Files > 0 {
-		els = append(els, creationText(fmt.Sprintf("已附带 %d 张图片、%d 个文件", v.Images, v.Files), "notation"))
-	}
 	if v.Error != "" {
 		els = append(els, creationText(creationLiteral(v.Error), "normal"))
 	}
@@ -364,7 +647,7 @@ func creation(v CreationView) string {
 		if v.Token == "" || v.Revision <= 0 {
 			return renderWidth(append(els, publicBodyElements(v.Body, "normal")...), "default")
 		}
-		form := []element{creationText("任务内容", "notation")}
+		form := []element{creationText("任务内容", "normal")}
 		if utf8.RuneCountInString(v.Body) <= creationInputMaxRunes {
 			form = append(form, element{"tag": "input", "name": "creation_body", "input_type": "multiline_text", "width": "fill", "default_value": v.Body, "placeholder": element{"tag": "plain_text", "content": "希望 Codex 完成什么任务？"}, "max_length": creationInputMaxRunes, "rows": 2, "auto_resize": true, "max_rows": 6})
 		} else {
@@ -373,18 +656,11 @@ func creation(v CreationView) string {
 				creationText("将使用原任务正文；如需修改请重新发起 /new", "notation"),
 			)
 		}
-		form = append(form, creationDirectorySummary(v, v.Directory, "工作目录", creationButton(v, "更改目录", "creation_panel", nil, true)))
+		form = append(form, creationAttachmentElements(v, previewLimit)...)
+		form = append(form, creationMainDirectoryElements(v)...)
 		form = append(form, creationWorkspace(v)...)
 		form = append(form, creationFollowPanel(v))
 		submit := creationPrimary(creationButton(v, "创建任务", "creation_submit", nil, true))
-		if v.Directory == "" {
-			submit["disabled"] = true
-			form = append(form, creationText("请先选择工作目录，再创建任务。", "notation"))
-		}
-		if v.WorkspaceMode == "worktree" && len(v.Branches) == 0 {
-			submit["disabled"] = true
-			form = append(form, creationText("请选择可用的 Git 仓库和基准分支。", "notation"))
-		}
 		form = append(form, creationRow(submit, creationButton(v, "取消", "creation_cancel", nil, true)))
 		els = append(els, creationForm("creation_form", form))
 	} else {
@@ -408,7 +684,7 @@ func creation(v CreationView) string {
 				els = append(els, creationText("[打开任务位置]("+link+")", "normal"))
 			}
 		}
-		details := "主机：" + v.Host + "\n目录：" + v.Directory
+		details := "目录：" + v.Directory
 		if v.ThreadID != "" {
 			details += "\nCodex 线程：" + v.ThreadID
 		}

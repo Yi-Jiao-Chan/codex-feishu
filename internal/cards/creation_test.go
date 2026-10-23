@@ -78,19 +78,48 @@ func TestCreationDraftFormAndActionContract(t *testing.T) {
 		t.Fatalf("main creation card width = %q, want default", got)
 	}
 	actions := map[string]bool{}
-	body, form, primary := false, false, 0
+	body, form, directory, query, checker, branch := false, false, false, false, false, false
 	for _, n := range creationNodes(t, card) {
 		if n["tag"] == "form" && n["name"] == "creation_form" {
 			form = true
 		}
 		if n["tag"] == "input" {
-			if n["name"] != "creation_body" || n["default_value"] != v.Body {
-				t.Fatal("main card mixed directory search into task input")
+			switch n["name"] {
+			case "creation_body":
+				if n["default_value"] != v.Body {
+					t.Fatal("task input was not kept in the creation form")
+				}
+				body = true
+			case "creation_query":
+				query = true
+			default:
+				t.Fatalf("unexpected creation input %v", n["name"])
 			}
-			body = true
 		}
 		if n["tag"] == "select_static" {
-			t.Fatal("main card exposed a second directory value")
+			name, _ := n["name"].(string)
+			switch name {
+			case "creation_directory":
+				directory = true
+				if n["behaviors"] != nil || n["initial_option"] != v.Directory {
+					t.Fatal("directory selector must be a submitted form value")
+				}
+				options, _ := n["options"].([]any)
+				if len(options) != 2 || options[0].(map[string]any)["value"] != "/recent" || options[1].(map[string]any)["value"] != v.Directory {
+					t.Fatal("directory selector did not combine quick and current choices")
+				}
+			case "creation_branch":
+				branch = true
+				if n["behaviors"] != nil {
+					t.Fatal("branch selector must be submitted with the form")
+				}
+			}
+		}
+		if n["tag"] == "checker" {
+			if n["name"] != "creation_use_worktree" || n["checked"] != false || n["behaviors"] != nil || n["overall_checkable"] != true {
+				t.Fatal("worktree checker is not a local form control")
+			}
+			checker = true
 		}
 		if a := creationAction(n); a != nil {
 			action := a["action"].(string)
@@ -101,19 +130,19 @@ func TestCreationDraftFormAndActionContract(t *testing.T) {
 			if n["form_action_type"] != "submit" {
 				t.Fatal("main actions must preserve task and follow edits")
 			}
-			if n["type"] == "text" || n["size"] != "medium" || n["width"] != "default" {
+			if n["type"] == "text" || n["size"] != "medium" || action != "creation_find" && n["width"] != "default" {
 				t.Fatal("creation actions must be visibly pressable")
 			}
-			if n["type"] == "primary_filled" {
-				primary++
-				if action != "creation_submit" {
-					t.Fatal("wrong primary action")
-				}
+			if action == "creation_find" && (n["width"] != "fill" || n["form_action_type"] != "submit") {
+				t.Fatal("directory search must submit the complete form")
+			}
+			if action == "creation_submit" && n["disabled"] == true {
+				t.Fatal("creation submit was blocked by stale render state")
 			}
 		}
 	}
-	if !body || !form || primary != 1 || !reflect.DeepEqual(actions, map[string]bool{"creation_submit": true, "creation_panel": true, "creation_cancel": true, "creation_local": true, "creation_worktree": true}) {
-		t.Fatal("main task summary contract", actions)
+	if !body || !form || !directory || !query || !checker || !branch || !reflect.DeepEqual(actions, map[string]bool{"creation_submit": true, "creation_find": true, "creation_cancel": true}) {
+		t.Fatal("main task form contract", actions)
 	}
 	if !strings.Contains(card, "新建专属群") || !strings.Contains(card, v.Directory) {
 		t.Fatal("selected directory or follow summary missing")
@@ -481,7 +510,7 @@ func TestCreationBodyLengthBoundaryAndLongBodyPanel(t *testing.T) {
 	if bodyInput || !longBodyPanel || !hint {
 		t.Fatalf("long body was truncated or exposed as an input: input=%v panel=%v hint=%v", bodyInput, longBodyPanel, hint)
 	}
-	if !reflect.DeepEqual(actions, map[string]bool{"creation_submit": true, "creation_panel": true, "creation_cancel": true, "creation_local": true, "creation_worktree": true}) {
+	if !reflect.DeepEqual(actions, map[string]bool{"creation_submit": true, "creation_find": true, "creation_cancel": true}) {
 		t.Fatalf("long body removed creation controls: %v", actions)
 	}
 	if !strings.Contains(card, v.Body) {
@@ -606,7 +635,7 @@ func TestCreationPickerEscapedPathCannotExceedRequestBudget(t *testing.T) {
 func TestCreationPendingKeepsLayoutAndSubmittedFields(t *testing.T) {
 	v := creationView()
 	base := Creation(v)
-	card, err := CreationPending(base, "正在打开目录…", map[string]any{"creation_body": "刚编辑的任务"})
+	card, err := CreationPending(base, "正在打开目录…", map[string]any{"creation_body": "刚编辑的任务", "creation_use_worktree": false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,11 +644,14 @@ func TestCreationPendingKeepsLayoutAndSubmittedFields(t *testing.T) {
 	}
 	controls := 0
 	for _, node := range creationNodes(t, card) {
-		if node["tag"] == "input" || node["tag"] == "button" || node["tag"] == "select_static" {
+		if node["tag"] == "input" || node["tag"] == "button" || node["tag"] == "select_static" || node["tag"] == "checker" {
 			controls++
 			if node["disabled"] != true {
 				t.Fatal("pending card has a live conflicting control")
 			}
+		}
+		if node["tag"] == "checker" && node["checked"] != false {
+			t.Fatal("pending card did not preserve the submitted worktree choice")
 		}
 	}
 	if controls < 4 || strings.Contains(base, "刚编辑的任务") {

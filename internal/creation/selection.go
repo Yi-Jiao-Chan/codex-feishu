@@ -166,6 +166,29 @@ func (m *Manager) rejectSelectionAction(ctx context.Context, a store.CreationAct
 	if target, ok := p.Form["creation_target"].(string); ok && (target == "" || contains(m.Config.Creation.WorkgroupChatIDs, target)) {
 		d.TargetChatID = target
 	}
+	// The inline form keeps independently valid edits when a different field
+	// fails validation. No invalid directory or malformed checkbox is saved.
+	if d.View == "main" {
+		if path := textValue(p.Form, "creation_directory"); path != "" && path != d.Directory {
+			if choice, err := m.directories(nil).Validate(ctx, path, ""); err == nil {
+				d.Directory, d.ProjectID, d.BaseBranch = choice.Path, "", ""
+			}
+		}
+		if checked, ok := p.Form["creation_use_worktree"].(bool); ok {
+			d.WorkspaceMode = "local"
+			if checked {
+				d.WorkspaceMode = "worktree"
+			} else {
+				d.BaseBranch = ""
+			}
+		}
+		if query, ok := p.Form["creation_query"].(string); ok && validateDirectoryFilter(query) == nil {
+			d.BrowsePath = strings.TrimSpace(query)
+		}
+		if a.Kind == "creation_find" || a.Kind == "creation_find_next" {
+			_ = m.positionInlineDirectory(ctx, &d, a.Kind, p.Value)
+		}
+	}
 	if branch, ok := p.Form["creation_branch"].(string); ok && d.WorkspaceMode == "worktree" && (branch == "HEAD" || strings.HasPrefix(branch, "refs/heads/") || strings.HasPrefix(branch, "refs/remotes/")) && utf8.RuneCountInString(branch) <= 1000 {
 		d.BaseBranch = branch
 	}

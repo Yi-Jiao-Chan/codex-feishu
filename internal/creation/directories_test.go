@@ -358,7 +358,7 @@ func TestDirectoryManagerBrowsesReadOnlyRootThenSelectsWritableChild(t *testing.
 	}
 	h.tick()
 	d = h.draft(d.SourceMessageID)
-	h.submit(d)
+	h.submitLocal(d)
 	if h.draft(d.SourceMessageID).State != "created" || len(h.n.starts) != 1 || h.n.starts[0].CWD != child {
 		t.Fatal("writable descendant could not be selected and submitted")
 	}
@@ -377,7 +377,7 @@ func TestDirectoryManagerRejectsSelectedDirectoryBecomingReadOnly(t *testing.T) 
 	if err := os.Chmod(h.root, 0500); err != nil {
 		t.Fatal(err)
 	}
-	h.submit(d)
+	h.submitLocal(d)
 	d = h.draft(d.SourceMessageID)
 	if d.State != "draft" || d.ErrorCode != "directory" || h.g.groups != 0 || len(h.n.starts) != 0 || h.count(`SELECT COUNT(*) FROM creation_workflows`) != 0 {
 		t.Fatal("submit reused a directory that lost write access")
