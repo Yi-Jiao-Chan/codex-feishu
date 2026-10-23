@@ -12,7 +12,7 @@ import (
 
 func verificationGroupFixture(t *testing.T) (*Store, VerificationGroup) {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "verification-groups.db"))
+	s, err := Open(freshStorePath(t, "verification-groups.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -327,3 +327,13 @@ doctor/status 仍退出 5，仅保留部署前相同的 `instance.bindings_recon
 本地部署已更新为 `196586e6fd88+native-cot-stop-resume-20261023-111711-be04447e`，二进制 SHA-256 `3d107ba93f335d73ed868526183f0531ca94f1fbf2b82519a7585328e0f2f0ff`，源清单 SHA-256 `be04447ed7e6f637425f517e10b20da5271688779aa332494c1be0d771d0ce4e`。私有 `~/.local/lib/codex-feishu/native-cot-stop-resume-20261023-111711-c0idp3rl/` 保存构建、冻结源码、复审与测试摘要、备份及前后读回。停桥一致备份 schema 31（56 表/175517 行），quick_check 通过；无迁移、无数据库恢复。PID 2974219、稳定 CLI、systemd active/running/enabled、实际二进制摘要一致，两侧连接、运行健康和发现基线通过，配置、图标 manifest 和共享 daemon 只读版本保持。构建后源清单逐项一致，之后仅补本记录与交接文档。
 
 schema 相同也不表示旧代码可安全接管新意图：私有部署脚本已加未完成 `input-continue.%`（ready/running/unknown）回退门槛；若存在则保留现库，要求兼容版本前向恢复，不让旧二进制忽略新顺序约束。本轮没有实际触发回退。doctor/status 退出 5，仅原有 bindings_reconciled / operations_known 两项 required pending，未新增 required fail/pending，`phase1_released=false`。本轮真实客户端的减少回执、新消息恢复与手机效果仍保持待确认。
+
+## 2026-10-23 附件回执与停止目标修复及测试优化
+
+带说明、可直接封存提交的图文在没有既有草稿卡时不再预建附件回执；正常即时消费保留 reaction、原生 CoT 和最终回答，真实排队、unknown、失败或离线待处理时仍创建管理卡。独立附件草稿及其后续共享卡继续更新。停止目标选择跳过原生已终态的历史 CoT，不因旧 Complete 的 pending/rejected/unknown 阻断唯一活动轮；多个未终态候选仍保留歧义保护，旧投递账本不改写为成功。
+
+建群 deadline 用例原先在一小时扫描间隔下，于首次扫描之后才加入新线程，缺少当前活跃列表证明；现于启动前保存出生记录，由首次真实活跃扫描建立资格，保留原截止时间重试断言。存储普通业务 fixture 只迁移一次空库并在 checkpoint、关闭后缓存字节，各用例复制独立文件后仍调用真实 Open；迁移与重开路径保留。全仓 `go test ./cmd/... ./internal/... ./compat` 全部通过，未排除用例；完整 `go test -race ./internal/store` 172.179 秒通过，未延长默认超时。建群用例连续 5 次普通、3 次 race，附件/停止定向普通与 race、副本隔离及迁移回归均通过。
+
+用户明确要求替换本地部署后，已将当前工作树构建为 `4b9316497ea8+attachment-stop-fix-20261023-144245-cdf314cc`，二进制 SHA-256 `901c38eecdc814dbf2828dbe0553b14a3690336e75b2184a46f7ab4466ea000a`，源清单 SHA-256 `cdf314cc5d439d6b8486062571b5a35065c008710611d246a0bc76ae1af6a8ba`。私有 `~/.local/lib/codex-feishu/attachment-stop-fix-20261023-144245-efkiu0oe/` 保存构建、源清单/差异/新增源码、测试摘要、备份和前后读回。停桥后一致备份 schema 31（56 表/176423 行），quick_check 与外键检查通过，未迁移或恢复数据库；旧二进制保留。
+
+通过现有 service stop/install/start 更新同一用户服务，PID 3627889、稳定 CLI 和实际二进制摘要一致，systemd active/running/enabled；两侧连接、运行健康与发现基线通过，配置、图标 manifest 摘要及共享 daemon 版本读回不变。构建后 621 项源清单逐项一致，之后仅补本记录与集中验收文档。doctor/status 仍退出 5，仅保留部署前相同的 bindings_reconciled / operations_known 两项 required pending，没有新增 required fail/pending，`phase1_released=false`。本次未创建真实探针或发送测试消息，图文回执和连续停止的真实客户端效果待用户确认。

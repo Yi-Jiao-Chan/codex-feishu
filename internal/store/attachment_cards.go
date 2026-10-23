@@ -34,6 +34,14 @@ func stageAttachmentCardTx(ctx context.Context, tx *sql.Tx, b AttachmentBatch) e
 			// the native generation has disconnected.
 			return nil
 		}
+		if _, err := readMirror(ctx, tx, b.Scope.HostID, b.Scope.ThreadID, AttachmentCardKey(b.ID)); errors.Is(err, sql.ErrNoRows) {
+			// Automatically sealed input uses reactions while downloading.
+			// Create a card only if queue feedback or a failure needs one;
+			// existing attachment drafts keep their original card.
+			return nil
+		} else if err != nil {
+			return err
+		}
 		state = n.State
 	}
 	parts, err := attachmentParts(ctx, tx, b.ID)
