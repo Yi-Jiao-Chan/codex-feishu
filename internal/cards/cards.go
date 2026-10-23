@@ -22,11 +22,11 @@ func renderWidth(body []element, width string) string {
 	return string(b)
 }
 
-// Safe masks public email addresses and escapes native tags. Only explicit
-// policies may create mentions; the email placeholder remains literal text.
+// Safe escapes input tags before replacing email separators. The generated
+// <A> stays literal in code spans as well; only explicit policies create mentions.
 func Safe(s string) string {
-	s = redactEmails(s)
-	return strings.ReplaceAll(strings.ReplaceAll(s, "<", "&lt;"), ">", "&gt;")
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "<", "&lt;"), ">", "&gt;")
+	return redactEmails(s)
 }
 func footer(s string) element {
 	return element{"tag": "markdown", "content": "> " + Safe(s), "text_size": "notation"}

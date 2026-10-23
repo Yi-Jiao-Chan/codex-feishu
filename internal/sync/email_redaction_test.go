@@ -20,14 +20,14 @@ func TestEmailRedactionIsFrozenForPublicDeliveryWithoutChangingHistory(t *testin
 	apply(t, e, 200, false, turn)
 	g := &cardGateway{}
 	o := Outbound{Store: e.Store, Gateway: g}
-	for n := 0; n < 2; n++ {
+	for n, address := range []string{`alice\u003cA\u003eexample.invalid`, `bob+ci\u003cA\u003eexample.invalid`} {
 		result, err := o.DispatchOne(context.Background(), "host", "thread", 1000)
 		if err != nil || result.State != "confirmed" {
 			t.Fatalf("public delivery failed: %+v %v", result, err)
 		}
 		attempt, err := e.Store.MirrorAttempt(context.Background(), result.AttemptID)
 		if err != nil || attempt.Card != g.writes[n].Card || strings.Contains(attempt.Card, "@example.invalid") ||
-			!strings.Contains(attempt.Card, `\u0026lt;A\u0026gt;`) {
+			!strings.Contains(attempt.Card, address) || strings.Contains(attempt.Card, `\u0026lt;A\u0026gt;`) {
 			t.Fatal("delivery differed from the frozen, masked card", err)
 		}
 	}
@@ -53,7 +53,7 @@ func TestCOTProjectionMasksEmailBeforePlanningEvents(t *testing.T) {
 	before, _ := json.Marshal(turn)
 	raw, err := cotDocument("thread", turn, nil, 1000)
 	doc := parseProjection(t, raw, err)
-	if len(doc.Items) != 2 || doc.Items[0].Text != "正在检查 &lt;A&gt;" || doc.Items[1].Title != "编辑文件" || strings.Contains(raw, "@example.invalid") {
+	if len(doc.Items) != 2 || doc.Items[0].Text != "正在检查 alice<A>example.invalid" || doc.Items[1].Title != "编辑文件" || strings.Contains(raw, "@example.invalid") {
 		t.Fatalf("unexpected masked progress: %+v", doc.Items)
 	}
 	after, _ := json.Marshal(turn)

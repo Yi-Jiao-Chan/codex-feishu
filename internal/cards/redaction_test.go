@@ -6,17 +6,20 @@ import (
 	"testing"
 )
 
-func TestSafeMasksEmailAddressesAsLiteralPlaceholder(t *testing.T) {
+func TestSafeReplacesOnlyEmailAtWithLiteralAngleBrackets(t *testing.T) {
 	for _, tc := range []struct{ name, input, want string }{
-		{"plain", "联系 alice@example.invalid。", "联系 &lt;A&gt;。"},
-		{"aliases", "First.Last+ci@Sub.Example.INVALID, build_bot@ci.example.invalid", "&lt;A&gt;, &lt;A&gt;"},
-		{"git identity", "Synthetic Author <123+synthetic@users.noreply.example.invalid>", "Synthetic Author &lt;A&gt;"},
-		{"markdown", "**alice@example.invalid** and `bob@example.invalid`", "**&lt;A&gt;** and `&lt;A&gt;`"},
-		{"email link", "[联系作者](mailto:alice@example.invalid)", "联系作者 &lt;A&gt;"},
-		{"email label and query", "[alice@example.invalid](MAILTO:bob@example.invalid?cc=carol@example.invalid)", "&lt;A&gt;"},
-		{"email autolinks", "<alice@example.invalid> <mailto:bob@example.invalid> mailto:carol@example.invalid", "&lt;A&gt; &lt;A&gt; &lt;A&gt;"},
+		{"plain", "联系 alice@example.invalid。", "联系 alice<A>example.invalid。"},
+		{"aliases", "First.Last+ci@Sub.Example.INVALID, build_bot@ci.example.invalid", "First.Last+ci<A>Sub.Example.INVALID, build_bot<A>ci.example.invalid"},
+		{"git identity", "Synthetic Author <123+synthetic@users.noreply.example.invalid>", "Synthetic Author &lt;123+synthetic<A>users.noreply.example.invalid&gt;"},
+		{"markdown", "**alice@example.invalid** and `bob@example.invalid`", "**alice<A>example.invalid** and `bob<A>example.invalid`"},
+		{"email link", "[联系作者](mailto:alice@example.invalid)", "联系作者 alice<A>example.invalid"},
+		{"email label", "[alice@example.invalid](mailto:alice@example.invalid)", "alice<A>example.invalid"},
+		{"email label and query", "[alice@example.invalid](MAILTO:bob@example.invalid?cc=carol@example.invalid)", "alice<A>example.invalid bob<A>example.invalid"},
+		{"email autolinks", "<alice@example.invalid> <mailto:bob@example.invalid> mailto:carol@example.invalid", "&lt;alice<A>example.invalid&gt; &lt;bob<A>example.invalid&gt; carol<A>example.invalid"},
 		{"other text", "@operator https://example.invalid/path value@localhost 2 > 1", "@operator https://example.invalid/path value@localhost 2 &gt; 1"},
-		{"mention safety", "<at id=\"all\"></at> alice@example.invalid", "&lt;at id=\"all\"&gt;&lt;/at&gt; &lt;A&gt;"},
+		{"mention safety", "<at id=\"all\"></at> alice@example.invalid", "&lt;at id=\"all\"&gt;&lt;/at&gt; alice<A>example.invalid"},
+		{"input placeholder safety", "<A> alice@example.invalid", "&lt;A&gt; alice<A>example.invalid"},
+		{"link label safety", "[<at id=\"all\"></at>](mailto:alice@example.invalid)", "&lt;at id=\"all\"&gt;&lt;/at&gt; alice<A>example.invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Safe(tc.input); got != tc.want {
@@ -27,7 +30,7 @@ func TestSafeMasksEmailAddressesAsLiteralPlaceholder(t *testing.T) {
 }
 
 func TestEmailRedactionPreservesMarkdownMentionsAndRequestMarker(t *testing.T) {
-	body := "> 联系 alice@example.invalid\n\n```sh\ngit config user.email bob+work@example.invalid\n```"
+	body := "> 联系 alice@example.invalid\n\n`user.email=carol@example.invalid`\n\n```sh\ngit config user.email bob+work@example.invalid\n```"
 	card := Message("AI 回复", "Codex", body)
 	card, err := WithMentions(card, []string{"ou_synthetic"})
 	if err != nil {
@@ -42,15 +45,19 @@ func TestEmailRedactionPreservesMarkdownMentionsAndRequestMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := humanElements(t, card)[0].(map[string]any)
-	if first["content"] != Mention("ou_synthetic")+"\n\n> 联系 &lt;A&gt;" || first["element_id"] != "cf_synthetic" {
+	if first["content"] != Mention("ou_synthetic")+"\n\n> 联系 alice<A>example.invalid" || first["element_id"] != "cf_synthetic" {
 		t.Fatal("redaction changed the trusted mention, quote, or request marker")
 	}
-	code := humanElements(t, card)[1].(map[string]any)["content"].(string)
-	if code != "```sh\ngit config user.email &lt;A&gt;\n```" {
+	inline := humanElements(t, card)[1].(map[string]any)["content"].(string)
+	if inline != "`user.email=carol<A>example.invalid`" {
+		t.Fatalf("inline code did not preserve the address and literal brackets: %q", inline)
+	}
+	code := humanElements(t, card)[2].(map[string]any)["content"].(string)
+	if code != "```sh\ngit config user.email bob+work<A>example.invalid\n```" {
 		t.Fatalf("code block lost its structure: %q", code)
 	}
-	if strings.Contains(card, "@example.invalid") || strings.Contains(card, "<A>") {
-		t.Fatal("card retained an address or activated the placeholder as a tag")
+	if strings.Contains(card, "@example.invalid") || strings.Contains(card, `\u0026lt;A\u0026gt;`) {
+		t.Fatal("card retained an email separator or sent an HTML entity as its replacement")
 	}
 }
 
@@ -61,7 +68,7 @@ func TestSplitMessageNeverSplitsAnEmailBeforeRedaction(t *testing.T) {
 		"```text\n" + strings.Repeat("prefix "+address+" suffix\n", 30) + "```",
 		strings.Repeat("[联系](mailto:"+address+") end\n", 30),
 	} {
-		parts := checkSegments(t, "AI 回复", "Codex", body, 460)
+		parts := checkSegments(t, "AI 回复", "Codex", body, 700)
 		if len(parts) < 2 {
 			t.Fatal("fixture did not exercise splitting")
 		}
@@ -69,9 +76,9 @@ func TestSplitMessageNeverSplitsAnEmailBeforeRedaction(t *testing.T) {
 		for _, part := range parts {
 			for _, raw := range humanElements(t, part.Card) {
 				content, _ := raw.(map[string]any)["content"].(string)
-				masked += strings.Count(content, "&lt;A&gt;")
-				if strings.Contains(content, "long") || strings.Contains(content, "@") || strings.Contains(content, "example.invalid") {
-					t.Fatal("splitting exposed an email fragment")
+				masked += strings.Count(content, strings.ReplaceAll(address, "@", "<A>"))
+				if strings.Contains(content, "@") || strings.Contains(content, "&lt;A&gt;") {
+					t.Fatal("splitting kept an email separator or encoded the replacement as an entity")
 				}
 			}
 		}
