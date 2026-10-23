@@ -2,6 +2,14 @@
 
 负责 `internal/store/`、迁移、恢复协调器。依赖 00；必须在输入提交与自动建群之前可用。
 
+## Schema 31：原生 CoT 投递状态
+
+新增 `cot_deliveries` 保存每个进度镜像的 cot_id、已确认公开投影和 completed 标志；原 outbound_attempts 新增 cot_step、cot_id、cot_events_json、cot_state_json、cot_state_before 与 cot_caught_up。继续复用原 mirrors/outbound、绑定、授权租约和启动恢复，不新增接收器或独立出站队列。CoT 文档以 codex_feishu_cot=1 与普通 Card JSON 区分；每轮首次投影后固定传输类型，旧卡片、旧 unknown 和回调均保留。
+
+单个 claim 只冻结 Create、一次 Append 或 Complete。确认 Create 只保存远程身份；Append 原子安装该批次确认后的投影；终态仅在 Complete 确认后推进整个 revision。运行态追上当前快照时可标记该 revision 已同步，后续快照继续追加。状态哈希不匹配、结果 unknown 或本地提交失败均不推进；重启 dispatching 转 unknown，不能通过普通 post 占位读回解冻。终态事件已确认的进度冻结原投影与完成原因，不因 Complete 前后迟到修正重新打开，最终答复仍可通过原链路更正。
+
+原生 `/stop` 在命令入账的同一事务中冻结唯一未收口且非终态 CoT 的 turn_id，复用原 expected_turn_id 与 actor 的停止核验；有多个未收口过程或状态不明时不创建停止动作。重复入站沿原消息去重。平台裸 `/stop` 不包含可核验的点击时 run token，因此仍是对应线程的当前任务命令；只能保证接收后等待 actor 的期间不漂移到后来轮次，不能声称还原网络延迟前点击的旧 run。单聊继续不路由到任务。
+
 ## 当前实现边界（2026-10-15）
 
 schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输入与飞书收据关联、完整历史扫描水位的事务保存。待建群的 eligible 会话可以先入库，绑定及父消息确认后才领取发送；过程更新合并到最新版本，终态不回退，同一线程只允许一个 dispatching 写请求。send / reply / PATCH 都在调用网关前落账，启动时把遗留 dispatching 转为 unknown，不自动重发。通知规则按 app/user 持久保存，以 revision 防止并发修改丢失；重新初始化默认值不覆盖已有设置。
@@ -76,6 +84,10 @@ schema 30 为 `creation_drafts` 增加 `attachments_json`；旧草稿迁移为�
 ## 收据与操作记录
 
 输入流程：`received → pending_submit → queued/executing → confirmed`。明确失败进入 failed；RPC 结果未知从任意发出阶段进入 reconciling。删除/引导有独立动作记录，不覆盖原始输入内容。
+
+新的普通输入可以在首次入账事务内保存收据关联的 `kind=continue` 意图：专用 token 为 `input-continue.<receiptID>.<source>`，source 是固定的源停止 action ID，或已观察到 App 中断时的 `app`；目标轮另存既有 `expected_turn_id`。只在输入确认接收后才领取 start，后到停止优先，unknown 仍核验原 attempt。停止卡片 claim 与对应原生停止动作也同事务入账，避免新输入夹在两次事务间丢失继续意图。旧收据、下载完成与恢复不补记此意图，不增加 schema。
+
+虽然 schema 仍为 31，旧二进制不理解这些新型继续意图的先后约束；存在 `input-continue.%` 且 state 为 ready/running/unknown 时，不能自动回退旧二进制，更不能恢复旧数据库覆盖新活动。CoT 停止的成功命令回执保存为空卡、`state=confirmed` 的本地不投递收据，仅用于去重；它不代表原生停止成功，停止仍以独立 action/attempt 和原生状态为准。
 
 异步问题的显式追加复用现有 schema 30 收据与动作日志，不增加表或迁移。仅新按钮回调在一个事务内保存 interaction attempt、完整回答 receipt、submission input 和 `kind=steer, stage=prepare, queue_id=''` 的初始动作；先补齐较早未被 actor 收取的收据顺序，再登记新答案。旧 queued steer 的 queue_id 非空，仍走删除后引导；旧回答不生成初始动作。发送前把目标 turn 固定在 action/attempt；明确拒绝进入 restore，unknown 按原目标 turn/clientId 核验。重连不得改投新轮、盲目补发或复制一份替代收据。 虽然数据库 schema 未变，旧二进制不能处理这类未完成的初始追加动作；回退前须确认这些动作已安全结束。不得为回退二进制而用旧备份覆盖升级后已产生的会话活动。
 

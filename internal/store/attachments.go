@@ -109,6 +109,11 @@ func (s *Store) OpenAttachmentBatch(ctx context.Context, scope SubmissionScope, 
 }
 
 func claimInputTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, chat, message, body, state string) (Receipt, bool, error) {
+	if state != "draft" {
+		if err := adoptSubmissionOrderTx(ctx, tx, scope, chat); err != nil {
+			return Receipt{}, false, err
+		}
+	}
 	r := Receipt{ID: ID(), AppID: scope.AppID, ThreadID: scope.ThreadID, ChatID: chat, MessageID: message, Body: body, State: state, ActionToken: ID()}
 	r.ClientID = "cfb-" + r.ID
 	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO m0_receipts(id,app_id,message_id,thread_id,chat_id,body,client_id,state,action_token) VALUES(?,?,?,?,?,?,?,?,?)`, r.ID, r.AppID, message, r.ThreadID, chat, body, r.ClientID, state, r.ActionToken)
@@ -189,8 +194,11 @@ func (s *Store) ReceiveAttachmentInput(ctx context.Context, in AttachmentInput, 
 		}
 	}
 	if b.ID == "" && resources == 0 {
-		_, fresh, err := claimInputTx(ctx, tx, in.Scope, chat, in.MessageID, in.Body, "received")
+		r, fresh, err := claimInputTx(ctx, tx, in.Scope, chat, in.MessageID, in.Body, "received")
 		if err != nil {
+			return b, false, err
+		}
+		if err = stageInputContinueTx(ctx, tx, in.Scope, r); err != nil {
 			return b, false, err
 		}
 		return b, fresh, tx.Commit()
@@ -244,6 +252,9 @@ func (s *Store) ReceiveAttachmentInput(ctx context.Context, in AttachmentInput, 
 		if err = sealAttachmentTx(ctx, tx, &b, r.ID, in.Body); err != nil {
 			return b, false, err
 		}
+		if err = stageInputContinueTx(ctx, tx, in.Scope, r); err != nil {
+			return b, false, err
+		}
 	}
 	if err := stageAttachmentCardTx(ctx, tx, b); err != nil {
 		return b, false, err
@@ -254,6 +265,9 @@ func (s *Store) ReceiveAttachmentInput(ctx context.Context, in AttachmentInput, 
 func sealAttachmentTx(ctx context.Context, tx *sql.Tx, b *AttachmentBatch, receiptID, body string) error {
 	if b.State != "open" {
 		return ErrSubmissionStale
+	}
+	if err := adoptSubmissionOrderTx(ctx, tx, b.Scope, b.ChatID); err != nil {
+		return err
 	}
 	if body == "" {
 		body = "请查看附件。"

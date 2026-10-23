@@ -148,14 +148,16 @@ func TestProgressBudgetTruncatesSingleLongRecordAndDoesNotMutateProjection(t *te
 }
 
 func TestProgressBudgetStillDisclosesOmissionsWhenNoRecordFits(t *testing.T) {
-	v := cards.ProgressView{Body: strings.Repeat("latest public action", 100), Records: progressRecords(strings.Repeat("long public record", 500)), ElapsedSeconds: -1}
+	v := cards.ProgressView{Body: strings.Repeat("latest public action", 100), Records: []cards.ProgressRecord{{Tools: &cards.ProgressTools{
+		Completed: 1, Items: []cards.ProgressTool{{ItemID: "tool", Kind: "command", Status: "completed", Title: "运行 Go 测试"}},
+	}}}, ElapsedSeconds: -1}
 	var rendered cards.ProgressView
 	render := func(v cards.ProgressView) string {
 		rendered = v
 		return cards.Task(cards.TaskView{Status: "inProgress", Progress: v, State: "available", Kind: "stop", Token: "opaque", Revision: 1})
 	}
-	// Reserve state, omission disclosure and controls; the full live summary
-	// prevents retaining even the minimal record before summary truncation.
+	// Reserve state, omission disclosure and controls. The empty-text tool group
+	// cannot be text-truncated into a misleading partial set of factual counters.
 	limit := len(render(cards.ProgressView{OmittedRecords: 1, ElapsedSeconds: -1})) + 100
 	card, err := boundedRenderedProgress(v, limit, render)
 	if err != nil || !json.Valid([]byte(card)) || len(card) > limit || len(rendered.Records) != 0 || rendered.OmittedRecords != 1 || !strings.Contains(card, "省略") || !strings.Contains(card, `"token":"opaque"`) {
@@ -182,40 +184,42 @@ func TestToolOnlyProgressUpdatesSameMessageAndRetainsTerminalCounts(t *testing.T
 	}}
 	turn.Items = append(turn.Items, turn.Items[1]) // Exact paginated tool duplicate.
 	apply(t, e, 200000, false, turn)
-	if latest.Body != "" || len(latest.Records) != 0 || latest.RunningTools != 2 || latest.FinishedTools != 2 {
+	if latest.Body != "" || len(latest.Records) != 1 || latest.RunningTools != 2 || latest.FinishedTools != 2 || latest.Records[0].Tools.Running != 2 || latest.Records[0].Tools.Completed != 1 || latest.Records[0].Tools.Declined != 1 || latest.Records[0].Tools.Unknown != 1 || len(latest.Records[0].Tools.Items) != 5 || !reflect.DeepEqual(latest.Records[0].Tools.Details, []string{"执行命令", "外部工具", "动态工具", "修改文件"}) {
 		t.Fatalf("tool-only projection invented commentary or counted duplicate/unsupported status: %+v", latest)
 	}
 	g := &cardGateway{}
 	drain(t, e, g, 1000)
-	if len(g.writes) != 2 || strings.Contains(g.writes[1].Card, "工具") || strings.Contains(g.writes[1].Card, `"tag":"collapsible_panel"`) {
-		t.Fatal("tool-only turn exposed tool summaries or an empty history panel")
+	if len(g.writes) != 2 || !strings.Contains(g.writes[1].Card, "工具") || !strings.Contains(g.writes[1].Card, `"tag":"collapsible_panel"`) {
+		t.Fatal("tool-only turn lost its factual tool group")
 	}
 	progressID := g.writes[1].ID
 	turn.Items[1].Status, turn.Items[2].Status = "completed", "failed"
 	turn.Items[len(turn.Items)-1] = turn.Items[1]
 	apply(t, e, 201000, false, turn)
-	drain(t, e, g, 1001)
-	if len(g.writes) != 2 {
-		t.Fatal("tool counter changes updated the public progress card")
+	drain(t, e, g, 3001)
+	if len(g.writes) != 3 || g.writes[2].Operation != "update" || g.writes[2].ID != progressID {
+		t.Fatal("tool state changes did not update the original progress card")
 	}
 	turn.Status = "completed"
 	apply(t, e, 202000, false, turn)
-	if latest.RunningTools != 0 || latest.FinishedTools != 4 || latest.Body != "" || len(latest.Records) != 0 {
-		t.Fatal("terminal counts were erased or converted to public process records")
+	if latest.RunningTools != 0 || latest.FinishedTools != 4 || latest.Body != "" || len(latest.Records) != 1 || latest.Records[0].Tools.Completed != 2 || latest.Records[0].Tools.Failed != 1 || latest.Records[0].Tools.Declined != 1 {
+		t.Fatal("terminal tool counts were erased or conflated")
 	}
-	drain(t, e, g, 1002)
-	if len(g.writes) != 4 || g.writes[2].Operation != "update" || g.writes[2].ID != progressID || !strings.Contains(g.writes[2].Card, "已完成") || strings.Contains(g.writes[2].Card, `"tag":"collapsible_panel"`) || strings.Contains(g.writes[2].Card, "工具") {
-		t.Fatal("terminal tool-only snapshot failed to update the same plain progress card")
+	drain(t, e, g, 5002)
+	if len(g.writes) != 5 || g.writes[3].Operation != "update" || g.writes[3].ID != progressID || !strings.Contains(g.writes[3].Card, "已完成") || !strings.Contains(g.writes[3].Card, `"tag":"collapsible_panel"`) || !strings.Contains(g.writes[3].Card, "工具") {
+		t.Fatal("terminal tool-only snapshot failed to update the same progress card")
 	}
-	if strings.Contains(g.writes[2].Card, "PRIVATE_TOOL_OUTPUT") || strings.Contains(g.writes[2].Card, "PRIVATE_REASONING") {
+	if strings.Contains(g.writes[3].Card, "PRIVATE_TOOL_OUTPUT") || strings.Contains(g.writes[3].Card, "PRIVATE_REASONING") {
 		t.Fatal("tool counter projection leaked private payloads")
 	}
 }
 
 func recordTexts(records []cards.ProgressRecord) []string {
-	result := make([]string, len(records))
-	for n, record := range records {
-		result[n] = record.Text
+	var result []string
+	for _, record := range records {
+		if record.Tools == nil {
+			result = append(result, record.Text)
+		}
 	}
 	return result
 }

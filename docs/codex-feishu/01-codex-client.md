@@ -48,6 +48,10 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 
 事件携带 connection_generation。重连产生新 generation，旧连接的晚响应不能确认新尝试。事件缓存有界；溢出时标记需要补齐并暂停依赖实时轮次的操作，不能静默丢失后继续宣称状态准确。
 
+执行卡的工具摘要读取结构化工具 item：命令的 `commandActions` 提供尽力解析的 read / search / listFiles / unknown 分类和 name/path，进度优先展示校验后的 basename；文件变更使用已有 path/kind 区分写入、编辑、删除，不使用 diff，MCP 与动态工具提供名称元信息；Go 适配不新增 MCP / 动态工具参数和结果的解码，工具输出不供摘要使用。已有 `Command` 仅在本地通过有界的纯词法子集识别具体命令用途，输出固定动作词或安全脚本名；不执行、不读取目标文件，不转发原 shell、参数或输出。行内脚本只概括脚本类型，未知用途明确保守说明。`Changes` 仅取安全 basename 与动作种类。停止控制版本复用同一安全投影，私有参数或 diff 的变化不会单独改变版本。工具分组、计数和公开 commentary 的展示关联由桥接器计算，协议没有现成的工具组摘要字段。MCP 的实时 `item/mcpToolCall/progress` 消息没有对应的历史消息数组，不用它作为可恢复摘要的唯一来源。
+
+该字段集依据 0.162.1 的本地离线 experimental schema，生成摘要与 [固定协议基线](../../compat/protocol.go) 一致；没有因此修改兼容版本白名单或启动替代 app-server。协议事件和工具类型概览见 [OpenAI App Server](https://learn.chatgpt.com/docs/app-server#items)。
+
 ## 兼容清单
 
 发布清单至少记录：实际 app-server 版本、CLI 版本、协议 schema 摘要、支持的方法与字段、27 项实验结果、真实 App / 飞书联调报告。版本与方法字段同时核验；仅 CLI 版本正确不算通过。

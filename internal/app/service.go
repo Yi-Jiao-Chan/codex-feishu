@@ -65,6 +65,7 @@ type Service struct {
 	creation             *creation.Manager
 	current              *Runtime
 	tasks                map[string]*TaskControls
+	taskIcons            cards.TaskIcons
 	actionsReady         map[string]bool
 	nativeConnected      atomic.Bool
 	running              atomic.Bool
@@ -260,6 +261,7 @@ func (s *Service) Run(parent context.Context) error {
 	}
 	s.startedAtMS.Store(s.now().UnixMilli())
 	defer s.running.Store(false)
+	s.loadTaskIcons()
 	if _, err := s.Store.BeginBaseline(parent, s.Config.Host.ID, s.Config.Feishu.AppID, s.now().UnixMilli()); err != nil {
 		return err
 	}
@@ -572,7 +574,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		defer s.mu.Unlock()
 		t := s.tasks[thread]
 		if t == nil {
-			t = &TaskControls{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, InFeishu: interactive != nil, Queue: readQueue}
+			t = &TaskControls{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, InFeishu: interactive != nil, Queue: readQueue, Icons: s.taskIcons}
 			s.tasks[thread] = t
 		}
 		return t
@@ -688,6 +690,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	r.RenderProgress = func(thread, turn, status string, progress cards.ProgressView) string {
 		return task(thread).Render(thread, turn, status, progress)
 	}
+	_, r.NativeCOT = s.Gateway.(messages.COTGateway)
 	r.HistoryStaged = func(ctx context.Context, thread string, turns []codexclient.Turn) error {
 		opctx, release, _, err := s.beginVerificationOperation(ctx, thread)
 		if err != nil {

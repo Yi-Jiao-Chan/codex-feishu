@@ -12,6 +12,7 @@ import (
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/store"
 	"codex-feishu/internal/submissions"
+	messagesync "codex-feishu/internal/sync"
 )
 
 // TaskControls prepares actor-owned render state. Callbacks use a fresh instance
@@ -22,6 +23,7 @@ type TaskControls struct {
 	Waiting       func(thread, turn string) bool
 	InFeishu      bool
 	Queue         func(context.Context, string) ([]codexclient.Queued, error)
+	Icons         cards.TaskIcons
 	cache         map[taskRenderKey]store.TaskControl
 }
 
@@ -157,12 +159,12 @@ func (t *TaskControls) Render(thread, turn, status string, progress cards.Progre
 		if status == "interrupted" {
 			return ""
 		}
-		return cards.Task(cards.TaskView{Status: status, Progress: progress, State: "unavailable", QueueCount: -1})
+		return cards.Task(cards.TaskView{Status: status, Progress: progress, State: "unavailable", QueueCount: -1, Icons: t.Icons})
 	}
 	if v.NativeStatus != status {
 		v.Kind, v.State, v.Reason = "", "unknown", "verifying"
 	}
-	return cards.Task(cards.TaskView{Status: status, Progress: progress, Token: v.Token, Kind: v.Kind, State: v.State, Reason: v.Reason, Revision: v.Revision, QueueCount: v.QueueCount, Waiting: v.Waiting, WaitingInFeishu: t.InFeishu})
+	return cards.Task(cards.TaskView{Status: status, Progress: progress, Token: v.Token, Kind: v.Kind, State: v.State, Reason: v.Reason, Revision: v.Revision, QueueCount: v.QueueCount, Waiting: v.Waiting, WaitingInFeishu: t.InFeishu, Icons: t.Icons})
 }
 
 // Claim is local-only. The Receiver authenticates the operator first; the store
@@ -245,12 +247,19 @@ func taskFullHistory(turns []codexclient.Turn) ([]codexclient.Turn, string, stri
 func taskFingerprint(turn codexclient.Turn) string {
 	// Persist a digest, never tool/request/input bodies. Any public projection
 	// change invalidates old callbacks even when queue/control state is unchanged.
-	var public []codexclient.Item
+	var public []any
 	for _, item := range turn.Items {
 		if item.Type == "agentMessage" && (item.Phase == nil || *item.Phase == "commentary" || *item.Phase == "partial_answer") {
 			public = append(public, item)
-		} else if item.Type == "commandExecution" || item.Type == "mcpToolCall" || item.Type == "dynamicToolCall" || item.Type == "fileChange" {
-			public = append(public, codexclient.Item{Type: item.Type, ID: item.ID, Status: item.Status})
+		} else if item.Type == "agentMessage" || item.Type == "userMessage" {
+			// These messages split adjacent tool groups, even though their
+			// private/final text is not part of the progress presentation.
+			public = append(public, codexclient.Item{Type: item.Type, ID: item.ID, Phase: item.Phase})
+		} else if tool, ok := messagesync.ProgressToolSummary(item); ok {
+			// Fingerprint exactly the visible, safe tool projection. Raw command
+			// arguments and private file diffs never enter this digest input.
+			tool.Details = nil
+			public = append(public, tool)
 		}
 	}
 	encoded, _ := json.Marshal(public)

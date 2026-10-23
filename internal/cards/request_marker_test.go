@@ -70,6 +70,64 @@ func TestWithRequestMarkerSkipsOccupiedMarkdown(t *testing.T) {
 	}
 }
 
+func TestWithRequestMarkerUsesNativeColumnsWithoutChangingVisibleCard(t *testing.T) {
+	const marker = "cabcdefghijklmnopqrs"
+	panel := element{"tag": "collapsible_panel", "element_id": "execution_history", "expanded": false, "elements": []element{{"tag": "markdown", "content": "公开进度"}}}
+	row := element{"tag": "column_set", "columns": []element{
+		{"tag": "column", "width": "weighted", "weight": 1, "elements": []element{panel}},
+		{"tag": "column", "width": "auto", "elements": []element{Button("停止", "stop", "opaque")}},
+	}}
+	for _, topLevel := range []bool{false, true} {
+		body := []element{row}
+		if topLevel {
+			body = append(body, element{"tag": "markdown", "content": "核验中"})
+		}
+		base := render(body)
+		got, marked, err := WithRequestMarker(base, marker)
+		if err != nil || !marked || len(got)-len(base) != MaxRequestMarkerBytes {
+			t.Fatal("native column body could not reserve its delivery marker", marked, err)
+		}
+		var before, after map[string]any
+		if err := json.Unmarshal([]byte(base), &before); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(got), &after); err != nil {
+			t.Fatal(err)
+		}
+		elements := after["body"].(map[string]any)["elements"].([]any)
+		var target map[string]any
+		if topLevel {
+			target = elements[1].(map[string]any)
+		} else {
+			columns := elements[0].(map[string]any)["columns"].([]any)
+			nested := columns[0].(map[string]any)["elements"].([]any)[0].(map[string]any)
+			if nested["element_id"] != "execution_history" {
+				t.Fatal("delivery marker replaced the stable disclosure identity")
+			}
+			target = nested["elements"].([]any)[0].(map[string]any)
+		}
+		if target["element_id"] != marker {
+			t.Fatal("delivery marker did not prefer a top-level slot or follow native containers")
+		}
+		delete(target, "element_id")
+		if !reflect.DeepEqual(before, after) {
+			t.Fatal("marking a nested record changed visible content or callback controls")
+		}
+	}
+}
+
+func TestWithRequestMarkerIgnoresNonNativeContainerFields(t *testing.T) {
+	for _, body := range [][]element{
+		{{"tag": "button", "elements": []element{{"tag": "markdown", "content": "metadata"}}}},
+		{{"tag": "column_set", "elements": []element{{"tag": "markdown", "content": "metadata"}}}},
+		{{"tag": "column_set", "columns": []element{{"tag": "button", "elements": []element{{"tag": "markdown", "content": "metadata"}}}}}},
+	} {
+		if got, marked, err := WithRequestMarker(render(body), "cmarker"); err == nil || marked || got != "" {
+			t.Fatal("arbitrary metadata was treated as visible Markdown")
+		}
+	}
+}
+
 func TestWithRequestMarkerRejectsGlobalDuplicate(t *testing.T) {
 	const marker = "cnested_marker_12345"
 	base := `{"schema":"2.0","body":{"elements":[{"tag":"markdown","content":"top level"},{"tag":"column_set","columns":[{"tag":"column","elements":[{"tag":"markdown","element_id":"cnested_marker_12345","content":"nested"}]}]}]}}`

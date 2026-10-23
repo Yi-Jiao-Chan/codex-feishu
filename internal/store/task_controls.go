@@ -215,7 +215,12 @@ func (s *Store) ClaimTaskControl(ctx context.Context, host, app, chat, message, 
 		return TaskControlClaim{}, ErrSubmissionBusy
 	}
 	c = TaskControlClaim{ThreadID: v.ThreadID, TurnID: v.TurnID, Token: token, Kind: kind, ChatID: chat, MessageID: message, Revision: revision, State: "ready", ExternalID: fmt.Sprintf("task.%s.%d.%s", token, revision, kind)}
-	_, err = tx.ExecContext(ctx, `INSERT INTO task_control_claims(host_id,app_id,thread_id,turn_id,token,revision,kind,chat_id,message_id,external_id,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, host, app, c.ThreadID, c.TurnID, token, revision, kind, chat, message, c.ExternalID, time.Now().UnixMilli())
+	action, err := claimThreadSubmissionActionTx(ctx, tx, scope, kind, c.ExternalID, c.TurnID)
+	if err != nil {
+		return TaskControlClaim{}, err
+	}
+	c.NativeActionID = action.ID
+	_, err = tx.ExecContext(ctx, `INSERT INTO task_control_claims(host_id,app_id,thread_id,turn_id,token,revision,kind,chat_id,message_id,external_id,native_action_id,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, host, app, c.ThreadID, c.TurnID, token, revision, kind, chat, message, c.ExternalID, c.NativeActionID, time.Now().UnixMilli())
 	if err != nil {
 		return TaskControlClaim{}, err
 	}
@@ -227,34 +232,50 @@ func (s *Store) ClaimTaskControl(ctx context.Context, host, app, chat, message, 
 }
 
 func taskCardHasControl(card, kind, token string, revision int64) bool {
+	type cardElement struct {
+		Tag       string
+		Elements  []cardElement
+		Columns   []cardElement
+		Behaviors []struct {
+			Type  string
+			Value struct {
+				Action, Token string
+				Revision      int64
+			}
+		}
+	}
 	var doc struct {
 		Body struct {
-			Elements []struct {
-				Tag       string
-				Behaviors []struct {
-					Type  string
-					Value struct {
-						Action, Token string
-						Revision      int64
-					}
-				}
-			}
+			Elements []cardElement
 		}
 	}
 	if json.Unmarshal([]byte(card), &doc) != nil {
 		return false
 	}
 	count := 0
-	for _, e := range doc.Body.Elements {
-		if e.Tag != "button" {
-			continue
-		}
-		for _, b := range e.Behaviors {
-			if b.Type == "callback" && b.Value.Action == kind && b.Value.Token == token && b.Value.Revision == revision {
-				count++
+	var visit func([]cardElement)
+	visit = func(elements []cardElement) {
+		for _, e := range elements {
+			switch e.Tag {
+			case "button":
+				for _, b := range e.Behaviors {
+					if b.Type == "callback" && b.Value.Action == kind && b.Value.Token == token && b.Value.Revision == revision {
+						count++
+					}
+				}
+			case "column_set":
+				// The title-row stop button is a sibling of the disclosure.
+				// Only traverse native columns, never arbitrary JSON fields or
+				// text pretending to contain an actionable button.
+				for _, column := range e.Columns {
+					if column.Tag == "column" {
+						visit(column.Elements)
+					}
+				}
 			}
 		}
 	}
+	visit(doc.Body.Elements)
 	return count == 1
 }
 

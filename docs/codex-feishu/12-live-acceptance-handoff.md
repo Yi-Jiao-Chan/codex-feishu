@@ -2,6 +2,18 @@
 
 本页用于 M0 之后的候选部署验收，执行契约仍以 [Agent 配置指南](AGENT-SETUP.md) 和 [一期矩阵](11-integration-and-acceptance.md) 为准。它将需要用户查看 App / 飞书的操作合并，不能代替逐项取证。
 
+## 2026-10-23 原生 CoT 当前部署
+
+用户已确认本人私聊原生 CoT 样式并授权正式接入。新活动轮次默认使用 CoT；已有 Card JSON 过程卡继续更新原消息，不替换未知投递或补建终态历史。当前本地 build 为 `196586e6fd88+native-cot-stop-resume-20261023-111711-be04447e`，二进制 SHA-256 `3d107ba93f335d73ed868526183f0531ca94f1fbf2b82519a7585328e0f2f0ff`，schema 31，PID 2974219，systemd active/running/enabled；稳定 CLI 与进程一致。本次停桥一致备份 56 表/175517 行，quick_check 通过，保持 schema 31；首次 30→31 显式迁移及旧数据核验见历史记录。配置、manifest 和共享 daemon 保持。
+
+独立 Review 的四项 CoT 状态/分批问题及两项一次性迁移前置/持久化问题已修复并复核，相关普通/race 与最终全仓业务回归通过；全仓命令仍明确排除已独立复现的原始建群 deadline 基线用例，不计为通过。正式 Gateway/Planner 的本人 DM 合成闭环，以及 CoT 引用机器人原消息的 parent_id 读回通过。原始本人私聊样式有用户确认；随后任务群截图显示了原生停止命令和 CoT 中断，复现额外回执与新输入未恢复。单次截图不提升所有群/话题和手机验收，本轮修复后的真实 UI 仍待确认；初始部署时的正常业务只读聚合未观察到新 CoT，保留其原时点证据。
+
+随后两项 P2（解释器选项值误作脚本名、运行摘要改回初值漏同步）及复审发现的空文本更正代批次边界均已修复，两名独立 SubAgent 最终复核无未闭合发现；修复后全仓业务回归及相关 race 通过。本次未新增真实平台探针，既有客户端 UI pending 保持，见[修复复审记录](../records/task-progress-deployment-2026-10-22.md#2026-10-23-摘要隐私与回滚修复复审)。
+
+当前构建同时省略有效 CoT 停止的额外成功回执与空正文停止结果卡；停止后新普通消息先正常入队，再以持久继续意图恢复同一会话，不要求另发 `/continue`。原生停止图标仍按平台约定发送可见 `/stop`，没有已公开的隐藏回调参数。消息重放、旧输入、附件延迟就绪和重启不补授权；未提交输入仍可离线取消。独立高风险复审最终无未解决发现，全仓与专项 race 通过，详见[停止与继续记录](../records/task-progress-deployment-2026-10-22.md#2026-10-23-停止反馈与新输入继续)。
+
+群原生停止入口默认隐藏时使用对应任务群/话题 `/stop`，继续队列 `/continue`；单聊不路由任务。CoT unknown 无内部事件读回，不自动重发。doctor/status 退出 5，部署前后仅原有 bindings_reconciled / operations_known 两个 required pending，未新增 required fail/pending，`phase1_released=false`。具体边界与逐项证据见[本轮记录](../records/task-progress-deployment-2026-10-22.md#2026-10-23-原生-cot-预览确认与正式链路接入)和[原生契约](../../compat/feishu-native-cot.md)。
+
 ## 当前交接点
 
 2026-10-13 用户开始新版联调后重新核验：旧 `m0-listen` 已退出。已使用下表的候选包、独立私有配置/schema 21 数据库和测试目录安装并启动 `codex-feishu.service`，复用原共享 daemon 0.162.0；没有迁移旧 M0 数据库。实际 plan/apply/install/start、启动后 doctor 与实时 status 已取证。配置、路由标识和用户确认保存在仓库外的本人私有证据目录。
@@ -153,3 +165,41 @@ filepreview 测试和 race 通过，本机 Chromium 已核验桌面/手机尺寸
 用户授权独立 CodeReview 后部署本地，当前运行构建更新为 `b613584f8932+html-interactive-20261021-162439-8850d9d4`，二进制 SHA-256 `775f5a72a4e8bb419ad2edf4a7d379df45f4a1c86dd1c194c1b74a360cd89b58`。自包含报告可运行内嵌脚本和数据，登录外壳继续禁脚本，渲染容器保留来源隔离和受限 CSP。独立审查发现的 fragment 选择器与动态锚点问题已修复，复审无剩余阻断项；[部署记录](../records/feishu-local-file-preview-implementation-2026-10-15.md#2026-10-21-自包含-html-交互预览与本地部署)保存构建、回滚和验证范围。
 
 filepreview/sync race、修复后的合成 Chromium 42 项检查及部署后原链接 22 项检查通过；原报告已生成图表，搜索、排序、展开、动态锚点、源码和既有 Markdown/代码链接正常。实际进程与稳定 CLI 匹配候选，systemd active/enabled，两侧连接和发现基线通过；原配置、口令及 schema 30 保持，一致备份已核验。全仓仍有同一条基线已有建群重试测试超时；`bindings_reconciled`、`operations_known` 原 pending 与 doctor/status 退出 5 保留，无新增 required fail。手机尺寸模拟不替代真实手机或飞书内置浏览器验收，完整 P1 与 `phase1_released=false` 保持。
+
+## 2026-10-22 执行卡布局与工具摘要（本地候选部署）
+
+基于 `196586e` 的本地开发分支 `codex/compact-task-progress`。当前版本恢复根级 `execution_history`：可用停止按钮和状态仅占顶行，下方为全宽“执行中”折叠面板；无可用停止按钮时直接以真实状态作为面板标题，终态默认收起并保留耗时。工具组使用灰色小型 Lucide tool-case 的 `header.title.icon` 前缀，保留独立原生箭头；明细使用同源、增加透明留白的较小前缀，单次调用不折叠。正文、行末 HH:MM、隐私、同卡投递和原 stop/continue 授权链路保留，无图标分栏、负 margin、红色 emoji 或 Markdown 图片标题。用户已通过真实截图确认最新前缀图标效果，正式 renderer 与认可预览的合成布局比对一致；“执行中”是本轮按用户建议修改的文案。具体契约见 [08 卡片](08-cards-and-actions.md)，构建与预览证据见[部署记录](../records/task-progress-deployment-2026-10-22.md)。
+
+| 覆盖 | 当前证据与状态 |
+| --- | --- |
+| 本地候选部署 | verified：`196586e6fd88+task-progress-20261022-231324-ca78188a`，二进制 SHA-256 `dd4f7170d198a2148e391ebc5b021af0b9e089b727f0efa52c11d6e985e6da63`；实际进程与稳定 CLI 匹配，systemd active / running / enabled，两侧连接和发现基线通过；原配置、schema 30、共享 daemon 与既有两个 required pending 保持 |
+| 本地功能回归 | verified：cards 和 sync 全包、app 图标加载与 generation 注入回归通过。覆盖六类图标与原生 fallback、权限/App 作用域/启动时一次加载、根级折叠、面板外停止、完整正文与行末时间、工具组和不可折叠明细、组件预算及唯一 marker。正式 renderer 的合成卡与已认可预览布局一致 |
+| 相关并发检查 | 本轮 cards/sync 的 `Task\|Progress\|Clock\|RequestMarker` 定向 race，以及 app 图标加载、TaskControls 注入与 reconnect 定向 race 通过。`foreign_owner` 子测试因 uid 1001 无法 chown 跳过，归属拒绝逻辑已实现；store 全包 race 的历史超时仍未完成 |
+| 全仓业务测试 | 本轮 `go test -p 1 ./cmd/... ./internal/... ./compat -skip '^TestRuntimeGroupDeadlinePreservesFinalAndWakesWithoutNewInput$'` 通过。完整 app 仍在该已于未修改 `origin/main` 独立复现的基线用例超时，不记为通过 |
+| 桌面及手机卡片展示 | 最新预览的灰色小型标题/明细前缀、全宽正文与行末时间已获真实桌面截图确认。旧负 margin 裁切、齿轮及 Markdown 大图标题方案已弃用；日常卡真实停止、连续更新和手机表现仍 pending |
+| 私聊预览及正式投递 | 前缀预览单次 confirmed，GET 保留 title.icon 与明细图标引用；全 JSON 严格比对仍因样式/默认字段转换为 false。用户随后确认客户端图标效果，现已接入日常卡；正常同步聚合已观察到新外层折叠、“执行中”、六角色配置对应的 custom_icon 及原生工具组箭头。没有再发合成卡或注入输入 |
+| 执行中刷新及终态 | pending：用户展开后更新是否保持展开；同卡停止、队列继续及完成后移除停止按钮的真实客户端表现 |
+
+上述本地证据不替代实际 App / 飞书客户端验收，不提升现有 P1 或发布状态。
+
+## 2026-10-22 最新执行卡预览客户端确认
+
+用户在真实客户端确认最新私聊预览：标题前缀是灰色、小尺寸的 tool-case 图标，展开后的叶子图标更小；执行卡使用全宽布局，公开正文的接收时间显示在行末 `HH:MM`。按本轮建议，运行态外层过程面板标题改为“执行中”，终态继续使用真实状态标题并保留既有耗时规则。该确认只覆盖预览展示；真实停止、连续刷新后的展开状态和移动端表现仍 pending。
+
+本轮测试事实如下：
+
+- `go test -p 1 ./cmd/... ./internal/... ./compat -skip '^TestRuntimeGroupDeadlinePreservesFinalAndWakesWithoutNewInput$'` 全部通过。
+- `go test -race ./internal/app -run 'TaskIcons|TaskIcon' -timeout 120s` 通过；`foreign_owner` 子测试因当前 uid 1001 无法 `chown` 而跳过。
+- 未排除该基线用例的完整 app 测试仍在已复现的 `TestRuntimeGroupDeadlinePreservesFinalAndWakesWithoutNewInput` 超时；该例不记为通过。
+
+最新版本已部署至原本地服务并通过进程、连接、私有 manifest 与原 daemon 的核验，当前 build 见上表；构建后只补交付文档。私有 manifest 契约沿用 [08 卡片手册](08-cards-and-actions.md)，此处不重复展开。`phase1_released=false` 保持不变。
+
+## 2026-10-22 宽度及单行折叠后续反馈
+
+源码已将执行卡 `fill` 改为 `default`，主创建卡与结果摘要从 `compact` 放宽为 `default`，独立目录/Busy 保持原宽度。cards 全包及 creation/sync 相关回归通过；任务创建卡的合成加宽预览已单次发本人私聊 confirmed，GET 保留 default 模式、身份和 marker，全 JSON 严格比对因平台规范化仍 false。客户端宽度与换行 pending，本轮没有部署，当前运行 build 仍以上表为准。
+
+用户同时要求“正在处理”自身作为唯一折叠入口，取消其下重复的“执行中”。原生面板没有独立停止按钮槽；回调式单行折叠可保持正文全宽，但会将展开状态变成群内共享，并增加一次更新等待。已请求用户选择交互取舍，未默认改变原生折叠语义或数据库。详见[本轮记录](../records/task-progress-deployment-2026-10-22.md#2026-10-22-宽度修正与单行折叠交互待选择)。
+
+随后已按用户要求发送三张本人私聊对比卡：原生同排可真实折叠，正文受右列约束；回调布局的展开态和收起态各一张，明确为静态样式、尚未接入整体点击更新。同排本身并非必须回调，回调方案是为同时消除正文缩进。三次发送均 confirmed，GET 身份、marker、宽度与布局结构保留，全 JSON 严格比对仍 false；真实 UI 及最终方案选择 pending。无新图片上传、业务数据库变更或服务部署，详见[对比预览记录](../records/task-progress-deployment-2026-10-22.md#2026-10-22-原生同排与回调布局的对比预览)。
+
+用户继续建议停止紧跟折叠箭头右侧，已单次发送面板左列、停止右列且均 auto 的真实原生折叠预览。该列顺序避免正文左侧缩进，但外部按钮随整个面板列的右边界变化，不能保证展开长正文后仍贴着箭头。GET 保留列顺序、标题、marker 和禁用停止；完整 JSON 严格比对仍 false，客户端两态位置 pending，日常服务未替换。见[右侧停止预览记录](../records/task-progress-deployment-2026-10-22.md#停止按钮改放面板右侧的原生预览)。

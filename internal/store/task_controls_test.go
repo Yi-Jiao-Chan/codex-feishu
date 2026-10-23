@@ -2,12 +2,62 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
 
 	"codex-feishu/internal/cards"
 )
+
+func TestTaskCardHasControlRequiresUniqueButtonInNativeColumns(t *testing.T) {
+	button := map[string]any{
+		"tag": "button",
+		"behaviors": []any{map[string]any{
+			"type": "callback", "value": map[string]any{"action": "stop", "token": "opaque", "revision": 7},
+		}},
+	}
+	columns := func(tag string, elements ...any) map[string]any {
+		return map[string]any{"tag": "column_set", "columns": []any{map[string]any{"tag": tag, "elements": elements}}}
+	}
+	for _, tc := range []struct {
+		name     string
+		elements []any
+		want     bool
+	}{
+		{"legacy top level", []any{button}, true},
+		{"title row", []any{columns("column", button)}, true},
+		{"duplicate across levels", []any{button, columns("column", button)}, false},
+		{"duplicate within column", []any{columns("column", button, button)}, false},
+		{"invalid column tag", []any{columns("markdown", button)}, false},
+		{"non-container elements", []any{map[string]any{"tag": "markdown", "elements": []any{button}}}, false},
+		{"non-container columns", []any{map[string]any{"tag": "markdown", "columns": []any{map[string]any{"tag": "column", "elements": []any{button}}}}}, false},
+		{"callback on container", []any{map[string]any{"tag": "column_set", "behaviors": button["behaviors"]}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, err := json.Marshal(map[string]any{"body": map[string]any{"elements": tc.elements}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			card := string(encoded)
+			if got := taskCardHasControl(card, "stop", "opaque", 7); got != tc.want {
+				t.Fatalf("control accepted=%v, want %v", got, tc.want)
+			}
+			if taskCardHasControl(card, "continue", "opaque", 7) || taskCardHasControl(card, "stop", "other", 7) || taskCardHasControl(card, "stop", "opaque", 6) {
+				t.Fatal("column traversal relaxed the action, token or revision match")
+			}
+		})
+	}
+	for _, state := range []struct{ status, kind string }{{"inProgress", "stop"}, {"interrupted", "continue"}} {
+		card := cards.Task(cards.TaskView{Status: state.status, Kind: state.kind, State: "available", Token: "opaque", Revision: 7, QueueCount: 1, Body: "公开动作"})
+		if !taskCardHasControl(card, state.kind, "opaque", 7) {
+			t.Fatalf("actual %s renderer produced an unclaimable control", state.kind)
+		}
+	}
+	if taskCardHasControl(`{"body":`, "stop", "opaque", 7) {
+		t.Fatal("malformed card authorized a control")
+	}
+}
 
 func taskControlStore(t *testing.T, bound bool) (*Store, string, SubmissionScope) {
 	t.Helper()

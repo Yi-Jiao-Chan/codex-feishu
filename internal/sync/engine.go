@@ -12,6 +12,7 @@ import (
 
 	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/cot"
 	"codex-feishu/internal/store"
 )
 
@@ -24,6 +25,7 @@ type NativeHistory interface {
 // and never publish token deltas directly. Optional image preparation journals
 // resource uploads before the pure renderer stages message delivery.
 type Engine struct {
+	NativeCOT              bool
 	Store                  *store.Store
 	Native                 NativeHistory
 	HostID                 string
@@ -287,6 +289,10 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 		}
 		key := mirrorKey("progress", turn.ID)
 		previousProgress, hadProgress := existing[key]
+		_, previousCOT, parseErr := cot.Parse(previousProgress.Card)
+		if hadProgress && parseErr != nil {
+			return snapshotPlan{}, parseErr
+		}
 		if turn.Status == "inProgress" || hadProgress || turn.Status == "interrupted" && e.ProgressRender != nil {
 			render := func(progress cards.ProgressView) string {
 				return cards.Task(cards.TaskView{Status: turn.Status, Progress: progress})
@@ -304,6 +310,9 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			}
 			for n := range view.Records {
 				record := &view.Records[n]
+				if record.Tools != nil {
+					continue // Tool groups do not have public-message reception clocks.
+				}
 				at := clocks[record.ItemID]
 				if at <= 0 {
 					// This is the first complete snapshot that records a local
@@ -314,7 +323,13 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 				}
 				record.ReceivedAtMS = at
 			}
-			card, err := boundedRenderedProgress(view, markerCardBudget(e.MaxCardBytes), render)
+			var card string
+			var err error
+			if previousCOT || e.NativeCOT && !hadProgress && turn.Status == "inProgress" {
+				card, err = cotDocument(thread, turn, clocks, observedAtMS)
+			} else {
+				card, err = boundedRenderedProgress(view, markerCardBudget(e.MaxCardBytes), render)
+			}
 			if err != nil {
 				return snapshotPlan{}, err
 			}
@@ -322,8 +337,9 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 				docs = append(docs, store.Mirror{Key: key, TurnID: turn.ID, Kind: "progress", Card: card, ProgressObservedAt: clocks, Terminal: turn.Status != "inProgress", Replay: replay, ParentKey: parentKey, ParentMessageID: parentID})
 			}
 		}
-		if turn.Status != "inProgress" && !(turn.Status == "completed" && asyncOnly[turn.ID] && strings.TrimSpace(finalBody(turn)) == "") {
-			body := finalBody(turn)
+		body := finalBody(turn)
+		suppressInterruptedEmptyFallback := turn.Status == "interrupted" && previousCOT && previousProgress.RemoteID != "" && strings.TrimSpace(body) == ""
+		if turn.Status != "inProgress" && !suppressInterruptedEmptyFallback && !(turn.Status == "completed" && asyncOnly[turn.ID] && strings.TrimSpace(body) == "") {
 			if strings.TrimSpace(body) == "" {
 				body = emptyResult(turn.Status)
 			}
@@ -412,8 +428,8 @@ func finalBody(t codexclient.Turn) string {
 	return strings.Join(texts, "\n\n")
 }
 
-// progressView projects public assistant commentary in native item order and
-// counts tool status metadata without retaining tool payloads.
+// progressView projects public commentary and adjacent tool groups in native
+// item order, without retaining tool arguments, paths or output.
 // The complete snapshot replaces the previous projection rather than appending
 // deltas. A legacy terminal's selected final item is not also a process record.
 func progressView(t codexclient.Turn, observedAtMS int64) cards.ProgressView {
@@ -431,14 +447,28 @@ func progressView(t codexclient.Turn, observedAtMS int64) cards.ProgressView {
 			}
 		}
 	}
+	var tools *cards.ProgressRecord
+	flushTools := func() {
+		if tools != nil {
+			v.Records = append(v.Records, *tools)
+			tools = nil
+		}
+	}
 	for n, i := range t.Items {
-		switch i.Type {
-		case "commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange":
-			if i.Status == "inProgress" {
-				v.RunningTools++
-			} else if i.Status == "completed" || i.Status == "failed" || i.Status == "declined" {
-				v.FinishedTools++
+		if labels, ok := progressToolLabels(i); ok {
+			if tools == nil {
+				tools = &cards.ProgressRecord{ItemID: i.ID, Tools: &cards.ProgressTools{}}
 			}
+			before := *tools.Tools
+			addProgressTool(tools.Tools, i, labels)
+			// Preserve the legacy counters: FinishedTools includes every known
+			// terminal state, including failed and declined, not only successes.
+			v.RunningTools += tools.Tools.Running - before.Running
+			v.FinishedTools += tools.Tools.Completed + tools.Tools.Failed + tools.Tools.Declined - before.Completed - before.Failed - before.Declined
+			continue
+		}
+		if i.Type == "agentMessage" || i.Type == "userMessage" {
+			flushTools() // Final replies and private user input are boundaries too.
 		}
 		if i.Type != "agentMessage" || strings.TrimSpace(i.Text) == "" ||
 			(i.Phase != nil && *i.Phase != "commentary" && *i.Phase != "partial_answer") ||
@@ -451,6 +481,7 @@ func progressView(t codexclient.Turn, observedAtMS int64) cards.ProgressView {
 			v.CurrentItemID = i.ID
 		}
 	}
+	flushTools()
 	runes := []rune(v.Body)
 	if len(runes) > 800 {
 		v.Body = string(runes[:800]) + "…（内容已截短）"
@@ -481,8 +512,20 @@ func boundedRenderedProgress(v cards.ProgressView, limit int, render func(cards.
 	if limit == 0 {
 		limit = cards.DefaultMaxCardBytes
 	}
-	// Copy the slice before replacing its final element during truncation.
+	// Copy mutable display state before truncation. Tool metadata may be shared
+	// with the complete projection used again by the next render/reconciliation.
 	v.Records = append([]cards.ProgressRecord(nil), v.Records...)
+	for n := range v.Records {
+		if v.Records[n].Tools != nil {
+			copyTools := *v.Records[n].Tools
+			copyTools.Details = append([]string(nil), copyTools.Details...)
+			copyTools.Items = append([]cards.ProgressTool(nil), copyTools.Items...)
+			for index := range copyTools.Items {
+				copyTools.Items[index].Details = append([]string(nil), copyTools.Items[index].Details...)
+			}
+			v.Records[n].Tools = &copyTools
+		}
+	}
 	if omitted := len(v.Records) - cards.MaxProgressRecords; omitted > 0 {
 		v.Records = v.Records[omitted:]
 		v.OmittedRecords += omitted
@@ -537,7 +580,21 @@ func boundedRenderedProgress(v cards.ProgressView, limit int, render func(cards.
 		return true
 	}
 	if len(card) > limit && len(v.Records) == 1 {
-		if !shorten(v.Records[0].Text, func(s string) { v.Records[0].Text = s }) {
+		if v.Records[0].Tools != nil {
+			// Keep full counters while evicting the oldest retained calls. The
+			// renderer may already hide some for its component budget, so use a
+			// bounded loop rather than assuming monotonic JSON byte sizes.
+			tools := v.Records[0].Tools
+			for len(card) > limit && len(tools.Items) > 0 {
+				tools.Items = tools.Items[1:]
+				tools.OmittedItems++
+				card = render(v)
+			}
+			if len(card) > limit {
+				v.Records = nil
+				v.OmittedRecords++
+			}
+		} else if !shorten(v.Records[0].Text, func(s string) { v.Records[0].Text = s }) {
 			v.Records = nil
 			v.OmittedRecords++
 		}

@@ -80,13 +80,25 @@ func TestVisualizationPreviewReachesBothPhasesBeforeSplitting(t *testing.T) {
 	}
 	defer preview.Close()
 	var body strings.Builder
+	firstVisualization := ""
 	for n := range 12 {
 		path := filepath.Join(root, strings.Repeat("a", n+1)+".html")
 		if err := os.WriteFile(path, []byte("<p>synthetic chart</p>"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		body.WriteString("图表：\n\n" + visualized(path) + "\n\n")
+		if n == 0 {
+			firstVisualization = "图表：\n\n" + visualized(path) + "\n\n"
+		}
 	}
+	firstPreview, err := preview.Rewrite(context.Background(), firstVisualization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The progress card retains complete records inside the outer history panel.
+	// Reserve its actual wire overhead and at least one complete preview link;
+	// the final below still uses the small splitting budget independently.
+	e.MaxCardBytes = len(cards.Task(cards.TaskView{Status: "inProgress", Progress: cards.ProgressView{Body: firstPreview, CurrentItemID: "progress", Records: []cards.ProgressRecord{{ItemID: "progress", Text: firstPreview, ReceivedAtMS: 200}}, ElapsedSeconds: -1}})) + cards.MaxRequestMarkerBytes
 	raw := body.String()
 	turn := codexclient.Turn{ID: "turn", Status: "inProgress", Items: []codexclient.Item{
 		input("user", visualized("/user/example.html")), agent("progress", raw, "partial_answer"),
@@ -100,6 +112,7 @@ func TestVisualizationPreviewReachesBothPhasesBeforeSplitting(t *testing.T) {
 		t.Fatal("partial answer did not receive visualization previews")
 	}
 	turn.Status = "completed"
+	e.MaxCardBytes = 1200
 	turn.Items = append(turn.Items, agent("final", raw, "final_answer"))
 	original := append([]codexclient.Item(nil), turn.Items...)
 	apply(t, e, 201, false, turn)

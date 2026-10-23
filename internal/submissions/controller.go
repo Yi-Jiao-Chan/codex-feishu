@@ -193,8 +193,8 @@ func (c *Controller) Tick(ctx context.Context) error {
 	} else if blocked {
 		return nil // Cards keep the durable unknown state; polling is read-only.
 	}
-	// Explicit stops run before new ordinary inputs. Native queue/add then
-	// preserves the daemon's stopped queue rather than implicitly resuming it.
+	// Controls run before ordinary adds. Receipt-bound continue intentions are
+	// delayed until their fresh input has actually been accepted by queue/add.
 	actions, err := c.Store.SubmissionActions(ctx, c.scope())
 	if err != nil {
 		return &Error{err}
@@ -202,6 +202,9 @@ func (c *Controller) Tick(ctx context.Context) error {
 	initial := map[string]string{}
 	for _, a := range actions {
 		if a.State != "ready" {
+			continue
+		}
+		if _, inputContinue := store.InputContinueSource(a); inputContinue {
 			continue
 		}
 		if initialSteer(a) {
@@ -256,6 +259,17 @@ func (c *Controller) Tick(ctx context.Context) error {
 		}
 		if err = c.reconcile(ctx, snap); err != nil {
 			return &Error{err}
+		}
+	}
+	actions, err = c.Store.SubmissionActions(ctx, c.scope())
+	if err != nil {
+		return &Error{err}
+	}
+	for _, a := range actions {
+		if _, inputContinue := store.InputContinueSource(a); a.State == "ready" && inputContinue {
+			if err = c.processAction(ctx, a.ID); err != nil {
+				return &Error{err}
+			}
 		}
 	}
 	return nil
@@ -429,6 +443,9 @@ func (c *Controller) reconcile(ctx context.Context, snap snapshot) error {
 	unknownAdds := map[string]store.SubmissionAttempt{}
 	unknownActions := map[string]store.SubmissionAttempt{}
 	for _, a := range actions {
+		if _, inputContinue := store.InputContinueSource(a); inputContinue {
+			continue // This control does not hide evidence for its ordinary add.
+		}
 		if a.ReceiptID != "" && (a.State == "ready" || a.State == "running" || a.State == "unknown") {
 			active[a.ReceiptID] = a
 		}
@@ -559,6 +576,17 @@ func (c *Controller) processActionWithInitialQueue(ctx context.Context, actionID
 		op, err := c.Store.SubmissionAction(ctx, c.scope(), actionID)
 		if err != nil || op.State != "ready" {
 			return err
+		}
+		if _, inputContinue := store.InputContinueSource(op); inputContinue {
+			ready, err := c.Store.PrepareInputContinue(ctx, c.scope(), op.ID)
+			if err != nil || !ready {
+				return err
+			}
+			// The confirmed source stop may have frozen its target after ingress.
+			op, err = c.Store.SubmissionAction(ctx, c.scope(), op.ID)
+			if err != nil {
+				return err
+			}
 		}
 		if initialSteer(op) && op.Stage == "restore" && !allowInitialQueue {
 			return nil
