@@ -2,11 +2,11 @@
 
 本页用于 M0 之后的候选部署验收，执行契约仍以 [Agent 配置指南](AGENT-SETUP.md) 和 [一期矩阵](11-integration-and-acceptance.md) 为准。它将需要用户查看 App / 飞书的操作合并，不能代替逐项取证。
 
-## 2026-10-23 卡片邮箱脱敏（已部署并受控重发）
+## 2026-10-23 卡片邮箱分隔符替换（修正版已部署）
 
-本地服务已部署 `0a98f90d932b6f8e34845809a7e0492e2fac010a`。卡片与原生 CoT 的公共文本出口将常见邮箱替换为字面量 `<A>`，保留原生历史，并避免在邮箱或链接内部切分长文本。全仓业务测试及文档检查通过，schema 34 和原配置保持。
+本地服务已部署 `c60a0ee65dac8e41e73eb230d3f9e9ac37f505ee`。卡片与原生 CoT 的公共文本出口只将邮箱中的 `@` 替换为字面量 `<A>`，保留用户名、域名及原生历史，并避免在邮箱或链接内部切分长文本。生成的尖括号不再编码为会在代码中原样显示的 HTML 实体；输入标签仍转义。全仓业务测试及文档检查通过，schema 34 和原配置保持。
 
-用户授权对先前 `230028` 拒绝的最终回复执行一次脱敏重发：原卡两个邮箱被替换，飞书返回 `code=0`，新 attempt 与镜像均为 confirmed；平台读回确认原群和父消息关系。新发送恰为一次，两个旧 rejected attempt 保留，unknown 数量未增加。22:00 CST 核验服务 PID 2017445、active/running，两侧连接正常，仍仅原来的 bindings_reconciled / operations_known 两项 required pending。详见[部署与重发记录](../records/feishu-email-redaction-2026-10-23.md)。本次结论仅覆盖该消息的真实投递；客户端 UI 与完整一期验收仍为 pending，`phase1_released=false`。
+先前 `230028` 拒绝的最终回复经一次授权重发成功后，用户截图指出全邮箱替换与代码中的实体显示不符合要求。修正版已在同一消息完成一次 update confirmed，revision/delivered_revision 均为 3，没有新增 send/reply；两个旧 rejected attempt 和成功重发记录保留，unknown 数量未增加。22:16 CST 平台读回确认两个地址均保留用户名和域名、中间使用真实 `<A>`，没有 `&lt;A&gt;`，原群及父消息关系保持。服务 PID 2107624、active/running，两侧连接正常，仍仅原来的 bindings_reconciled / operations_known 两项 required pending。详见[部署与修正记录](../records/feishu-email-redaction-2026-10-23.md)。客户端 UI 与完整一期验收仍为 pending，`phase1_released=false`。
 
 ## 2026-10-23 飞书输入触发工作树恢复（候选已部署）
 
