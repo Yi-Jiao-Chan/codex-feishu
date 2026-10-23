@@ -366,6 +366,24 @@ func (h *managerHarness) receive(source, text string) store.CreationDraft {
 func (h *managerHarness) action(d store.CreationDraft, kind string, form map[string]any) error {
 	return h.m.Action(context.Background(), d.CreatorID, d.SourceChatID, d.CardID, d.Token, d.Revision, kind, nil, form)
 }
+
+func localCreationForm(form map[string]any) map[string]any {
+	local := make(map[string]any, len(form)+1)
+	for key, value := range form {
+		local[key] = value
+	}
+	local["creation_use_worktree"] = false
+	return local
+}
+
+func (h *managerHarness) submitLocal(d store.CreationDraft) {
+	h.t.Helper()
+	if err := h.action(d, "creation_submit", localCreationForm(nil)); err != nil {
+		h.t.Fatal(err)
+	}
+	h.tick()
+}
+
 func (h *managerHarness) submit(d store.CreationDraft) {
 	h.t.Helper()
 	if err := h.action(d, "creation_submit", nil); err != nil {
@@ -436,7 +454,7 @@ func TestManagerCreationIngressAndLocalCallbacks(t *testing.T) {
 	}
 	before := h.remoteCalls()
 	for i := 0; i < 2; i++ {
-		if err := h.action(d, "creation_submit", nil); err != nil {
+		if err := h.action(d, "creation_submit", localCreationForm(nil)); err != nil {
 			t.Fatal("duplicate callback failed", err)
 		}
 	}
@@ -452,7 +470,7 @@ func TestManagerCreationIngressAndLocalCallbacks(t *testing.T) {
 func TestManagerCreationOrderedFlowAndMirrorSuppression(t *testing.T) {
 	h := newManagerHarness(t)
 	d := h.receive("source", "build the feature")
-	h.submit(d)
+	h.submitLocal(d)
 	if !reflect.DeepEqual(h.order, []string{"group", "root", "native", "add"}) {
 		t.Fatal("creation order/connection changed", h.order)
 	}
@@ -530,7 +548,7 @@ func TestManagerCreationNativeRejectExplicitRetryOnlyNative(t *testing.T) {
 	h := newManagerHarness(t)
 	h.n.startErrors = []error{&codexclient.RPCError{Code: -32602, Message: "PRIVATE-NATIVE-ERROR"}}
 	d := h.receive("source", "PRIVATE-TASK-BODY")
-	h.submit(d)
+	h.submitLocal(d)
 	i := h.intent(d)
 	if i.State != "rejected" || h.g.groups != 1 || h.g.roots != 1 || len(h.n.starts) != 1 || len(h.n.adds) != 0 {
 		t.Fatal("native rejection lost confirmed target")
@@ -563,7 +581,7 @@ func TestManagerCreationInputRejectRetriesOriginalReceipt(t *testing.T) {
 	h := newManagerHarness(t)
 	h.n.addErrors = []error{&codexclient.RPCError{Code: -32602, Message: "PRIVATE-INPUT-ERROR"}}
 	d := h.receive("source", "task")
-	h.submit(d)
+	h.submitLocal(d)
 	i := h.intent(d)
 	if i.State != "rejected" || i.ErrorCode != "input-rejected" || i.ReceiptID == "" {
 		t.Fatal("input rejection did not retain thread/receipt", i.State, i.ErrorCode)
@@ -594,7 +612,7 @@ func TestManagerCreationNativeUnknownExactSourceRecovery(t *testing.T) {
 			h := newManagerHarness(t)
 			h.n.startErrors = []error{&codexclient.UnknownError{Method: "thread/start", Cause: errors.New("PRIVATE-TRANSPORT-ERROR")}}
 			d := h.receive("source", "task")
-			h.submit(d)
+			h.submitLocal(d)
 			if h.intent(d).State != "unknown" || len(h.n.starts) != 1 || len(h.n.adds) != 0 {
 				t.Fatal("ambiguous start was treated as definite result")
 			}
@@ -665,7 +683,7 @@ func TestManagerCreationUnknownInitialInputOnlyReadsEvidence(t *testing.T) {
 			h := newManagerHarness(t)
 			h.n.addErrors = []error{&codexclient.UnknownError{Method: "thread/queue/add", Cause: errors.New("lost")}}
 			d := h.receive("source", "task")
-			h.submit(d)
+			h.submitLocal(d)
 			i := h.intent(d)
 			if i.State != "unknown" || i.ErrorCode != "input-unknown" || len(h.n.adds) != 1 {
 				t.Fatal("input unknown misclassified")
@@ -700,7 +718,7 @@ func TestManagerCreationUnknownInitialInputOnlyReadsEvidence(t *testing.T) {
 func TestManagerCreationEditedFormPersistsFrozenTask(t *testing.T) {
 	h := newManagerHarness(t)
 	d := h.receive("source", "original task")
-	if err := h.action(d, "creation_submit", map[string]any{"creation_body": "edited task", "creation_mode": "group"}); err != nil {
+	if err := h.action(d, "creation_submit", localCreationForm(map[string]any{"creation_body": "edited task", "creation_mode": "group"})); err != nil {
 		t.Fatal(err)
 	}
 	h.tick()
@@ -721,7 +739,7 @@ func TestManagerCreationCardUnknownStartupReadback(t *testing.T) {
 			d := h.receive("source", "task")
 			if step == "root" {
 				h.g.rootErr = &feishu.Unknown{Operation: "send"}
-				h.submit(d)
+				h.submitLocal(d)
 			} else if d.CardID != "" {
 				t.Fatal("lost entry reply was prematurely confirmed")
 			}
@@ -739,7 +757,7 @@ func TestManagerCreationCardUnknownStartupReadback(t *testing.T) {
 				if d.CardID != "om_entry_1" {
 					t.Fatal("exact entry marker not recovered")
 				}
-				h.submit(d)
+				h.submitLocal(d)
 			}
 			h.tick()
 			if h.intent(d).State != "confirmed" || h.g.replies != 1 || h.g.groups != 1 || h.g.roots != 1 || len(h.n.starts) != 1 || len(h.n.adds) != 1 {
@@ -756,7 +774,7 @@ func TestManagerCreationNativeConfirmationSaveFailureRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.submit(d)
+	h.submitLocal(d)
 	a, err := h.s.CreationAttempt(context.Background(), d.ID, "native")
 	if err != nil || a.State != "dispatching" || len(h.n.starts) != 1 || len(h.n.adds) != 0 {
 		t.Fatal("fixture did not interrupt native confirmation persistence", err)
@@ -793,7 +811,7 @@ func TestManagerCreationNativeRecoveryRejectsMismatchedMetadata(t *testing.T) {
 			h.tick()
 			d = h.draft("source")
 			h.n.startErrors = []error{&codexclient.UnknownError{Method: "thread/start", Cause: errors.New("lost")}}
-			h.submit(d)
+			h.submitLocal(d)
 			original := h.n.threads["native-1"]
 			h.n.listed = []codexclient.Thread{original}
 			modified := original
@@ -831,7 +849,7 @@ func TestManagerCreationDiagnosticsOmitPrivateEvidence(t *testing.T) {
 	h := newManagerHarness(t)
 	h.n.startErrors = []error{&codexclient.UnknownError{Method: "thread/start", Cause: errors.New("PRIVATE-RESPONSE")}}
 	d := h.receive("source", "PRIVATE-TASK-BODY")
-	h.submit(d)
+	h.submitLocal(d)
 	h.n.listed = []codexclient.Thread{h.n.threads["native-1"]}
 	h.n.archiveErr = errors.New("PRIVATE-NATIVE-ERROR " + h.root)
 	h.tick()
@@ -848,7 +866,7 @@ func TestManagerCreationDiagnosticsOmitPrivateEvidence(t *testing.T) {
 func TestManagerCreationFollowUpAfterNativeConnectionChange(t *testing.T) {
 	h := newManagerHarness(t)
 	d := h.receive("source", "initial task")
-	h.submit(d)
+	h.submitLocal(d)
 	i := h.intent(d)
 	next := &managerNative{h: h, threads: h.n.threads, queue: h.n.queue}
 	h.m.Native = func() Native { return next }
@@ -870,7 +888,7 @@ func TestManagerCreationNativeRecoveryWaitsForEffectivePolicyProof(t *testing.T)
 	h := newManagerHarness(t)
 	h.n.startErrors = []error{&codexclient.UnknownError{Method: "thread/start", Cause: errors.New("lost policy response")}}
 	d := h.receive("source", "task")
-	h.submit(d)
+	h.submitLocal(d)
 	h.n.listed = []codexclient.Thread{h.n.threads["native-1"]}
 	h.n.creationReadErr = &codexclient.UnknownError{Method: "thread/resume", Cause: errors.New("effective policy missing")}
 	for j := 0; j < 2; j++ {
@@ -894,7 +912,7 @@ func TestManagerCreationRepeatedValidationErrorsKeepDraftEditable(t *testing.T) 
 			d := h.receive("source", "task")
 			for j := 0; j < 2; j++ {
 				previous := d.Revision
-				if err := h.action(d, "creation_submit", map[string]any{"creation_body": ""}); err != nil {
+				if err := h.action(d, "creation_submit", localCreationForm(map[string]any{"creation_body": ""})); err != nil {
 					t.Fatal("current error card could not claim another action", err)
 				}
 				h.tick()
@@ -913,7 +931,7 @@ func TestManagerCreationRepeatedValidationErrorsKeepDraftEditable(t *testing.T) 
 				t.Fatal("corrected directory was not saved")
 			}
 			if finish == "submit" {
-				if err := h.action(d, "creation_submit", map[string]any{"creation_body": "corrected task"}); err != nil {
+				if err := h.action(d, "creation_submit", localCreationForm(map[string]any{"creation_body": "corrected task"})); err != nil {
 					t.Fatal("error card could not accept corrected task text", err)
 				}
 				h.tick()
@@ -944,7 +962,7 @@ func TestManagerCreationInProcessConfirmationSaveFailureRecovery(t *testing.T) {
 			if _, err := h.s.DB.Exec(trigger); err != nil {
 				t.Fatal(err)
 			}
-			h.submit(d)
+			h.submitLocal(d)
 			a, err := h.s.CreationAttempt(context.Background(), d.ID, step)
 			if err != nil || a.State != "dispatching" {
 				t.Fatal("confirmation failure was not left dispatching", err)
@@ -1065,7 +1083,7 @@ func enableManagerTopics(h *managerHarness) {
 
 func (h *managerHarness) submitTopic(d store.CreationDraft) {
 	h.t.Helper()
-	if err := h.action(d, "creation_submit", map[string]any{"creation_mode": "topic", "creation_target": "oc_workgroup"}); err != nil {
+	if err := h.action(d, "creation_submit", localCreationForm(map[string]any{"creation_mode": "topic", "creation_target": "oc_workgroup"})); err != nil {
 		h.t.Fatal(err)
 	}
 	h.tick()
@@ -1185,7 +1203,7 @@ func TestManagerCreationTopicGuardLeavesGroupFlowIndependentOfRootReadback(t *te
 	// ReadCardMessage intentionally returns unavailable, as it did before
 	// topic creation. Ordinary dedicated groups need no new root GET proof.
 	d := h.receive("private-source", "group task")
-	h.submit(d)
+	h.submitLocal(d)
 	if h.intent(d).State != "confirmed" || h.g.getCalls != 0 || h.g.groups != 1 || len(h.n.starts) != 1 || len(h.n.adds) != 1 {
 		t.Fatal("topic root guard imposed a new root-read requirement on groups")
 	}

@@ -59,6 +59,8 @@ func worktreeDraft(t *testing.T, h *managerHarness, source string) store.Creatio
 
 func claimWorktreeTestIntent(t *testing.T, h *managerHarness, d store.CreationDraft, form map[string]any) store.CreationIntent {
 	t.Helper()
+	form = localCreationForm(form)
+	form["creation_use_worktree"] = true
 	if err := h.action(d, "creation_submit", form); err != nil {
 		t.Fatal(err)
 	}
@@ -237,13 +239,13 @@ func TestWorktreeSelectionValidationAndSubdirectory(t *testing.T) {
 func TestWorktreeRejectsNonGitAndSymlinkStorage(t *testing.T) {
 	h := newManagerHarness(t)
 	d := h.receive("non-git-worktree", "/new original task")
-	if err := h.action(d, "creation_worktree", map[string]any{"creation_body": "keep edited task"}); err != nil {
+	if err := h.action(d, "creation_submit", map[string]any{"creation_body": "keep edited task", "creation_use_worktree": true}); err != nil {
 		t.Fatal(err)
 	}
 	h.tick()
 	d = h.draft("non-git-worktree")
-	if d.WorkspaceMode != "local" || d.Body != "keep edited task" || d.ErrorCode != "worktree-repository" || h.g.groups != 0 {
-		t.Fatal("non-Git mode selection lost the draft or created a task")
+	if d.WorkspaceMode != "worktree" || d.Body != "keep edited task" || d.ErrorCode != "worktree-repository" || h.g.groups != 0 {
+		t.Fatal("non-Git worktree submission lost the draft or created a task")
 	}
 	initWorktreeTestRepo(t, h.root)
 	d = worktreeDraft(t, h, "symlink-storage")
@@ -267,45 +269,47 @@ func TestWorktreeRejectsNonGitAndSymlinkStorage(t *testing.T) {
 
 func TestWorktreeAvailabilityBeforeSwitchAndAfterDirectoryChange(t *testing.T) {
 	h := newManagerHarness(t)
-	buttonDisabled := func(card string) bool {
+	workspaceControls := func(card string) (checked, branchDisabled bool) {
 		t.Helper()
 		var parsed any
 		if err := json.Unmarshal([]byte(card), &parsed); err != nil {
 			t.Fatal(err)
 		}
-		var find func(any) (bool, bool)
-		find = func(value any) (bool, bool) {
+		var find func(any)
+		foundChecker, foundBranch := false, false
+		find = func(value any) {
 			switch v := value.(type) {
 			case map[string]any:
-				if v["tag"] == "button" && v["name"] == "creation_worktree" {
-					return v["disabled"] == true, true
+				if v["tag"] == "checker" && v["name"] == "creation_use_worktree" {
+					foundChecker = true
+					checked, _ = v["checked"].(bool)
+				}
+				if v["tag"] == "select_static" && v["name"] == "creation_branch" {
+					foundBranch = true
+					branchDisabled, _ = v["disabled"].(bool)
 				}
 				for _, child := range v {
-					if disabled, ok := find(child); ok {
-						return disabled, true
-					}
+					find(child)
 				}
 			case []any:
 				for _, child := range v {
-					if disabled, ok := find(child); ok {
-						return disabled, true
-					}
+					find(child)
 				}
 			}
-			return false, false
 		}
-		disabled, ok := find(parsed)
-		if !ok {
-			t.Fatal("creation card is missing the workspace mode button")
+		find(parsed)
+		if !foundChecker || !foundBranch {
+			t.Fatal("creation card is missing workspace checker or branch selector")
 		}
-		return disabled
+		return checked, branchDisabled
 	}
 	d := h.receive("preflight-worktree", "/new preserve task while selecting a repository")
 	card := h.g.cards[d.CardID].Content
-	if !buttonDisabled(card) || !strings.Contains(card, creationErrorText("worktree-repository")) {
-		t.Fatal("non-Git directory was offered as a usable worktree before clicking")
+	checked, branchDisabled := workspaceControls(card)
+	if !checked || !branchDisabled || !strings.Contains(card, creationErrorText("worktree-repository")) {
+		t.Fatal("non-Git directory did not show a checked unavailable worktree")
 	}
-	if d.WorkspaceMode != "local" || d.ErrorCode != "" {
+	if d.WorkspaceMode != "worktree" || d.ErrorCode != "" {
 		t.Fatal("display preflight changed the durable draft")
 	}
 	repo := directory(t, h.root, "actual-repository")
@@ -316,7 +320,8 @@ func TestWorktreeAvailabilityBeforeSwitchAndAfterDirectoryChange(t *testing.T) {
 	h.tick()
 	d = h.draft("preflight-worktree")
 	card = h.g.cards[d.CardID].Content
-	if d.Directory != repo || buttonDisabled(card) || strings.Contains(card, creationErrorText("worktree-repository")) {
+	checked, branchDisabled = workspaceControls(card)
+	if d.Directory != repo || !checked || branchDisabled || strings.Contains(card, creationErrorText("worktree-repository")) {
 		t.Fatal("selecting a real repository did not restore worktree mode")
 	}
 	if err := h.action(d, "creation_worktree", map[string]any{"creation_body": "edited task"}); err != nil {
@@ -342,8 +347,8 @@ func TestWorktreeRequiresWholeRepositoryScope(t *testing.T) {
 	}
 	h.tick()
 	d = h.draft("narrow-worktree-scope")
-	if d.WorkspaceMode != "local" || d.ErrorCode != "worktree-scope" {
-		t.Fatal("worktree mode expanded a subdirectory authorization to the entire repository")
+	if d.WorkspaceMode != "worktree" || d.ErrorCode != "worktree-scope" {
+		t.Fatal("failed worktree selection changed the durable mode or bypassed repository scope")
 	}
 	d.WorkspaceMode, d.BaseBranch = "worktree", "refs/heads/main"
 	var plan store.CreationIntent

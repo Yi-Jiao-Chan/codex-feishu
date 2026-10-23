@@ -97,10 +97,10 @@ func TestCreationAttachmentsWaitForCompleteInputAcrossRestart(t *testing.T) {
 			}
 			d := receiveCreationAttachments(t, h)
 			card := h.g.cards[d.CardID].Content
-			if !strings.Contains(card, "1 张图片、1 个文件") || len(gateway.calls) != 0 {
-				t.Fatal("draft lost its attachment summary or downloaded before confirmation")
+			if !strings.Contains(card, "测试") || !strings.Contains(card, "报告") || !strings.Contains(card, "creation_remove_attachment") || len(gateway.calls) != 0 {
+				t.Fatal("draft lost its attachment rows or downloaded before confirmation")
 			}
-			form := map[string]any{"creation_body": "edited task"}
+			form := localCreationForm(map[string]any{"creation_body": "edited task"})
 			if topic {
 				form["creation_mode"], form["creation_target"] = "topic", "oc_work"
 			}
@@ -203,7 +203,7 @@ func TestCreationAttachmentsUnconfirmedDraftsRespectFeatureAndCancellation(t *te
 			switch action {
 			case "disabled":
 				h.m.Config.Attachments.Enabled = false
-				h.submit(d)
+				h.submitLocal(d)
 				if got := h.draft(d.SourceMessageID); got.State != "draft" || got.ErrorCode != "attachments-disabled" || !reflect.DeepEqual(got.Attachments, d.Attachments) {
 					t.Fatal("disabled feature discarded attachments or created a task")
 				}
@@ -227,7 +227,7 @@ func TestCreationAttachmentFailureRetriesSameResourcesAndNativeUnknownDoesNotRes
 	n, worker, gateway := creationAttachmentFixture(t, h)
 	ctx := context.Background()
 	d := receiveCreationAttachments(t, h)
-	h.submit(d)
+	h.submitLocal(d)
 	i := h.intent(d)
 	good := gateway.bodies["img_fixture"]
 	gateway.bodies["img_fixture"] = []byte("not an image")

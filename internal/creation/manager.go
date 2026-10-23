@@ -148,7 +148,7 @@ func (m *Manager) Receive(ctx context.Context, in Inbound) (bool, error) {
 	if contains(m.Config.Creation.WorkgroupChatIDs, in.ChatID) {
 		target = in.ChatID
 	}
-	d := store.CreationDraft{HostID: m.Config.Host.ID, AppID: m.Config.Feishu.AppID, CreatorID: in.UserID, SourceMessageID: in.MessageID, SourceChatID: in.ChatID, SourceChatType: in.ChatType, Body: text, FollowMode: mode, TargetChatID: target, CreatedAtMS: m.now().UnixMilli(), ExpiresAtMS: m.now().Add(m.Config.CreationTTL()).UnixMilli()}
+	d := store.CreationDraft{HostID: m.Config.Host.ID, AppID: m.Config.Feishu.AppID, CreatorID: in.UserID, SourceMessageID: in.MessageID, SourceChatID: in.ChatID, SourceChatType: in.ChatType, Body: text, FollowMode: mode, TargetChatID: target, WorkspaceMode: "worktree", CreatedAtMS: m.now().UnixMilli(), ExpiresAtMS: m.now().Add(m.Config.CreationTTL()).UnixMilli()}
 	d.Attachments = resources
 	if in.Topic {
 		d.SourceRootID, d.SourceThreadID = in.RootID, in.PlatformThreadID
@@ -195,7 +195,7 @@ func (m *Manager) Action(ctx context.Context, user, chat, message, token string,
 		return store.ErrSubmissionStale
 	}
 	switch kind {
-	case "creation_submit", "creation_browse", "creation_back", "creation_pick", "creation_path", "creation_cancel", "creation_retry", "creation_check", "creation_search", "creation_search_next", "creation_search_pick", "creation_panel", "creation_goto", "creation_filter", "creation_lookup", "creation_projects", "creation_local", "creation_worktree":
+	case "creation_submit", "creation_browse", "creation_back", "creation_pick", "creation_path", "creation_cancel", "creation_retry", "creation_check", "creation_search", "creation_search_next", "creation_search_pick", "creation_panel", "creation_goto", "creation_filter", "creation_lookup", "creation_projects", "creation_local", "creation_worktree", "creation_find", "creation_find_next", "creation_remove_attachment":
 	default:
 		return store.ErrSubmissionStale
 	}
@@ -459,8 +459,16 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 	if target, ok := p.Form["creation_target"].(string); ok {
 		d.TargetChatID = target
 	}
-	if branch, ok := p.Form["creation_branch"].(string); ok && d.WorkspaceMode == "worktree" {
-		d.BaseBranch = branch
+	if err := applyWorkspaceForm(&d, p.Form); err != nil {
+		return err
+	}
+	if d.View == "main" {
+		if query, ok := p.Form["creation_query"].(string); ok {
+			if err := validateDirectoryFilter(query); err != nil {
+				return err
+			}
+			d.BrowsePath = strings.TrimSpace(query)
+		}
 	}
 	if utf8.RuneCountInString(d.Body) > MaxTaskRunes {
 		return ErrTaskTooLong
@@ -468,7 +476,7 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 	if d.FollowMode != "group" && d.FollowMode != "topic" || d.FollowMode == "topic" && !m.Config.Creation.TopicsEnabled {
 		return store.ErrSubmissionStale
 	}
-	if (a.Kind == "creation_submit" || a.Kind == "creation_local" || a.Kind == "creation_worktree") && d.View != "main" {
+	if (a.Kind == "creation_submit" || a.Kind == "creation_local" || a.Kind == "creation_worktree" || a.Kind == "creation_find" || a.Kind == "creation_find_next" || a.Kind == "creation_remove_attachment") && d.View != "main" {
 		return ErrSearchSelectionRequired
 	}
 	if d.ExpiresAtMS <= m.now().UnixMilli() {
@@ -490,9 +498,27 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 		if err != nil {
 			return err
 		}
+		if choice.Path != d.Directory {
+			d.BaseBranch = ""
+		}
 		d.Directory, d.ProjectID = choice.Path, choice.ProjectID
 	}
+	if branch, ok := p.Form["creation_branch"].(string); ok && d.WorkspaceMode == "worktree" {
+		d.BaseBranch = branch
+	}
 	switch a.Kind {
+	case "creation_find", "creation_find_next":
+		if err := m.findInlineDirectory(ctx, &d, a.Kind, p.Value); err != nil {
+			return err
+		}
+	case "creation_remove_attachment":
+		index, ok := attachmentIndex(p.Value["index"], len(d.Attachments))
+		if !ok {
+			return store.ErrSubmissionStale
+		}
+		d.ErrorCode = ""
+		_, err = m.Store.RemoveCreationDraftAttachment(ctx, d, a.Revision, index, m.now().UnixMilli())
+		return err
 	case "creation_local":
 		d.WorkspaceMode, d.BaseBranch = "local", ""
 	case "creation_worktree":
@@ -627,6 +653,13 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 		}
 		resetDirectoryView(&d, choice)
 	case "creation_submit":
+		position, err := parseInlineDirectoryPosition(d.BrowseCursor)
+		if err != nil {
+			return err
+		}
+		if position.Query != "" && textValue(p.Form, "creation_directory") == "" {
+			return ErrSearchSelectionRequired
+		}
 		if err := m.validateAttachments(d.Attachments); err != nil {
 			return err
 		}
@@ -658,6 +691,12 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 		}
 		i := store.CreationIntent{OwnerID: m.Config.Access.OwnerOpenID, Name: bindings.WithRobotPrefix(string(name)), Members: append([]string{m.Config.Access.OwnerOpenID, d.CreatorID}, m.Config.Groups.AdditionalMemberOpenIDs...)}
 		if d.WorkspaceMode == "worktree" {
+			if d.BaseBranch == "" {
+				_, d.BaseBranch, err = worktreeBranches(ctx, d.Directory, "", m.Config.Creation.AllowedRoots)
+				if err != nil {
+					return err
+				}
+			}
 			if err := m.planWorktree(ctx, n, d, &i); err != nil {
 				return err
 			}
@@ -1128,8 +1167,10 @@ func (m *Manager) actionBusy(ctx context.Context, a store.CreationAction) (bool,
 	switch a.Kind {
 	case "creation_browse", "creation_panel", "creation_goto":
 		busy = "正在打开目录…"
-	case "creation_lookup", "creation_filter", "creation_search", "creation_search_next", "creation_projects":
+	case "creation_lookup", "creation_filter", "creation_search", "creation_search_next", "creation_projects", "creation_find", "creation_find_next":
 		busy = "正在查找目录…"
+	case "creation_remove_attachment":
+		busy = "正在删除附件…"
 	case "creation_pick", "creation_path", "creation_search_pick":
 		busy = "正在保存目录选择…"
 	case "creation_submit":
@@ -1217,20 +1258,41 @@ func (m *Manager) entryCard(ctx context.Context, n Native, d store.CreationDraft
 		v.ProjectLabel = "已核验项目"
 	}
 	if d.State == "draft" && d.View == "main" {
+		read, cancel := context.WithTimeout(ctx, 3*time.Second)
+		dirs, err := m.selectionDirectories(read, nil, d.CreatorID)
+		if err != nil {
+			cancel()
+			return err
+		}
+		page, err := inlineDirectoryPage(read, dirs, d)
+		cancel()
+		v.SearchQuery, v.InlineDirectories = d.BrowsePath, cardDirectoryPage(page)
+		if position, err := parseInlineDirectoryPosition(d.BrowseCursor); err == nil {
+			v.InlineDirectories.Filter = position.Query
+		}
+		if err != nil {
+			v.Error = creationErrorText(actionError(err))
+		}
 		m.workgroupOptions(ctx, &v)
 		if d.Directory != "" {
 			read, cancel := context.WithTimeout(ctx, 2*time.Second)
 			options, selected, err := worktreeBranches(read, d.Directory, d.BaseBranch, m.Config.Creation.AllowedRoots)
 			cancel()
-			if d.WorkspaceMode == "worktree" {
-				v.Branches, v.BaseBranch = options, selected
-				if err != nil {
-					v.Error = creationErrorText(actionError(err))
-				}
-			} else if err != nil {
+			v.Branches, v.BaseBranch = options, selected
+			if err != nil && d.WorkspaceMode == "worktree" && v.Error != creationErrorText(actionError(err)) {
 				v.WorktreeUnavailable = creationErrorText(actionError(err))
 			}
 		}
+		preview, cancel := context.WithTimeout(ctx, 4*time.Second)
+		for index := range d.Attachments {
+			part, err := m.prepareAttachmentPreview(preview, d, index)
+			if err != nil {
+				cancel()
+				return err
+			}
+			v.Attachments = append(v.Attachments, cards.CreationAttachmentView{Index: part.Index, Kind: part.Kind, Name: part.Name, ImageKey: part.ImageKey, Text: part.Text, State: part.State, Truncated: part.Truncated})
+		}
+		cancel()
 	}
 	if d.View == "directories" && d.State == "draft" {
 		read, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -1306,9 +1368,9 @@ func (m *Manager) workgroupOptions(ctx context.Context, v *cards.CreationView) {
 func creationErrorText(code string) string {
 	switch code {
 	case "worktree-scope":
-		return "新建工作树需要整个 Git 仓库在允许范围内，请选择已授权的仓库目录，或使用当前目录模式。"
+		return "工作树需要整个 Git 仓库在允许范围内，请选择已授权仓库，或取消勾选工作树。"
 	case "worktree-repository":
-		return "此目录不是可用的 Git 仓库，请更改目录，或选择当前目录模式。"
+		return "此目录不是可用的 Git 仓库，请更改目录，或取消勾选工作树。"
 	case "worktree-branch":
 		return "基准分支或对应子目录不可用，请重新选择分支。"
 	case "worktree-storage", "worktree-rejected":
@@ -1318,9 +1380,9 @@ func creationErrorText(code string) string {
 	case "", "input-collecting":
 		return ""
 	case "attachments-disabled":
-		return "附件接收已关闭，请重新启用后创建；任务和附件仍保留在草稿中。"
+		return "附件接收已关闭，请删除附件或重新启用后创建；任务仍保留在草稿中。"
 	case "attachments-limit":
-		return "附件数量超过当前限额，请调整限额或减少附件后重新发起 /new。"
+		return "附件数量超过当前限额，请删除部分附件或调整限额后创建。"
 	case "input-attachments":
 		return "首条任务的附件未收齐，尚未提交 Codex。请检查附件和存储后点击继续创建；会沿用原会话。"
 	case "task-length":
@@ -1328,13 +1390,13 @@ func creationErrorText(code string) string {
 	case "directory", "directory-scope":
 		return "目录不可用或不在允许范围内，请重新选择目录。"
 	case "directory-selection":
-		return "请先选用目录，或返回创建卡后再创建。"
+		return "请先选择工作目录，再创建任务。"
 	case "feedback":
 		return "操作反馈未能更新，任务与原目录已保留，请重新操作。"
 	case "directory-limit":
 		return "此目录条目较多，请输入更具体的绝对路径。"
 	case "directory-read":
-		return "目录读取较慢，任务与原目录已保留，请重试或逐层浏览。"
+		return "目录读取较慢，任务与原目录已保留，请缩小范围或输入完整路径。"
 	case "project":
 		return "目录的项目归属已变更，请重新选择目录。"
 	case "target-membership":

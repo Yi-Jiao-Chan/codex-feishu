@@ -116,7 +116,7 @@ func TestBrowseFirstOptionLookupAndLargeLayer(t *testing.T) {
 	if d.BrowsePath != h.root || d.Directory != h.root || d.Body != "keep failed edits" || d.ErrorCode != "directory-scope" {
 		t.Fatal("failed lookup erased task or location")
 	}
-	if err := h.action(d, "creation_submit", nil); err != nil {
+	if err := h.action(d, "creation_submit", localCreationForm(nil)); err != nil {
 		t.Fatal(err)
 	}
 	h.tick()
@@ -234,13 +234,13 @@ func TestCreationNoopOrStaleActionRestoresFinalViewAfterBusy(t *testing.T) {
 	if d.Revision != 2 || d.CardRevision != d.Revision || strings.Contains(h.g.cards[d.CardID].Content, "正在打开目录") {
 		t.Fatal("stale local action left a permanently disabled busy card")
 	}
-	h.submit(d)
+	h.submitLocal(d)
 	d = h.draft(d.SourceMessageID)
 	if d.State != "created" {
 		t.Fatal("fixture failed to create")
 	}
 	previous := d.Revision
-	if err := h.action(d, "creation_submit", nil); err != nil {
+	if err := h.action(d, "creation_submit", localCreationForm(nil)); err != nil {
 		t.Fatal(err)
 	}
 	h.tick()
@@ -261,7 +261,7 @@ func TestDirectoryUIProceedsWhileNativeCreationIsInFlight(t *testing.T) {
 	h := newManagerHarness(t)
 	creating := h.receive("slow-native", "/new task")
 	browsing := h.receive("independent-directory", "/new another task")
-	if err := h.action(creating, "creation_submit", nil); err != nil {
+	if err := h.action(creating, "creation_submit", localCreationForm(nil)); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.m.tickUI(context.Background()); err != nil {

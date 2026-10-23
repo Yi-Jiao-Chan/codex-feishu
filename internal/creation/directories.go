@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"codex-feishu/internal/codexclient"
@@ -302,6 +303,98 @@ func (s DirectoryService) Search(ctx context.Context, query, after string, limit
 	}
 	page.Choices, page.Next, page.Total, page.Offset = directoryChoicesPage(unique, after, limit)
 	return page, ctx.Err()
+}
+
+// SearchRecursive matches visible directory names at root and up to four child
+// levels. Physical paths must remain inside both root and the configured scope.
+// The whole scan shares one entry budget, including files, and a three-second
+// deadline. Errors never return a partial result set or an incomplete total.
+func (s DirectoryService) SearchRecursive(ctx context.Context, root, query, after string, limit int) (DirectoryPage, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	page := DirectoryPage{Choices: []DirectoryChoice{}}
+	if err := ctx.Err(); err != nil {
+		return page, err
+	}
+	if !validDirectoryCursor(after) {
+		return page, ErrDirectoryCursor
+	}
+	if strings.IndexFunc(query, unicode.IsControl) >= 0 {
+		return page, ErrDirectoryUnavailable
+	}
+	needle := strings.ToLower(strings.TrimSpace(query))
+	base, err := s.Browse(ctx, root)
+	if err != nil {
+		return page, err
+	}
+	page.Path, page.ReadOnly = base.Path, base.ReadOnly
+	if parent, err := s.Browse(ctx, filepath.Dir(base.Path)); err == nil && parent.Path != base.Path {
+		page.Parent = parent.Path
+	}
+	unique := map[string]DirectoryChoice{}
+	if strings.Contains(strings.ToLower(filepath.Base(filepath.Clean(root))), needle) {
+		unique[base.Path] = base
+	}
+	type directoryDepth struct {
+		path  string
+		depth int
+	}
+	queue := []directoryDepth{{path: base.Path}}
+	seen := map[string]bool{base.Path: true}
+	remaining := maxDirectoryCandidates
+	// Breadth first discovery visits every physical directory at its shallowest
+	// visible depth, even when a symlink provides a shorter route to it.
+	for next := 0; next < len(queue); next++ {
+		if err := ctx.Err(); err != nil {
+			return page, err
+		}
+		current := queue[next]
+		if current.depth == 4 {
+			continue
+		}
+		f, err := os.Open(current.path)
+		if err != nil {
+			return page, ErrDirectoryUnavailable
+		}
+		entries, readErr := f.ReadDir(remaining + 1)
+		f.Close()
+		if err := ctx.Err(); err != nil {
+			return page, err
+		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return page, ErrDirectoryUnavailable
+		}
+		if len(entries) > remaining {
+			return page, ErrDirectoryLimit
+		}
+		remaining -= len(entries)
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return page, err
+			}
+			if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+				continue
+			}
+			choice, err := s.Browse(ctx, filepath.Join(current.path, entry.Name()))
+			if err != nil || !rules.Inside(base.Path, choice.Path) {
+				continue
+			}
+			// Match before deduplication: an alias can have a different visible
+			// name while still identifying an already discovered physical cwd.
+			if strings.Contains(strings.ToLower(entry.Name()), needle) {
+				unique[choice.Path] = choice
+			}
+			if !seen[choice.Path] {
+				seen[choice.Path] = true
+				queue = append(queue, directoryDepth{path: choice.Path, depth: current.depth + 1})
+			}
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return page, err
+	}
+	page.Choices, page.Next, page.Total, page.Offset = directoryChoicesPage(unique, after, limit)
+	return page, nil
 }
 
 func directoryChildren(ctx context.Context, path string) ([]string, error) {
