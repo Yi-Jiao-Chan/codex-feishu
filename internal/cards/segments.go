@@ -74,6 +74,8 @@ type messageBoundary struct {
 
 func messageBoundaries(body string) []messageBoundary {
 	points := []messageBoundary{{}}
+	emails := publicEmail.FindAllStringIndex(body, -1)
+	email := 0
 	var fence *messageFence
 	encoded := 0
 	for start := 0; start < len(body); {
@@ -101,6 +103,14 @@ func messageBoundaries(body string) []messageBoundary {
 			for pos, r := range line {
 				encoded += markdownJSONRuneBytes(r)
 				offset := start + pos + utf8.RuneLen(r)
+				for email < len(emails) && offset >= emails[email][1] {
+					email++
+				}
+				// Keep the whole address in one display segment so Safe can
+				// mask it, while Raw still reconstructs the original input.
+				if email < len(emails) && offset > emails[email][0] && offset < emails[email][1] {
+					continue
+				}
 				// Reopening a block puts a mid-line continuation at column
 				// zero. Do not make a code suffix look like a closing fence.
 				if offset < end && fence != nil && closesMessageFence(line[offset-start:], fence) {

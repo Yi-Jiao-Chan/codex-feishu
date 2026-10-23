@@ -22,8 +22,10 @@ func renderWidth(body []element, width string) string {
 	return string(b)
 }
 
-// Escape mention XML from content. Only explicit policies may create mentions.
+// Safe masks public email addresses and escapes native tags. Only explicit
+// policies may create mentions; the email placeholder remains literal text.
 func Safe(s string) string {
+	s = redactEmails(s)
 	return strings.ReplaceAll(strings.ReplaceAll(s, "<", "&lt;"), ">", "&gt;")
 }
 func footer(s string) element {
