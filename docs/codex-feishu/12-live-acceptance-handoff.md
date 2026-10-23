@@ -2,6 +2,12 @@
 
 本页用于 M0 之后的候选部署验收，执行契约仍以 [Agent 配置指南](AGENT-SETUP.md) 和 [一期矩阵](11-integration-and-acceptance.md) 为准。它将需要用户查看 App / 飞书的操作合并，不能代替逐项取证。
 
+## 2026-10-23 卡片邮箱脱敏（已部署并受控重发）
+
+本地服务已部署 `0a98f90d932b6f8e34845809a7e0492e2fac010a`。卡片与原生 CoT 的公共文本出口将常见邮箱替换为字面量 `<A>`，保留原生历史，并避免在邮箱或链接内部切分长文本。全仓业务测试及文档检查通过，schema 34 和原配置保持。
+
+用户授权对先前 `230028` 拒绝的最终回复执行一次脱敏重发：原卡两个邮箱被替换，飞书返回 `code=0`，新 attempt 与镜像均为 confirmed；平台读回确认原群和父消息关系。新发送恰为一次，两个旧 rejected attempt 保留，unknown 数量未增加。22:00 CST 核验服务 PID 2017445、active/running，两侧连接正常，仍仅原来的 bindings_reconciled / operations_known 两项 required pending。详见[部署与重发记录](../records/feishu-email-redaction-2026-10-23.md)。本次结论仅覆盖该消息的真实投递；客户端 UI 与完整一期验收仍为 pending，`phase1_released=false`。
+
 ## 2026-10-23 飞书输入触发工作树恢复（候选已部署）
 
 托管工作树被回收后，普通飞书消息先持久接收，再从原路径的 Codex 快照恢复，在原 cwd 附着同一线程并提交原收据。已经卡住且确认从未提交的普通消息也可恢复，进度或阻塞更新原消息的回复卡。schema 33→34 新增身份、输入授权和恢复日志，保留会话设置与既有收据；unknown 先核验，取消不重发，原创建 birth 不改写。

@@ -8,6 +8,7 @@
 
 | 文档 | 日期 / 版本 |
 | --- | --- |
+| [飞书卡片邮箱脱敏与受控重发](feishu-email-redaction-2026-10-23.md) | 2026-10-23 |
 | [飞书输入触发原工作树快照恢复](feishu-worktree-auto-restore-2026-10-23.md) | 2026-10-23 |
 | [托管工作树归属登记、清理竞态与存量修复](managed-worktree-ownership-2026-10-23.md) | 2026-10-23 |
 | [Goal 续跑同步与工作树生命周期修复](goal-sync-and-worktree-lifecycle-2026-10-23.md) | 2026-10-23 |
