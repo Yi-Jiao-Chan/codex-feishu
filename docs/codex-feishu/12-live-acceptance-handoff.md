@@ -4,9 +4,9 @@
 
 ## 2026-10-26 原生 CoT 短标题与工具详情（候选已部署）
 
-本地服务已更新为 `dda578099397b0717defb0c875624278c943282f`，基于 `main` 的 `d8657aa`，保留单用户任务群免 @ 输入。新轮次使用短标题和逐工具安全详情，已有版本 1 的活动轮次保持原格式，已完成 CoT 不重写。
+本地服务已更新为 `41b0b92b39bd423ed096d0d3d33e7e5bcec683b6`，基于 `main` 的 `d8657aa`，保留单用户任务群免 @ 输入。新轮次使用短标题，逐工具展开显示实际命令/参数和输出/diff 的脱敏片段，移除成功状态、零退出码与耗时的重复正文。已有版本 1 的活动轮次保持原格式，已完成 CoT 不重写。
 
-整合后全仓测试及文档检查通过。停桥一致备份核验通过，schema 34 无迁移，原配置和共享 daemon 保持；PID 3139060，active/running/enabled，进程、CLI、管理通道的版本摘要一致，两侧连接正常，unknown/dispatching 聚合计数未增加。doctor/status 仍为两项历史 required pending；恢复绑定由 66/110 变为 65/110，差异尚未定位，整体恢复不能记为通过。
+修正后全仓测试、相关 race、独立审查及文档检查通过。停桥一致备份核验通过，schema 34 无迁移，原配置和共享 daemon 保持；PID 3583274，active/running/enabled，进程、CLI、管理通道的版本摘要一致，两侧连接正常，unknown/dispatching 聚合计数未增加。本次切换前后恢复绑定均为 66/111；doctor/status 仍为两项历史 required pending，整体恢复不能记为通过。
 
 本轮未发送测试输入或预览，新版桌面/手机、群/话题的展开与失败样式仍为 pending，`phase1_released=false` 保持。身份、备份及完整边界见[实施与部署记录](../records/cot-tool-details-2026-10-26.md)。
 

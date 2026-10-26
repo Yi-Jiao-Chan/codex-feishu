@@ -70,4 +70,14 @@ python3 scripts/check_docs.py
 git diff --check
 ```
 
-真实客户端展开效果仍为 pending；截图仅证明首版内容不足，不作为修正版 UI 验收证据。本次修正尚待下述部署记录确认运行身份。
+真实客户端展开效果仍为 pending；截图仅证明首版内容不足，不作为修正版 UI 验收证据。
+
+### 修正后的本地候选部署
+
+已从干净源码 `41b0b92b39bd423ed096d0d3d33e7e5bcec683b6` 构建并替换原本地服务，二进制 SHA-256 为 `ef51e08ca85186ed2005e0649f3a6065a6bbf633b330eda799b56eb44bbc2545`。延续此前候选构建参数并继承 Go 缓存；后续提交仅补部署记录与集中清单。
+
+变更前持久记录操作意图，停桥后保存包含已提交 WAL 的一致数据库副本。schema 34、62 张业务表、182213 行，源库与副本逐表行数一致，quick_check / foreign_key_check 通过。复用原 service 执行 install / start，并原子更新稳定 CLI；没有数据库迁移，配置摘要及共享 daemon 发现结果保持。
+
+运行 PID 3583274，active/running/enabled，NRestarts=0；进程、稳定 CLI、管理通道的源码身份及二进制摘要一致。两侧连接正常，发现基线完成，切换前后恢复绑定均为 66/111，unknown/dispatching 聚合计数一致。doctor/status 仍退出 5，仅有此前的 bindings_reconciled / operations_known 两项 required pending，不记为整体健康通过。
+
+本轮没有发送测试输入或创建预览资源；真实桌面/手机、群/话题的展开与失败样式仍为 pending，`phase1_released=false` 保持。部署后文档检查通过，覆盖 102 个文件、1184 个本地链接。
