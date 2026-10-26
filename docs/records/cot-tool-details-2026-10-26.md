@@ -81,3 +81,7 @@ git diff --check
 运行 PID 3583274，active/running/enabled，NRestarts=0；进程、稳定 CLI、管理通道的源码身份及二进制摘要一致。两侧连接正常，发现基线完成，切换前后恢复绑定均为 66/111，unknown/dispatching 聚合计数一致。doctor/status 仍退出 5，仅有此前的 bindings_reconciled / operations_known 两项 required pending，不记为整体健康通过。
 
 本轮没有发送测试输入或创建预览资源；真实桌面/手机、群/话题的展开与失败样式仍为 pending，`phase1_released=false` 保持。部署后文档检查通过，覆盖 102 个文件、1184 个本地链接。
+
+### 用户确认
+
+部署后用户确认本轮工具详情效果没有问题，并授权合入 main。本次确认覆盖当前候选版本的使用体验，不扩展为未逐项取证的全部客户端、群/话题或失败样式通过；两项历史对账 pending 和 `phase1_released=false` 保持。仅补充本确认记录与集中清单，沿用已通过的代码测试及独立审查，文档检查重新通过。

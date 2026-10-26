@@ -8,7 +8,7 @@
 
 修正后全仓测试、相关 race、独立审查及文档检查通过。停桥一致备份核验通过，schema 34 无迁移，原配置和共享 daemon 保持；PID 3583274，active/running/enabled，进程、CLI、管理通道的版本摘要一致，两侧连接正常，unknown/dispatching 聚合计数未增加。本次切换前后恢复绑定均为 66/111；doctor/status 仍为两项历史 required pending，整体恢复不能记为通过。
 
-本轮未发送测试输入或预览，新版桌面/手机、群/话题的展开与失败样式仍为 pending，`phase1_released=false` 保持。身份、备份及完整边界见[实施与部署记录](../records/cot-tool-details-2026-10-26.md)。
+部署后用户确认本轮工具详情效果没有问题，并授权合入 main。该确认覆盖本轮使用体验；未经逐项取证的桌面/手机、群/话题和失败样式仍为 pending，两项历史对账 pending 及 `phase1_released=false` 保持。身份、备份及完整边界见[实施与部署记录](../records/cot-tool-details-2026-10-26.md)。
 
 ## 2026-10-26 单用户任务群免 @ 输入（候选已部署）
 
