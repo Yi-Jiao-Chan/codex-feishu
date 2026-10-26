@@ -6,7 +6,7 @@
 - 模块：[01 原生适配](../codex-feishu/01-codex-client.md)、[02 存储](../codex-feishu/02-store-and-recovery.md)、[05 同步](../codex-feishu/05-message-sync.md)、[08 展示](../codex-feishu/08-cards-and-actions.md)。
 - 依据：[内容质量调研](../research/feishu-cot-content-quality-2026-10-26.md)、[飞书原生 CoT 契约](../../compat/feishu-native-cot.md)。
 
-## 实现
+## 首次实现
 
 用户确认后，第一阶段以及第二阶段中已有结构化来源的详情已实现。新 `codex_feishu_cot=2` 文档把工具身份、短标题、详情、结果摘要、退出码与耗时分别保存；工具标题最多 32 个 Unicode 字符，详情最多 6 条、每条最多 160 字符。复合命令按真实动作种类概括，未知命令采用中性名称；原命令摘要与旧卡片的动作版本计算保持原样。
 
@@ -52,3 +52,22 @@ SubAgent 首轮审查发现 1 项 P2：已有 native 读取分类时，复合命
 运行 PID 3139060，systemd active/running/enabled，NRestarts=0；进程、稳定 CLI 和管理通道的 commit/摘要一致。Codex、飞书连接正常，发现基线完成，原配置摘要及共享 daemon 发现结果保持。doctor/status 仍退出 5，仅有原先的 bindings_reconciled / operations_known 两项 required pending；各类 unknown/dispatching 聚合计数未增加。恢复绑定从切换前 66/110 变为 65/110，复核仍为 65，差异尚未定位，不能记为整体健康通过。
 
 本轮没有创建测试资源或发送测试输入。新展示用于新轮次，已有活动轮次继续原格式；真实客户端验收与 `phase1_released=false` 保持。
+
+## 2026-10-26 工具实际内容修正
+
+用户截图表明，首版展开内容仍主要是“已完成 / 退出码 0 / 耗时 0 毫秒”，无法判断执行了什么、返回了什么。现在 V2 展开结果提供实际命令或工具参数，以及命令输出、MCP/动态工具文本结果或文件 diff 的脱敏片段；成功状态、零退出码与耗时不再重复写入可见正文，结构化执行事实仍保留。已知命令确实返回空输出时说明“命令未返回输出”，缺失结果不冒充空结果。`{}`、`[]`、`null`、`false` 和 `0` 等实际输出保持可见。
+
+新增[文本投影](../../internal/sync/cot_tool_preview.go)只接收原生已观测到的工具数据，不额外读取文件或执行命令。MCP 结果按工具类型解码，避免其他 item 的同名 `result` 字段破坏历史读取；非文本媒体、资源载荷和隐藏推理不进入预览。先按结构化字段或常见凭据格式脱敏，再裁剪显示副本；支持常见认证头、URL 凭据、带转义/多行的字符串、嵌套 JSON、YAML 凭据块。此过滤为常见凭据防护，不宣称识别任意无标记秘密。
+
+输入和输出分别最多 1200 / 2400 个 Unicode 字符，保留首尾并明确说明截断；超过 128 KiB 的单段源内容直接省略。渲染再按真实双重 JSON 的 4096 字节预算分配输入与输出空间，保持代码围栏闭合。继续使用同一 RESULT 身份，后到输出只更正原调用。V1 展示、终态消息不可变规则、ACK/重启机制及 SQL schema 保持。
+
+独立审查针对凭据脱敏、嵌套 JSON、非文本载荷、事件预算与重启更正进行了两轮检查。修复发现的边界后复审无待修复项；400 组确定性随机渲染输入也通过事件长度、围栏和调用身份断言。主实现补充实际空 JSON/标量输出保留回归后，以下检查全部通过：
+
+```sh
+go test ./cmd/... ./internal/... ./compat
+go test -race ./internal/cot ./internal/codexclient ./internal/sync -run '^(TestPlanner|TestCOT|TestCommand|TestNativeTool)' -count=1
+python3 scripts/check_docs.py
+git diff --check
+```
+
+真实客户端展开效果仍为 pending；截图仅证明首版内容不足，不作为修正版 UI 验收证据。本次修正尚待下述部署记录确认运行身份。

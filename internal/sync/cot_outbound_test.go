@@ -218,15 +218,17 @@ func (f *cotOutboundFixture) drain(t *testing.T) {
 func TestCOTOutboundToolDetailsSurvivePersistenceAndRestart(t *testing.T) {
 	f := newCOTOutboundFixture(t, false, "synthetic progress")
 	f.turn.Items[3] = codexclient.Item{
-		ID: "tool", Type: "commandExecution", Status: "inProgress", Command: "cat PRIVATE_ARGUMENT",
+		ID: "tool", Type: "commandExecution", Status: "inProgress", Command: "cat /project/first.go /project/second.go --token PRIVATE_ARGUMENT", CWD: "/project",
 		CommandActions: []codexclient.CommandAction{{Type: "read", Path: "/PRIVATE_DIRECTORY/first.go"}, {Type: "read", Path: "/PRIVATE_DIRECTORY/second.go"}},
 		Text:           "PRIVATE_OUTPUT",
 	}
-	f.turn.Items = append(f.turn.Items, codexclient.Item{ID: "failed-tool", Type: "commandExecution", Status: "inProgress", Command: "go test ./... -run PRIVATE_PATTERN"})
+	f.turn.Items = append(f.turn.Items, codexclient.Item{ID: "failed-tool", Type: "commandExecution", Status: "inProgress", Command: "go test ./... -run SyntheticCase"})
 	apply(t, f.e, 201, false, f.turn)
 	f.drain(t)
 	f.recover(t)
 	zero, failure, elapsed := 0, 2, int64(25)
+	output, failedOutput := "first.go: synthetic source\nsecond.go: synthetic source\naccess_token=PRIVATE_OUTPUT", "FAIL SyntheticCase: expected 2, got 3"
+	f.turn.Items[3].AggregatedOutput, f.turn.Items[4].AggregatedOutput = &output, &failedOutput
 	f.turn.Items[3].ExitCode, f.turn.Items[3].DurationMS = &zero, &elapsed
 	f.turn.Items[4].Status, f.turn.Items[4].ExitCode = "failed", &failure
 	f.terminal(t)
@@ -263,10 +265,10 @@ func TestCOTOutboundToolDetailsSurvivePersistenceAndRestart(t *testing.T) {
 			t.Fatal("normal detail contained legacy diagnostic boilerplate")
 		}
 		if result["exitCode"] == float64(0) {
-			if result["isError"] != false || result["durationMs"] != float64(25) || !strings.Contains(body, "first.go") || !strings.Contains(body, "second.go") {
+			if result["isError"] != false || result["durationMs"] != float64(25) || !strings.Contains(body, "cat first.go second.go") || !strings.Contains(body, "first.go: synthetic source") || !strings.Contains(body, "second.go: synthetic source") {
 				t.Fatal("completed tool lost safe file details or native execution facts")
 			}
-		} else if result["exitCode"] != float64(2) || result["isError"] != true || !strings.Contains(body, "执行失败") {
+		} else if result["exitCode"] != float64(2) || result["isError"] != true || !strings.Contains(body, "执行失败") || !strings.Contains(body, failedOutput) {
 			t.Fatal("failed tool result was misrepresented")
 		}
 	}

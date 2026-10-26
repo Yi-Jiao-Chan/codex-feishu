@@ -29,7 +29,7 @@ func TestCOTProjectionContainsOnlyPublicMessagesAndSafeToolMetadata(t *testing.T
 		agent("comment", "公开进度", "commentary"),
 		{ID: "reasoning", Type: "reasoning", Text: "PRIVATE_REASONING"},
 		{ID: "command", Type: "commandExecution", Status: "completed", Command: "go test ./... -secret PRIVATE_ARGUMENT", Text: "PRIVATE_OUTPUT", CWD: "/PRIVATE_CWD"},
-		{ID: "file", Type: "fileChange", Status: "failed", Changes: []codexclient.FileChange{{Path: "/PRIVATE_DIRECTORY/fixture.go", Kind: json.RawMessage(`{"type":"update"}`), Diff: "PRIVATE_DIFF"}}},
+		{ID: "file", Type: "fileChange", Status: "failed", Changes: []codexclient.FileChange{{Path: "/PRIVATE_DIRECTORY/fixture.go", Kind: json.RawMessage(`{"type":"update"}`), Diff: "@@\n+password=PRIVATE_DIFF"}}},
 		agent("partial", "公开部分回复", "partial_answer"),
 		agent("final", "PRIVATE_FINAL_IN_SEPARATE_CHANNEL", "final_answer"),
 		{ID: "image", Type: "imageGeneration", Status: "completed", Text: "PRIVATE_IMAGE_PAYLOAD"},

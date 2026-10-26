@@ -8,6 +8,7 @@ import (
 
 	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/cot"
 )
 
 func TestCommandPurposesDescribeCommonOperationsWithoutArguments(t *testing.T) {
@@ -104,7 +105,7 @@ func TestCommandPurposeShellSubsetHandlesWrappersAndKeepsQuotedTextOpaque(t *tes
 	}
 }
 
-func TestCommandSummaryInterpreterOptionsKeepPrivateArgumentsOutOfPublicProjections(t *testing.T) {
+func TestCommandSummaryInterpreterOptionsKeepArgumentsOutOfHeadingsAndLegacyProjections(t *testing.T) {
 	for _, tc := range []struct{ command, want string }{
 		{`node --title PRIVATE_TOKEN fixture.js`, "运行 Node 脚本"},
 		{`python3 -X PRIVATE_TOKEN fixture.py`, "运行 Python 脚本"},
@@ -167,11 +168,22 @@ func TestCommandSummaryInterpreterOptionsKeepPrivateArgumentsOutOfPublicProjecti
 			if len(doc.Items) != 1 || doc.Items[0].Title != tc.want {
 				t.Fatal("COT changed the safe interpreter summary")
 			}
+			// V2 separately permits redacted execution excerpts. Arbitrary
+			// operands must still never become a heading or legacy card field.
+			doc.Items[0].InputPreview = ""
+			metadata, err := cot.Encode(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacy, err := cotDocumentVersion("thread", turn, nil, 200000, cot.LegacyVersion)
+			if err != nil {
+				t.Fatal(err)
+			}
 			card := cards.Task(cards.TaskView{Status: "inProgress", Progress: progressView(turn, 200000)})
 			if !strings.Contains(card, tc.want) {
 				t.Fatal("task card omitted the safe interpreter summary")
 			}
-			for _, public := range []string{string(encoded), raw, card} {
+			for _, public := range []string{string(encoded), metadata, legacy, card} {
 				if strings.Contains(public, "PRIVATE_TOKEN") {
 					t.Fatal("interpreter option value reached a public projection")
 				}

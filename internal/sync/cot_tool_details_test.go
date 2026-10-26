@@ -47,6 +47,9 @@ func TestCOTToolTitlesSeparateCompositeActionsAndSafeDetails(t *testing.T) {
 			if public.Title != tc.want || public.ToolName != "commandExecution" || !reflect.DeepEqual(public.Details, tc.details) {
 				t.Fatalf("unexpected projection: %+v", public)
 			}
+			// The heading/details classifier remains metadata-only. Execution
+			// excerpts are covered independently by the preview regressions.
+			public.InputPreview = ""
 			encoded, _ := json.Marshal(public)
 			if strings.Contains(string(encoded), "PRIVATE_") || strings.Contains(string(encoded), "用途未识别") || public.ResultSummary != "" {
 				t.Fatal("projection exposed raw source or invented execution results")
@@ -57,7 +60,7 @@ func TestCOTToolTitlesSeparateCompositeActionsAndSafeDetails(t *testing.T) {
 
 func TestCOTFileChangeResultsCountDistinctPathsOnlyAfterSuccess(t *testing.T) {
 	changes := []codexclient.FileChange{
-		{Path: "/PRIVATE_DIRECTORY/one/fixture.go", Kind: json.RawMessage(`{"type":"update"}`), Diff: "PRIVATE_DIFF"},
+		{Path: "/PRIVATE_DIRECTORY/one/fixture.go", Kind: json.RawMessage(`{"type":"update"}`), Diff: "@@\n+password=PRIVATE_DIFF"},
 		{Path: "/PRIVATE_DIRECTORY/two/fixture.go", Kind: json.RawMessage(`{"type":"add"}`)},
 		{Path: "/PRIVATE_DIRECTORY/one/fixture.go", Kind: json.RawMessage(`{"type":"update"}`)},
 	}
@@ -141,12 +144,12 @@ func TestCOTToolDetailBoundsAndSafeDescriptorNames(t *testing.T) {
 	}
 }
 
-func TestCOTToolDetailsNeverPublishRawNativePayloads(t *testing.T) {
+func TestCOTToolDetailsPublishOnlyRedactedSupportedNativeText(t *testing.T) {
 	var turn codexclient.Turn
 	err := json.Unmarshal([]byte(`{"id":"turn","status":"completed","itemsView":"full","items":[
-		{"id":"command","type":"commandExecution","status":"completed","command":"tail PRIVATE_COMMAND_ARGUMENT","cwd":"/PRIVATE_CWD","aggregatedOutput":"PRIVATE_STDOUT_STDERR","exitCode":0,"durationMs":25,"commandActions":[{"type":"read","path":"/PRIVATE_DIRECTORY/fixture.go","command":"PRIVATE_ACTION_COMMAND"}]},
-		{"id":"mcp","type":"mcpToolCall","status":"failed","server":"fixture_server","tool":"lookup","arguments":{"key":"PRIVATE_ARGUMENTS"},"result":{"content":"PRIVATE_RESULT"},"error":{"message":"PRIVATE_ERROR"},"durationMs":30},
-		{"id":"dynamic","type":"dynamicToolCall","status":"inProgress","namespace":"fixture_namespace","tool":"inspect","arguments":{"key":"PRIVATE_DYNAMIC_ARGUMENTS"},"contentItems":[{"text":"PRIVATE_DYNAMIC_OUTPUT"}],"success":null},
+		{"id":"command","type":"commandExecution","status":"completed","command":"tail fixture.log --token PRIVATE_COMMAND_ARGUMENT","cwd":"/PRIVATE_CWD","aggregatedOutput":"matched 3 files\nAPI_KEY=PRIVATE_STDOUT_STDERR","exitCode":0,"durationMs":25,"commandActions":[{"type":"read","path":"/PRIVATE_DIRECTORY/fixture.go","command":"PRIVATE_ACTION_COMMAND"}]},
+		{"id":"mcp","type":"mcpToolCall","status":"failed","server":"fixture_server","tool":"lookup","arguments":{"api_key":"PRIVATE_ARGUMENTS","query":"fixture"},"result":{"content":[{"type":"text","text":"found fixture\nsecret=PRIVATE_RESULT"},{"type":"image","text":"PRIVATE_MEDIA"}]},"error":{"message":"lookup failed\npassword=PRIVATE_ERROR"},"durationMs":30},
+		{"id":"dynamic","type":"dynamicToolCall","status":"inProgress","namespace":"fixture_namespace","tool":"inspect","arguments":{"secret":"PRIVATE_DYNAMIC_ARGUMENTS","path":"fixture.go"},"contentItems":[{"type":"inputText","text":"checked fixture.go\nAuthorization: Bearer PRIVATE_DYNAMIC_OUTPUT"},{"type":"inputImage","text":"PRIVATE_IMAGE"}],"success":null},
 		{"id":"reasoning","type":"reasoning","text":"PRIVATE_REASONING"}
 	]}`), &turn)
 	if err != nil {
@@ -156,5 +159,10 @@ func TestCOTToolDetailsNeverPublishRawNativePayloads(t *testing.T) {
 	doc := parseProjection(t, raw, err)
 	if len(doc.Items) != 3 || strings.Contains(raw, "PRIVATE_") || doc.Items[1].ToolName != "fixture_server.lookup" || doc.Items[2].ToolName != "fixture_namespace.inspect" {
 		t.Fatal("private native payload escaped the tool projection")
+	}
+	for _, want := range []string{"tail fixture.log", "matched 3 files", "lookup failed", "found fixture", "checked fixture.go"} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("useful native detail %q was dropped", want)
+		}
 	}
 }

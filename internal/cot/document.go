@@ -38,13 +38,18 @@ type Item struct {
 	Icon        string `json:"icon,omitempty"`
 	TimestampMS int64  `json:"timestamp_ms"`
 	// Version 2 separates the short heading from display-safe tool details.
-	// These fields never contain raw arguments, output, or diffs.
+	// Preview fields contain bounded, redacted text prepared by the sync layer.
 	ToolName      string   `json:"tool_name,omitempty"`
 	Details       []string `json:"details,omitempty"`
 	ResultSummary string   `json:"result_summary,omitempty"`
 	ExitCode      *int     `json:"exit_code,omitempty"`
 	DurationMS    *int64   `json:"duration_ms,omitempty"`
+	InputPreview  string   `json:"input_preview,omitempty"`
+	OutputPreview string   `json:"output_preview,omitempty"`
 }
+
+const MaxToolInputRunes = 1200
+const MaxToolOutputRunes = 2400
 
 // Parse returns recognized=true even for an invalid/future COT document, so a
 // malformed native document cannot accidentally fall back to Card JSON delivery.
@@ -81,7 +86,7 @@ func validateDocument(doc Document) error {
 			return errors.New("invalid or duplicate COT item")
 		}
 		seen[item.ID] = true
-		hasDetails := item.ToolName != "" || len(item.Details) != 0 || item.ResultSummary != "" || item.ExitCode != nil || item.DurationMS != nil
+		hasDetails := item.ToolName != "" || len(item.Details) != 0 || item.ResultSummary != "" || item.ExitCode != nil || item.DurationMS != nil || item.InputPreview != "" || item.OutputPreview != ""
 		if hasDetails && (doc.Version == LegacyVersion || item.Kind != "tool") {
 			return errors.New("tool details require a version 2 COT tool")
 		}
@@ -101,6 +106,7 @@ func validateDocument(doc Document) error {
 				return errors.New("invalid public COT tool metadata")
 			}
 			if len(item.Details) > 6 || !validDetail(item.ResultSummary, true) ||
+				!validPreview(item.InputPreview, MaxToolInputRunes) || !validPreview(item.OutputPreview, MaxToolOutputRunes) ||
 				item.DurationMS != nil && *item.DurationMS < 0 ||
 				item.ExitCode != nil && (int64(*item.ExitCode) < -1<<31 || int64(*item.ExitCode) > 1<<31-1) {
 				return errors.New("invalid public COT tool details")
@@ -128,6 +134,18 @@ func validateDocument(doc Document) error {
 		}
 	}
 	return nil
+}
+
+func validPreview(value string, limit int) bool {
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > limit {
+		return false
+	}
+	for _, r := range value {
+		if unicode.Is(unicode.Cf, r) || unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 func validDetail(value string, empty bool) bool {

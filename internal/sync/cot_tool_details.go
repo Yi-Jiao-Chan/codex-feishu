@@ -10,8 +10,8 @@ import (
 	"codex-feishu/internal/cot"
 )
 
-// cotToolDetails projects only classified actions, safe descriptor names and
-// native execution facts. Raw commands, arguments, results and diffs stay out.
+// cotToolDetails projects classified titles and redacted native text excerpts.
+// Only the bounded display copy may enter the persistent public document.
 // The legacy card summary remains unchanged for existing action revisions.
 func cotToolDetails(item codexclient.Item, tool cards.ProgressTool) cot.Item {
 	public := cot.Item{
@@ -60,6 +60,7 @@ func cotToolDetails(item codexclient.Item, tool cards.ProgressTool) cot.Item {
 		value := *item.DurationMS
 		public.DurationMS = &value
 	}
+	cotToolPreviews(item, &public)
 	return public
 }
 

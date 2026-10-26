@@ -240,4 +240,4 @@ OpenClaw 在 `65112cda4acb357a13cd772641ed88acd9bb5759` 的 `FeishuStreamingSess
 
 调研阶段通过相关既有测试、文档本地链接检查；四段合成 JSON 均可解析。外部源码引用由只读获取固定版本文件核对，文档检查器本身不抓取外链。调研阶段没有发送真实消息或读取真实会话。
 
-用户后续确认了“短标题＋每个工具单独展开详情”的实现方向，开发与回归结果见[实施与验证记录](../records/cot-tool-details-2026-10-26.md)；当前模块行为见 [05 同步](../codex-feishu/05-message-sync.md#新执行进度使用原生-cot)和 [08 展示](../codex-feishu/08-cards-and-actions.md#当前执行进度原生-cot)。
+用户后续确认了“短标题＋每个工具单独展开详情”的实现方向，并通过初版截图反馈仅有状态、退出码和耗时仍不足以说明执行内容；详情范围因此扩展到实际输入和返回文本的脱敏节选。上文保留调研时的候选取舍，开发、范围调整与回归结果见[实施与验证记录](../records/cot-tool-details-2026-10-26.md)；当前模块行为以 [05 同步](../codex-feishu/05-message-sync.md#新执行进度使用原生-cot)和 [08 展示](../codex-feishu/08-cards-and-actions.md#当前执行进度原生-cot)为准。

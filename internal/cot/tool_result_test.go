@@ -32,12 +32,12 @@ func TestPlannerToolDetailsRemainAttachedToOneCallAcrossRestartAndCorrection(t *
 		t.Fatal("tool identity, heading, and details were conflated")
 	}
 	body := result["content"].(string)
-	for _, expected := range []string{"文件：fixture.go", "文件：other.go", "退出码：0", "耗时：0 毫秒"} {
+	for _, expected := range []string{"文件：fixture.go", "文件：other.go"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("missing safe detail %q", expected)
 		}
 	}
-	for _, unwanted := range []string{tool.Title, "仅同步状态", "原始输出未同步", "用途未识别"} {
+	for _, unwanted := range []string{tool.Title, "仅同步状态", "原始输出未同步", "用途未识别", "退出码：0", "耗时：", "已完成"} {
 		if strings.Contains(body, unwanted) {
 			t.Fatalf("result repeated heading or diagnostic boilerplate %q", unwanted)
 		}
@@ -86,6 +86,69 @@ func TestPlannerFailureMetadataDoesNotDependOnFirstObservationTiming(t *testing.
 	}
 	if strings.Contains(late["content"].(string), "已完成") || !strings.Contains(late["content"].(string), "退出码：2") || earlyBatch.State.Finished {
 		t.Fatal("tool failure invented success or failed the whole run")
+	}
+}
+
+func TestPlannerToolPreviewShowsExecutionAndResultWithoutStatusBoilerplate(t *testing.T) {
+	code, elapsed := 0, int64(0)
+	tool := publicTool("command", "completed")
+	tool.ToolName, tool.Title = "commandExecution", "查看 Git 状态"
+	tool.InputPreview, tool.OutputPreview = "git status --short", " M internal/fixture.go\n?? docs/fixture.md"
+	tool.ExitCode, tool.DurationMS = &code, &elapsed
+	doc := fixtureDocument("inProgress", tool)
+	first := checkedPlan(t, doc, State{})
+	result := resultEventContent(t, first)
+	body := result["content"].(string)
+	for _, want := range []string{"git status --short", "internal/fixture.go", "docs/fixture.md", "执行内容：", "结果："} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expanded tool is missing execution evidence %q", want)
+		}
+	}
+	for _, unwanted := range []string{"已完成", "退出码", "耗时", "涉及内容", "仅同步状态"} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("expanded tool repeated unhelpful metadata %q", unwanted)
+		}
+	}
+	doc.Items[0].OutputPreview += "\n M internal/other.go"
+	updated := checkedPlan(t, doc, first.State)
+	if !reflect.DeepEqual(eventTypes(updated.Events), []string{"TOOL_CALL_RESULT"}) || resultEventContent(t, updated)["toolCallId"] != result["toolCallId"] {
+		t.Fatal("late output created another tool call instead of updating its result")
+	}
+	if len(checkedPlan(t, doc, updated.State).Events) != 0 {
+		t.Fatal("unchanged output preview was repeated")
+	}
+}
+
+func TestPlannerToolPreviewBalancesEscapedBudgetAndClosesCodeFences(t *testing.T) {
+	for _, text := range []string{"<&\"\\界😀\n", "``````\n"} {
+		tool := publicTool("script", "failed")
+		tool.InputPreview = "python3 - <<'PY'\n" + strings.Repeat(text, 150) + "\nPY"
+		tool.OutputPreview = "Traceback: fixture\n" + strings.Repeat(text, 300) + "\nValueError: expected 2, got 3"
+		code := 2
+		tool.ExitCode = &code
+		b := checkedPlan(t, fixtureDocument("inProgress", tool), State{})
+		body := resultEventContent(t, b)["content"].(string)
+		for _, want := range []string{"python3", "结果：", "Traceback", "expected 2, got 3", "退出码：2", "详情已省略"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("long input displaced a useful result or failure fact %q", want)
+			}
+		}
+		fence, blocks := "", 0
+		for _, line := range strings.Split(body, "\n") {
+			if fence != "" {
+				if line == fence {
+					fence = ""
+				}
+			} else if strings.HasSuffix(line, "text") {
+				candidate := strings.TrimSuffix(line, "text")
+				if len(candidate) >= 3 && strings.Trim(candidate, "`") == "" {
+					fence, blocks = candidate, blocks+1
+				}
+			}
+		}
+		if fence != "" || blocks != 2 {
+			t.Fatal("wire clipping broke a code block or allowed native text to escape")
+		}
 	}
 }
 
@@ -171,6 +234,10 @@ func TestDocumentRejectsUnboundedOrMisplacedToolDetails(t *testing.T) {
 		func(d *Document) { d.Items[0].Details = []string{"1", "2", "3", "4", "5", "6", "7"} },
 		func(d *Document) { d.Items[0].ToolName = "unsafe/name" },
 		func(d *Document) { d.Items[0].ResultSummary = "hidden\u202econtrol" },
+		func(d *Document) { d.Items[0].InputPreview = strings.Repeat("界", MaxToolInputRunes+1) },
+		func(d *Document) { d.Items[0].OutputPreview = strings.Repeat("界", MaxToolOutputRunes+1) },
+		func(d *Document) { d.Items[0].OutputPreview = "hidden\u202econtrol" },
+		func(d *Document) { d.Version = LegacyVersion; d.Items[0].InputPreview = "git status" },
 		func(d *Document) { v := int64(-1); d.Items[0].DurationMS = &v },
 		func(d *Document) { v := int64(1 << 32); code := int(v); d.Items[0].ExitCode = &code },
 		func(d *Document) { d.Version = LegacyVersion; d.Items[0].Details = []string{"new details"} },
