@@ -2,7 +2,7 @@
 
 - 日期：2026-10-26。
 - 范围：新轮次的安全内容投影、工具展开结果、旧展示版本兼容及本地验证。
-- 状态：implemented；全仓业务测试、相关包 race 与文档检查 verified；部署与真实客户端验收 pending。
+- 状态：implemented；全仓业务测试、相关包 race、文档检查及本地候选切换 verified；真实客户端验收 pending。
 - 模块：[01 原生适配](../codex-feishu/01-codex-client.md)、[02 存储](../codex-feishu/02-store-and-recovery.md)、[05 同步](../codex-feishu/05-message-sync.md)、[08 展示](../codex-feishu/08-cards-and-actions.md)。
 - 依据：[内容质量调研](../research/feishu-cot-content-quality-2026-10-26.md)、[飞书原生 CoT 契约](../../compat/feishu-native-cot.md)。
 
@@ -39,4 +39,16 @@ SubAgent 首轮审查发现 1 项 P2：已有 native 读取分类时，复合命
 
 ## 未完成项
 
-尚未部署或发送真实预览；新版桌面/手机、群/话题的展开效果、字段优先级和失败样式仍为 pending。本地协议与发送 fixture 通过不替代客户端 UI 验收，也不改变一期发布状态。已发送且已完成的旧 CoT 不重写。
+未发送真实预览；新版桌面/手机、群/话题的展开效果、字段优先级和失败样式仍为 pending。本地协议与发送 fixture 通过不替代客户端 UI 验收，也不改变一期发布状态。已发送且已完成的旧 CoT 不重写。
+
+## 2026-10-26 Rebase 与本地候选部署
+
+按用户授权 rebase 到 `main` 的 `d8657aa89446e7cedfbf43cada44dd942d1ce4fa`，保留单用户任务群免 @ 输入。仅文档索引发生冲突，解决时保留两边记录，COT 代码补丁保持原样；整合后全仓业务测试和文档检查通过。
+
+候选源提交为 `dda578099397b0717defb0c875624278c943282f`，二进制 SHA-256 为 `588741090478871db73218ff27eb259cae267a4a360b33af830f7a5a0877156b`。构建继承原 Go 缓存，以 `-trimpath -buildvcs=false` 和显式 `main.commit` 标注已核验的干净源码身份；后续仅补充本部署记录与集中清单。
+
+复用原用户服务执行 stop → install → start，稳定 CLI 原子切换到新二进制。停桥后通过 SQLite backup API 保存包含已提交 WAL 的一致备份：schema 34、62 张业务表、181836 行，源库与副本逐表行数一致，quick_check 和 foreign_key_check 通过；没有迁移。旧二进制、原 unit/配置和数据库备份保留在仓库外私有目录，不用旧数据库覆盖后续活动，也不回退到只理解展示版本 1 的二进制。
+
+运行 PID 3139060，systemd active/running/enabled，NRestarts=0；进程、稳定 CLI 和管理通道的 commit/摘要一致。Codex、飞书连接正常，发现基线完成，原配置摘要及共享 daemon 发现结果保持。doctor/status 仍退出 5，仅有原先的 bindings_reconciled / operations_known 两项 required pending；各类 unknown/dispatching 聚合计数未增加。恢复绑定从切换前 66/110 变为 65/110，复核仍为 65，差异尚未定位，不能记为整体健康通过。
+
+本轮没有创建测试资源或发送测试输入。新展示用于新轮次，已有活动轮次继续原格式；真实客户端验收与 `phase1_released=false` 保持。
