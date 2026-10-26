@@ -34,14 +34,19 @@ func SplitMessage(role, source, body string, maxCardBytes int) ([]Segment, error
 	if len(card) <= maxCardBytes {
 		return []Segment{{Raw: body, Body: body, Card: card}}, nil
 	}
-	boundaries := messageBoundaries(body)
+	bodyBytes := []byte(body)
+	var imageEdits []publicImageEdit
+	if strings.Contains(body, "![") {
+		imageEdits = publicSafeImageEdits(bodyBytes)
+	}
+	boundaries := messageBoundaries(body, imageEdits)
 	// Reserve both counters at the same width. If the resulting count needs
 	// another digit, repeat with that width; the actual footer cannot be larger.
 	for digits := 1; ; digits++ {
 		counter := strings.Repeat("9", digits)
 		budgetSource := source + " · 第 " + counter + " / 共 " + counter + " 段"
 		render := func(body string) string { return Message(role, budgetSource, body) }
-		parts, err := splitMessageParts(body, boundaries, render, maxCardBytes)
+		parts, err := splitMessageParts(bodyBytes, boundaries, imageEdits, render, maxCardBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -72,10 +77,10 @@ type messageBoundary struct {
 	kind   int // 0: rune; 1: line; 2: paragraph.
 }
 
-func messageBoundaries(body string) []messageBoundary {
+func messageBoundaries(body string, imageEdits []publicImageEdit) []messageBoundary {
 	points := []messageBoundary{{}}
 	emails := publicEmail.FindAllStringIndex(body, -1)
-	email := 0
+	email, imageEdit, protectedUntil := 0, 0, 0
 	var fence *messageFence
 	encoded := 0
 	for start := 0; start < len(body); {
@@ -103,12 +108,21 @@ func messageBoundaries(body string) []messageBoundary {
 			for pos, r := range line {
 				encoded += markdownJSONRuneBytes(r)
 				offset := start + pos + utf8.RuneLen(r)
+				for imageEdit < len(imageEdits) && imageEdits[imageEdit].start < offset {
+					if imageEdits[imageEdit].stop > protectedUntil {
+						protectedUntil = imageEdits[imageEdit].stop
+					}
+					imageEdit++
+				}
 				for email < len(emails) && offset >= emails[email][1] {
 					email++
 				}
 				// Keep the whole address in one display segment so Safe can
-				// mask it, while Raw still reconstructs the original input.
-				if email < len(emails) && offset > emails[email][0] && offset < emails[email][1] {
+				// mask it. Image replacements similarly remain atomic so a
+				// split cannot turn a safe placeholder back into partial syntax.
+				// Raw still reconstructs the original input in both cases.
+				insideEmail := email < len(emails) && offset > emails[email][0] && offset < emails[email][1]
+				if insideEmail || offset < protectedUntil {
 					continue
 				}
 				// Reopening a block puts a mid-line continuation at column
@@ -128,7 +142,8 @@ func messageBoundaries(body string) []messageBoundary {
 	return points
 }
 
-func splitMessageParts(body string, points []messageBoundary, render func(string) string, limit int) ([]Segment, error) {
+func splitMessageParts(source []byte, points []messageBoundary, imageEdits []publicImageEdit, render func(string) string, limit int) ([]Segment, error) {
+	body := string(source)
 	var parts []Segment
 	overhead := len(render(""))
 	for start := 0; start < len(points)-1; {
@@ -159,7 +174,7 @@ func splitMessageParts(body string, points []messageBoundary, render func(string
 			last = start + 1
 		}
 		display := func(end int) string {
-			return prefix + body[points[start].offset:points[end].offset] + messageFenceSuffix(body, points[end])
+			return prefix + applyPublicImageEdits(source, points[start].offset, points[end].offset, imageEdits) + messageFenceSuffix(body, points[end])
 		}
 		fits := func(end int) bool { return len(render(display(end))) <= limit }
 		if !fits(last) {

@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 
+	"codex-feishu/internal/cards"
 	"codex-feishu/internal/cot"
 )
 
@@ -36,10 +38,17 @@ type MirrorAttempt struct {
 	COTStep, COTID, COTEvents, COTState, COTStateBefore   string
 	COTCaughtUp                                           bool
 	FollowMode, RootMessageID, PlatformThreadID           string
+	RetryOfAttemptID, RejectionRequestID                  string
 	ID, HostID, ThreadID, Key, Operation                  string
 	ChatID, ParentMessageID, TargetMessageID, Card, State string
 	RemoteID                                              string
 	Revision, CreatedAtMS                                 int64
+	RejectionCode, RejectionHTTPStatus                    int
+}
+
+type MirrorRejection struct {
+	Code, HTTPStatus int
+	RequestID        string
 }
 
 const mirrorColumns = `m.host_id,m.thread_id,m.mirror_key,m.turn_id,m.kind,m.card_json,m.revision,m.delivered_revision,m.terminal,m.retired,m.replay,m.parent_key,m.parent_message_id,m.remote_id,o.state,m.event_type,m.event_at,m.progress_observed_at_json`
@@ -214,7 +223,11 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			// must not replace a live event's decision, or create a new one.
 			_, err = tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,terminal=?,retired=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, m.Card, m.Terminal, m.Retired, host, thread, m.Key)
 			if err == nil {
-				_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, host, thread, m.Key)
+				if old.State == "confirmed" {
+					_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='ready',retry_of_attempt_id='' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, host, thread, m.Key)
+				} else if old.State == "rejected" {
+					err = reopenCorrectedFinal(ctx, tx, old, m)
+				}
 			}
 		}
 		if err != nil {
@@ -236,6 +249,45 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 		return err
 	}
 	return tx.Commit()
+}
+
+// reopenCorrectedFinal permits one fresh request only after the source payload
+// actually changes and the preceding creation was definitively rejected. The
+// rejected attempt stays immutable and is linked from the next attempt. Unknown
+// requests, updates of an existing remote card and unchanged snapshots remain
+// frozen. Rejected mentions are released for dispatch-time reevaluation.
+func reopenCorrectedFinal(ctx context.Context, tx *sql.Tx, old, next Mirror) error {
+	if old.Kind != "final" || !old.Terminal || !next.Terminal || next.Retired || old.RemoteID != "" {
+		return nil
+	}
+	var source string
+	err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM outbound_attempts
+	 WHERE host_id=? AND thread_id=? AND mirror_key=? AND revision<=? AND state='rejected' AND remote_id=''
+	 ORDER BY created_at_ms DESC,rowid DESC LIMIT 1`, old.HostID, old.ThreadID, old.Key, old.Revision).Scan(&source)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var unresolved, throttled int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbound_attempts WHERE host_id=? AND thread_id=? AND mirror_key=? AND state IN ('dispatching','unknown')`, old.HostID, old.ThreadID, old.Key).Scan(&unresolved); err != nil {
+		return err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbound_throttles WHERE host_id=? AND thread_id=? AND mirror_key=?`, old.HostID, old.ThreadID, old.Key).Scan(&throttled); err != nil {
+		return err
+	}
+	if unresolved != 0 || throttled != 0 {
+		return nil
+	}
+	if err = mirrorWriteOne(ctx, tx, `UPDATE outbound SET state='ready',retry_of_attempt_id=? WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='rejected'`, source, old.HostID, old.ThreadID, old.Key); err != nil {
+		return err
+	}
+	var selected int64
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mentions WHERE host_id=? AND thread_id=? AND mirror_key=? AND attempt_id=? AND state='rejected'`, old.HostID, old.ThreadID, old.Key, source).Scan(&selected); err != nil {
+		return err
+	}
+	return mirrorWriteCount(ctx, tx, selected, `UPDATE mentions SET state='eligible',reason='',attempt_id=NULL WHERE host_id=? AND thread_id=? AND mirror_key=? AND attempt_id=? AND state='rejected'`, old.HostID, old.ThreadID, old.Key, source)
 }
 
 func (s *Store) Watermark(ctx context.Context, host, thread string) (m Watermark, err error) {
@@ -317,6 +369,29 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	}
 	if m.State != "ready" || m.Revision != revision {
 		return a, false, nil
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT retry_of_attempt_id FROM outbound WHERE host_id=? AND thread_id=? AND mirror_key=?`, host, thread, key).Scan(&a.RetryOfAttemptID); err != nil {
+		return a, false, err
+	}
+	if a.RetryOfAttemptID != "" {
+		var sourceState, sourceRemote string
+		var sourceRevision int64
+		err = tx.QueryRowContext(ctx, `SELECT state,remote_id,revision FROM outbound_attempts WHERE attempt_id=? AND host_id=? AND thread_id=? AND mirror_key=?`, a.RetryOfAttemptID, host, thread, key).Scan(&sourceState, &sourceRemote, &sourceRevision)
+		if err != nil || sourceState != "rejected" || sourceRemote != "" || sourceRevision > revision {
+			if err != nil {
+				return a, false, err
+			}
+			return a, false, ErrConflict
+		}
+		if sourceRevision == revision {
+			var rateRetry int
+			if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbound_throttles WHERE host_id=? AND thread_id=? AND mirror_key=?`, host, thread, key).Scan(&rateRetry); err != nil {
+				return a, false, err
+			}
+			if rateRetry != 1 {
+				return a, false, ErrConflict
+			}
+		}
 	}
 	var deferred int
 	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbound_throttles WHERE host_id=? AND thread_id=? AND mirror_key=? AND next_retry_at_ms>?`, host, thread, key, nowMS).Scan(&deferred); err != nil || deferred != 0 {
@@ -400,7 +475,7 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	if err != nil {
 		return MirrorAttempt{}, false, err
 	}
-	err = mirrorWriteOne(ctx, tx, `INSERT INTO outbound_attempts(attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,follow_mode,root_message_id,platform_thread_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching',?,?,?)`, a.ID, host, thread, key, a.Revision, a.Operation, a.ChatID, a.ParentMessageID, a.TargetMessageID, a.Card, nowMS, a.FollowMode, a.RootMessageID, a.PlatformThreadID)
+	err = mirrorWriteOne(ctx, tx, `INSERT INTO outbound_attempts(attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,follow_mode,root_message_id,platform_thread_id,retry_of_attempt_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching',?,?,?,?)`, a.ID, host, thread, key, a.Revision, a.Operation, a.ChatID, a.ParentMessageID, a.TargetMessageID, a.Card, nowMS, a.FollowMode, a.RootMessageID, a.PlatformThreadID, a.RetryOfAttemptID)
 	if err == nil && !isCOT {
 		err = freezeMirrorRequestMarker(ctx, tx, &a)
 	}
@@ -423,10 +498,10 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	return a, err == nil, err
 }
 
-const attemptColumns = `attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,remote_id,follow_mode,root_message_id,platform_thread_id,cot_step,cot_id,cot_events_json,cot_state_json,cot_state_before,cot_caught_up`
+const attemptColumns = `attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,remote_id,follow_mode,root_message_id,platform_thread_id,cot_step,cot_id,cot_events_json,cot_state_json,cot_state_before,cot_caught_up,retry_of_attempt_id,rejection_code,rejection_http_status,rejection_request_id`
 
 func scanAttempt(row rowScanner) (a MirrorAttempt, err error) {
-	err = row.Scan(&a.ID, &a.HostID, &a.ThreadID, &a.Key, &a.Revision, &a.Operation, &a.ChatID, &a.ParentMessageID, &a.TargetMessageID, &a.Card, &a.CreatedAtMS, &a.State, &a.RemoteID, &a.FollowMode, &a.RootMessageID, &a.PlatformThreadID, &a.COTStep, &a.COTID, &a.COTEvents, &a.COTState, &a.COTStateBefore, &a.COTCaughtUp)
+	err = row.Scan(&a.ID, &a.HostID, &a.ThreadID, &a.Key, &a.Revision, &a.Operation, &a.ChatID, &a.ParentMessageID, &a.TargetMessageID, &a.Card, &a.CreatedAtMS, &a.State, &a.RemoteID, &a.FollowMode, &a.RootMessageID, &a.PlatformThreadID, &a.COTStep, &a.COTID, &a.COTEvents, &a.COTState, &a.COTStateBefore, &a.COTCaughtUp, &a.RetryOfAttemptID, &a.RejectionCode, &a.RejectionHTTPStatus, &a.RejectionRequestID)
 	if a.COTStep == "" {
 		a.COTEvents, a.COTState = "", ""
 	}
@@ -438,23 +513,33 @@ func (s *Store) MirrorAttempt(ctx context.Context, id string) (MirrorAttempt, er
 }
 
 // FinishMirrorAttempt persists the remote evidence and scheduling transition
-// atomically. Unknown/rejected attempts stay frozen even if new content arrives.
-// Confirmation after response loss is allowed, but only with an actual ID.
+// atomically. Unknown attempts always stay frozen. A definitely rejected final
+// can be superseded only when StageSnapshot observes a different safe payload;
+// the rejected request itself remains immutable. Confirmation after response
+// loss is allowed, but only with an actual ID.
 func (s *Store) FinishMirrorAttempt(ctx context.Context, id, outcome, remoteID string) error {
-	return s.finishMirrorAttempt(ctx, id, outcome, remoteID, "", false)
+	return s.finishMirrorAttempt(ctx, id, outcome, remoteID, "", false, MirrorRejection{})
+}
+
+func (s *Store) FinishRejectedMirrorAttempt(ctx context.Context, id string, rejection MirrorRejection) error {
+	return s.finishMirrorAttempt(ctx, id, "rejected", "", "", false, rejection)
 }
 
 func (s *Store) FinishCOTAttempt(ctx context.Context, id, outcome, remoteID, cotID string) error {
-	return s.finishMirrorAttempt(ctx, id, outcome, remoteID, cotID, true)
+	return s.finishMirrorAttempt(ctx, id, outcome, remoteID, cotID, true, MirrorRejection{})
 }
 
-func (s *Store) finishMirrorAttempt(ctx context.Context, id, outcome, remoteID, cotID string, nativeCOT bool) error {
+func (s *Store) finishMirrorAttempt(ctx context.Context, id, outcome, remoteID, cotID string, nativeCOT bool, rejection MirrorRejection) error {
 	if outcome != "confirmed" && outcome != "unknown" && outcome != "rejected" {
 		return errors.New("invalid mirror outcome")
 	}
 	if outcome == "confirmed" && remoteID == "" || outcome != "confirmed" && remoteID != "" {
 		return errors.New("mirror outcome lacks or contradicts remote evidence")
 	}
+	if rejection.Code < 0 || rejection.HTTPStatus < 0 || rejection.HTTPStatus > 999 || outcome != "rejected" && rejection != (MirrorRejection{}) {
+		return errors.New("invalid mirror rejection evidence")
+	}
+	rejection.RequestID = safeMirrorDiagnosticID(rejection.RequestID)
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -493,10 +578,10 @@ func (s *Store) finishMirrorAttempt(ctx context.Context, id, outcome, remoteID, 
 		}
 	}
 	if err == nil {
-		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET state=?,remote_id=? WHERE attempt_id=?`, outcome, remoteID, id)
+		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET state=?,remote_id=?,rejection_code=?,rejection_http_status=?,rejection_request_id=? WHERE attempt_id=?`, outcome, remoteID, rejection.Code, rejection.HTTPStatus, rejection.RequestID, id)
 	}
 	if err == nil {
-		err = mirrorWriteOne(ctx, tx, `UPDATE outbound SET state=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, state, a.HostID, a.ThreadID, a.Key)
+		err = mirrorWriteOne(ctx, tx, `UPDATE outbound SET state=?,retry_of_attempt_id='' WHERE host_id=? AND thread_id=? AND mirror_key=?`, state, a.HostID, a.ThreadID, a.Key)
 	}
 	if err == nil {
 		var selected int64
@@ -508,10 +593,35 @@ func (s *Store) finishMirrorAttempt(ctx context.Context, id, outcome, remoteID, 
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `DELETE FROM outbound_throttles WHERE host_id=? AND thread_id=? AND mirror_key=?`, a.HostID, a.ThreadID, a.Key)
 	}
+	if err == nil && !nativeCOT && outcome == "rejected" && a.RetryOfAttemptID != "" && m.Kind == "final" && !m.Retired {
+		err = stageFinalDeliveryFailure(ctx, tx, a, m, rejection)
+	}
 	if err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func safeMirrorDiagnosticID(value string) string {
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_.:", r) {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func stageFinalDeliveryFailure(ctx context.Context, tx *sql.Tx, a MirrorAttempt, m Mirror, rejection MirrorRejection) error {
+	key := "ui:delivery-failure:" + a.ID
+	card := cards.DeliveryFailure(rejection.Code, rejection.HTTPStatus, rejection.RequestID, a.ID)
+	if err := mirrorWriteOne(ctx, tx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,replay,parent_key,parent_message_id) VALUES(?,?,?,?,'progress',?,1,?,?,?)`, a.HostID, a.ThreadID, key, key, card, m.Replay, m.ParentKey, m.ParentMessageID); err != nil {
+		return err
+	}
+	return mirrorWriteOne(ctx, tx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, a.HostID, a.ThreadID, key)
 }
 
 // RecoverMirrorDispatches is called once after acquiring the deployment lock,

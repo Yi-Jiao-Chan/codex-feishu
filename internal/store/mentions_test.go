@@ -231,12 +231,19 @@ func TestMentionsPersistFrozenAttemptAcrossReopenAndCorrection(t *testing.T) {
 				t.Fatal("reconnect added new target to an old event")
 			}
 			updated, claimed, err := reopened.ClaimMirrorWithMentions(ctx, "host", "thread", m.Key, 2, event.UnixMilli()+180000, options)
-			if outcome == "confirmed" {
+			switch outcome {
+			case "confirmed":
 				if err != nil || !claimed || updated.Operation != "update" || hasMention(updated.Card) {
 					t.Fatalf("correction reminded again: %+v %t %v", updated, claimed, err)
 				}
-			} else if err != nil || claimed {
-				t.Fatalf("unknown/rejected attempt was retried: %t %v", claimed, err)
+			case "rejected":
+				if err != nil || !claimed || updated.Operation != "reply" || updated.RetryOfAttemptID != a.ID || !hasMention(updated.Card) {
+					t.Fatalf("corrected rejected payload did not reevaluate its mention: %+v %t %v", updated, claimed, err)
+				}
+			default:
+				if err != nil || claimed {
+					t.Fatalf("unknown attempt was retried: %t %v", claimed, err)
+				}
 			}
 		})
 	}

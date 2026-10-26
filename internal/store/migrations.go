@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 34
+const SchemaVersion = 35
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -483,6 +483,30 @@ ALTER TABLE outbound_attempts ADD COLUMN platform_thread_id TEXT NOT NULL DEFAUL
 			return err
 		}
 		if _, err = tx.Exec("PRAGMA user_version=34"); err != nil {
+			return err
+		}
+	}
+	if version < 35 {
+		for _, column := range []struct {
+			table, name, definition string
+		}{
+			{"outbound", "retry_of_attempt_id", "TEXT NOT NULL DEFAULT ''"},
+			{"outbound_attempts", "retry_of_attempt_id", "TEXT NOT NULL DEFAULT ''"},
+			{"outbound_attempts", "rejection_code", "INTEGER NOT NULL DEFAULT 0"},
+			{"outbound_attempts", "rejection_http_status", "INTEGER NOT NULL DEFAULT 0"},
+			{"outbound_attempts", "rejection_request_id", "TEXT NOT NULL DEFAULT ''"},
+		} {
+			var present int
+			if err = tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&present); err != nil {
+				return err
+			}
+			if present == 0 {
+				if _, err = tx.Exec(`ALTER TABLE ` + column.table + ` ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err = tx.Exec("PRAGMA user_version=35"); err != nil {
 			return err
 		}
 	}

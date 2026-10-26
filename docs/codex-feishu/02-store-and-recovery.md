@@ -2,6 +2,12 @@
 
 负责 `internal/store/`、迁移、恢复协调器。依赖 00；必须在输入提交与自动建群之前可用。
 
+## Schema 35：最终回复纠正重试与拒绝证据
+
+`outbound` 新增 `retry_of_attempt_id`；`outbound_attempts` 新增同名来源字段以及飞书拒绝的 code、HTTP status、request ID。原 attempt、冻结卡片和结果保持不可变。只有终态 final 首次创建被明确拒绝、没有远端消息、没有 dispatching / unknown 或限流等待，且后续完整快照生成了不同的安全卡片时，才把该 final 重新置为 ready；新 attempt 必须引用被拒绝的来源。unknown 继续只读核验，不能因正文变化进入重发。
+
+明确限流的后续 attempt 同样保留 retry 来源。带来源的 final 重试若再次被明确拒绝，保存受限错误字段，并在同一事务创建一张独立、纯文本、无提醒的投递失败卡；失败卡只显示安全的 code、HTTP status 和 request ID（无安全 request ID 时显示本地 attempt ID），不包含原回复、平台错误正文、路径或凭据。失败卡自己的拒绝是终态，不再生成下一张失败卡。旧 schema 34 的 rejected 记录不会在迁移时自动重发或补造失败卡，须由真实的新安全快照触发纠正。
+
 ## Schema 34：工作树快照恢复
 
 新增 `thread_worktree_identities`、`worktree_restore_grants`、`worktree_restore_attempts`。第一张表保存已授权会话的原始 cwd、工作树根、源仓库、common-dir、相对子目录及不可变绑定；普通飞书输入首次入账时，在同一事务保存恢复授权。恢复日志冻结原收据、快照 commit、原目标路径、临时检出路径和物理身份，不复制消息正文。旧表、会话设置表单、原生 unknown 与出站日志保持原值。

@@ -4,6 +4,7 @@ package cards
 import (
 	"encoding/json"
 	"html"
+	"strconv"
 	"strings"
 )
 
@@ -37,6 +38,47 @@ func Message(role, source, body string) string {
 		footerText = source
 	}
 	return renderWidth(append(publicBodyElements(body, "normal"), footer(footerText)), "")
+}
+
+// DeliveryFailure is a deliberately small, path-free fallback for a final
+// reply whose safe retry was definitively rejected. Callers provide only
+// bounded diagnostic identifiers, never the failed card or remote error text.
+// A failure while sending this card is terminal and must not recurse.
+func DeliveryFailure(code, status int, requestID, attemptID string) string {
+	details := make([]string, 0, 2)
+	if code != 0 || status != 0 {
+		line := "飞书错误"
+		if code != 0 {
+			line += " · code " + strconv.Itoa(code)
+		}
+		if status != 0 {
+			line += " · HTTP " + strconv.Itoa(status)
+		}
+		details = append(details, line)
+	}
+	if requestID = diagnosticToken(requestID); requestID != "" {
+		details = append(details, "飞书请求 ID · "+requestID)
+	} else if attemptID = diagnosticToken(attemptID); attemptID != "" {
+		details = append(details, "本地投递 ID · "+attemptID)
+	}
+	body := "**最终回复发送失败**\nCodex 已生成最终回复，但投递重试仍被飞书拒绝。请回 Codex 查看完整回复。"
+	if len(details) != 0 {
+		body += "\n\n" + strings.Join(details, "\n")
+	}
+	return renderWidth([]element{{"tag": "markdown", "content": body, "text_size": "normal", "margin": "0px"}, footer("投递故障 · Codex")}, "")
+}
+
+func diagnosticToken(value string) string {
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_.:", r) {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 func Button(label, action, token string) element {
 	return element{"tag": "button", "type": "text", "size": "small", "text": element{"tag": "plain_text", "content": label}, "behaviors": []element{{"type": "callback", "value": element{"action": action, "token": token, "revision": 1}}}}
