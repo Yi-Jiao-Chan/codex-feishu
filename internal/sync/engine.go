@@ -326,7 +326,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 		}
 		key := mirrorKey("progress", turn.ID)
 		previousProgress, hadProgress := existing[key]
-		_, previousCOT, parseErr := cot.Parse(previousProgress.Card)
+		previousDocument, previousCOT, parseErr := cot.Parse(previousProgress.Card)
 		if hadProgress && parseErr != nil {
 			return snapshotPlan{}, parseErr
 		}
@@ -363,7 +363,11 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			var card string
 			var err error
 			if previousCOT || e.NativeCOT && !hadProgress && turn.Status == "inProgress" {
-				card, err = cotDocument(thread, turn, clocks, observedAtMS)
+				version := cot.Version
+				if previousCOT {
+					version = previousDocument.Version
+				}
+				card, err = cotDocumentVersion(thread, turn, clocks, observedAtMS, version)
 			} else {
 				card, err = boundedRenderedProgress(view, markerCardBudget(e.MaxCardBytes), render)
 			}

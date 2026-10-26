@@ -73,7 +73,7 @@ func TestDocumentMarkerRoundTripAndInvalidNativeDocumentNeverFallsBack(t *testin
 			t.Fatal("ordinary card was treated as native COT")
 		}
 	}
-	for _, raw := range []string{`{"codex_feishu_cot":2}`, `{"codex_feishu_cot":"1"}`, `{"codex_feishu_cot":null}`} {
+	for _, raw := range []string{`{"codex_feishu_cot":3}`, `{"codex_feishu_cot":"1"}`, `{"codex_feishu_cot":null}`} {
 		if _, native, err := Parse(raw); !native || err == nil {
 			t.Fatal("invalid native marker fell back to card delivery")
 		}
@@ -163,7 +163,7 @@ func TestPlannerToolLifecycleAndResultUpdatesUseStableNativeCallID(t *testing.T)
 	id := eventContent(t, first.Events[1])["toolCallId"]
 	doc.Items[0].Status = "completed"
 	next := checkedPlan(t, doc, first.State)
-	if len(next.Events) != 1 || next.Events[0].EventType != "TOOL_CALL_RESULT" || eventContent(t, next.Events[0])["toolCallId"] != id || !strings.Contains(eventContent(t, next.Events[0])["content"].(string), "仅同步状态") {
+	if len(next.Events) != 1 || next.Events[0].EventType != "TOOL_CALL_RESULT" || eventContent(t, next.Events[0])["toolCallId"] != id || eventContent(t, next.Events[0])["content"] != "已完成" || eventContent(t, next.Events[0])["isError"] != false {
 		t.Fatal("confirmed completion restarted call or invented raw output")
 	}
 	doc.Items[0].Status, doc.Items[0].Title = "failed", "运行 Go 测试（状态更正）"
@@ -192,7 +192,7 @@ func TestPlannerUnavailableAndDeclinedToolsNeverInventExecutionOrSuccess(t *test
 	started := checkedPlan(t, doc, State{})
 	doc.Status = "interrupted"
 	terminal := checkedPlan(t, doc, started.State)
-	if !reflect.DeepEqual(eventTypes(terminal.Events), []string{"TOOL_CALL_RESULT", "RUN_FINISHED"}) || !strings.Contains(terminal.Events[0].Content, "未确认执行或成功") || eventContent(t, terminal.Events[1])["status"] != "interrupted" {
+	if !reflect.DeepEqual(eventTypes(terminal.Events), []string{"TOOL_CALL_RESULT", "RUN_FINISHED"}) || !strings.Contains(terminal.Events[0].Content, "结束状态未确认") || eventContent(t, terminal.Events[1])["status"] != "interrupted" {
 		t.Fatal("interruption invented a completed tool")
 	}
 }
@@ -278,7 +278,7 @@ func TestPlannerClosesPreviouslyConfirmedEntitiesMissingFromTerminalSnapshot(t *
 	doc.Status, doc.Items = "completed", nil
 	terminal := checkedPlan(t, doc, initial.State)
 	types := eventTypes(terminal.Events)
-	if !terminal.State.Finished || !terminal.State.Items["legacy"].Message.Ended || !strings.Contains(terminal.State.Items["tool"].Tool.Result, "状态待核验") || types[len(types)-1] != "RUN_FINISHED" {
+	if !terminal.State.Finished || !terminal.State.Items["legacy"].Message.Ended || !strings.Contains(terminal.State.Items["tool"].Tool.Result, "结束状态未确认") || types[len(types)-1] != "RUN_FINISHED" {
 		t.Fatal("terminal scan left a removed legacy message or tool open")
 	}
 }
@@ -382,7 +382,7 @@ func TestPlannerAbsentEntityCloseAcknowledgesPartialBatch(t *testing.T) {
 func TestPlannerToolTransitionClosesPartiallyAcknowledgedNote(t *testing.T) {
 	for _, status := range []string{"inProgress", "completed"} {
 		doc := fixtureDocument("inProgress", publicTool("tool", status))
-		state := State{ThreadID: doc.ThreadID, TurnID: doc.TurnID, Started: true, LastTimestampMS: 1000, Items: map[string]ItemState{
+		state := State{ThreadID: doc.ThreadID, TurnID: doc.TurnID, DocumentVersion: Version, Started: true, LastTimestampMS: 1000, Items: map[string]ItemState{
 			"tool": {Kind: "tool", Note: MessageState{ReasoningStarted: true, Started: true, Text: "已有的公开状态说明"}},
 		}}
 		batch := checkedPlan(t, doc, state)

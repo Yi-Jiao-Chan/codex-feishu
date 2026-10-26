@@ -14,6 +14,13 @@ import (
 // clocks records first local observation for both messages and tools; callers
 // persist it together with the document, never as a native occurrence time.
 func cotDocument(thread string, turn codexclient.Turn, clocks map[string]int64, observedAtMS int64) (string, error) {
+	return cotDocumentVersion(thread, turn, clocks, observedAtMS, cot.Version)
+}
+
+func cotDocumentVersion(thread string, turn codexclient.Turn, clocks map[string]int64, observedAtMS int64, version int) (string, error) {
+	if version != cot.LegacyVersion && version != cot.Version {
+		return "", errors.New("unsupported COT projection version")
+	}
 	if observedAtMS <= 0 || turn.ItemsView != "" && turn.ItemsView != "full" {
 		return "", errors.New("COT projection requires a complete observed history")
 	}
@@ -34,12 +41,15 @@ func cotDocument(thread string, turn codexclient.Turn, clocks map[string]int64, 
 			}
 		}
 	}
-	doc := cot.Document{Version: cot.Version, ThreadID: thread, TurnID: turn.ID, Status: turn.Status}
+	doc := cot.Document{Version: version, ThreadID: thread, TurnID: turn.ID, Status: turn.Status}
 	for n, item := range items {
 		public := cot.Item{ID: item.ID}
 		if tool, ok := ProgressToolSummary(item); ok {
 			public.Kind, public.Title, public.Status = "tool", cards.Safe(tool.Title), tool.Status
 			public.Icon = cotToolIcon(tool.Kind)
+			if version == cot.Version {
+				public = cotToolDetails(item, tool)
+			}
 		} else if item.Type == "agentMessage" && strings.TrimSpace(item.Text) != "" && !isAsyncQuestion(item) &&
 			(item.Phase == nil || *item.Phase == "commentary" || *item.Phase == "partial_answer") &&
 			!(n == legacyFinal && !explicitFinal) {

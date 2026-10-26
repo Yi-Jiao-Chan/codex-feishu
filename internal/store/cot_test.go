@@ -308,6 +308,34 @@ func TestCOTCreateAppendTerminalCompleteAndSnapshotIdempotence(t *testing.T) {
 	}
 }
 
+func TestCOTSnapshotCannotChangePresentationVersion(t *testing.T) {
+	for _, version := range []int{cot.LegacyVersion, cot.Version} {
+		for _, confirmed := range []bool{false, true} {
+			s, _ := cotTestFixture(t)
+			doc := cotTestSmallDocument("inProgress", "synthetic action", "inProgress")
+			doc.Version = version
+			cotTestStage(t, s, 100, doc, false)
+			if confirmed {
+				cotTestFinish(t, s, cotTestClaim(t, s, 1000))
+				cotTestFinish(t, s, cotTestClaim(t, s, 4000))
+			}
+			before := cotTestMirrorState(t, s)
+			doc.Version = cot.LegacyVersion
+			if version == cot.LegacyVersion {
+				doc.Version = cot.Version
+			}
+			err := s.StageMirrors(context.Background(), "host", "thread", []Mirror{cotTestMirror(t, doc, false)}, Watermark{TurnID: "turn", ItemID: "tool-a", ObservedAtMS: 101})
+			if !errors.Is(err, ErrConflict) {
+				t.Fatalf("version %d changed (confirmed=%v): %v", version, confirmed, err)
+			}
+			after := cotTestMirrorState(t, s)
+			if after.Card != before.Card || after.Revision != before.Revision {
+				t.Fatal("rejected presentation change mutated the persisted snapshot")
+			}
+		}
+	}
+}
+
 func TestCOTUnknownAtEveryStageSurvivesRestartWithoutReclaim(t *testing.T) {
 	for _, stageName := range []string{"create", "append", "terminal", "complete"} {
 		t.Run(stageName, func(t *testing.T) {
@@ -598,9 +626,10 @@ func TestCOTStopCommandRejectsAmbiguousOrMissingActiveTurn(t *testing.T) {
 		docs []Mirror
 	}{
 		{
-			name: "multiple unfinished",
+			name: "multiple unfinished with mixed presentation versions",
 			docs: func() []Mirror {
 				firstDoc := cotTestDocument("inProgress", false)
+				firstDoc.Version = cot.LegacyVersion
 				first := cotTestMirror(t, firstDoc, false)
 				first.Key = "cot-old"
 				secondDoc := cotTestDocument("inProgress", false)

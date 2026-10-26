@@ -8,10 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
-const Version = 1
+const (
+	LegacyVersion = 1
+	Version       = 2
+)
 
 // Document is a complete display-safe snapshot, not an append request. The
 // distinct marker prevents an ordinary Card JSON payload being sent as COT.
@@ -33,7 +37,19 @@ type Item struct {
 	Status      string `json:"status,omitempty"`
 	Icon        string `json:"icon,omitempty"`
 	TimestampMS int64  `json:"timestamp_ms"`
+	// Version 2 separates the short heading from display-safe tool details.
+	// Preview fields contain bounded, redacted text prepared by the sync layer.
+	ToolName      string   `json:"tool_name,omitempty"`
+	Details       []string `json:"details,omitempty"`
+	ResultSummary string   `json:"result_summary,omitempty"`
+	ExitCode      *int     `json:"exit_code,omitempty"`
+	DurationMS    *int64   `json:"duration_ms,omitempty"`
+	InputPreview  string   `json:"input_preview,omitempty"`
+	OutputPreview string   `json:"output_preview,omitempty"`
 }
+
+const MaxToolInputRunes = 1200
+const MaxToolOutputRunes = 2400
 
 // Parse returns recognized=true even for an invalid/future COT document, so a
 // malformed native document cannot accidentally fall back to Card JSON delivery.
@@ -60,7 +76,7 @@ func Encode(doc Document) (string, error) {
 }
 
 func validateDocument(doc Document) error {
-	if doc.Version != Version || !validID(doc.ThreadID) || !validID(doc.TurnID) ||
+	if (doc.Version != Version && doc.Version != LegacyVersion) || !validID(doc.ThreadID) || !validID(doc.TurnID) ||
 		(doc.Status != "inProgress" && doc.Status != "completed" && doc.Status != "failed" && doc.Status != "interrupted") {
 		return errors.New("invalid COT document scope or status")
 	}
@@ -70,16 +86,43 @@ func validateDocument(doc Document) error {
 			return errors.New("invalid or duplicate COT item")
 		}
 		seen[item.ID] = true
+		hasDetails := item.ToolName != "" || len(item.Details) != 0 || item.ResultSummary != "" || item.ExitCode != nil || item.DurationMS != nil || item.InputPreview != "" || item.OutputPreview != ""
+		if hasDetails && (doc.Version == LegacyVersion || item.Kind != "tool") {
+			return errors.New("tool details require a version 2 COT tool")
+		}
 		switch item.Kind {
 		case "message":
 			if item.Title != "" || item.Status != "" || item.Icon != "" {
 				return errors.New("invalid public COT message metadata")
 			}
 		case "tool":
+			maxTitle := 120
+			if doc.Version == Version {
+				maxTitle = 32
+			}
 			if item.Text != "" || strings.TrimSpace(item.Title) == "" ||
-				utf8.RuneCountInString(item.Title) > 120 || strings.ContainsAny(item.Title, "\r\n") ||
+				utf8.RuneCountInString(item.Title) > maxTitle || strings.ContainsAny(item.Title, "\r\n") ||
 				(item.Status != "inProgress" && item.Status != "completed" && item.Status != "failed" && item.Status != "declined" && item.Status != "unknown") {
 				return errors.New("invalid public COT tool metadata")
+			}
+			if len(item.Details) > 6 || !validDetail(item.ResultSummary, true) ||
+				!validPreview(item.InputPreview, MaxToolInputRunes) || !validPreview(item.OutputPreview, MaxToolOutputRunes) ||
+				item.DurationMS != nil && *item.DurationMS < 0 ||
+				item.ExitCode != nil && (int64(*item.ExitCode) < -1<<31 || int64(*item.ExitCode) > 1<<31-1) {
+				return errors.New("invalid public COT tool details")
+			}
+			for _, detail := range item.Details {
+				if !validDetail(detail, false) {
+					return errors.New("invalid public COT tool detail")
+				}
+			}
+			if !utf8.ValidString(item.ToolName) || utf8.RuneCountInString(item.ToolName) > 64 {
+				return errors.New("invalid public COT tool name")
+			}
+			for _, r := range item.ToolName {
+				if !unicode.IsLetter(r) && !unicode.IsNumber(r) && !strings.ContainsRune("._-", r) {
+					return errors.New("invalid public COT tool name")
+				}
 			}
 			switch item.Icon {
 			case "", "bash", "read", "write", "search", "task", "default":
@@ -91,6 +134,33 @@ func validateDocument(doc Document) error {
 		}
 	}
 	return nil
+}
+
+func validPreview(value string, limit int) bool {
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > limit {
+		return false
+	}
+	for _, r := range value {
+		if unicode.Is(unicode.Cf, r) || unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return false
+		}
+	}
+	return true
+}
+
+func validDetail(value string, empty bool) bool {
+	if value == "" {
+		return empty
+	}
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > 160 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return false
+		}
+	}
+	return true
 }
 
 func validID(id string) bool {

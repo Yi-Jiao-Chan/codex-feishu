@@ -64,23 +64,69 @@ type CommandAction struct {
 	Path string `json:"path"`
 }
 
+type ToolOutputContent struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+type MCPToolResult struct {
+	Content           []ToolOutputContent `json:"content"`
+	StructuredContent json.RawMessage     `json:"structuredContent,omitempty"`
+}
+
+type MCPToolError struct {
+	Message string `json:"message"`
+}
+
 type Item struct {
-	CommandActions []CommandAction   `json:"commandActions"`
-	Server         string            `json:"server"`
-	Tool           string            `json:"tool"`
-	Namespace      string            `json:"namespace"`
-	Delivery       *string           `json:"delivery"`
-	Questions      []AsyncQuestion   `json:"questions"`
-	Command        string            `json:"command"`
-	CWD            string            `json:"cwd"`
-	Changes        []FileChange      `json:"changes"`
-	Type           string            `json:"type"`
-	ID             string            `json:"id"`
-	Text           string            `json:"text"`
-	Phase          *string           `json:"phase"`
-	Content        []json.RawMessage `json:"content"`
-	ClientID       *string           `json:"clientId"`
-	Status         string            `json:"status"`
+	// Native ThreadItem commandExecution has nullable int32 exitCode;
+	// commandExecution/mcpToolCall/dynamicToolCall have nullable int64 durationMs.
+	// Consumers must check the variant before projecting these optional facts.
+	ExitCode         *int                `json:"exitCode,omitempty"`
+	DurationMS       *int64              `json:"durationMs,omitempty"`
+	AggregatedOutput *string             `json:"aggregatedOutput,omitempty"`
+	Arguments        json.RawMessage     `json:"arguments,omitempty"`
+	Result           *MCPToolResult      `json:"result,omitempty"`
+	Error            *MCPToolError       `json:"error,omitempty"`
+	ContentItems     []ToolOutputContent `json:"contentItems,omitempty"`
+	CommandActions   []CommandAction     `json:"commandActions"`
+	Server           string              `json:"server"`
+	Tool             string              `json:"tool"`
+	Namespace        string              `json:"namespace"`
+	Delivery         *string             `json:"delivery"`
+	Questions        []AsyncQuestion     `json:"questions"`
+	Command          string              `json:"command"`
+	CWD              string              `json:"cwd"`
+	Changes          []FileChange        `json:"changes"`
+	Type             string              `json:"type"`
+	ID               string              `json:"id"`
+	Text             string              `json:"text"`
+	Phase            *string             `json:"phase"`
+	Content          []json.RawMessage   `json:"content"`
+	ClientID         *string             `json:"clientId"`
+	Status           string              `json:"status"`
+}
+
+func (i *Item) UnmarshalJSON(data []byte) error {
+	*i = Item{}
+	type itemAlias Item
+	var envelope struct {
+		itemAlias
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	*i = Item(envelope.itemAlias)
+	if i.Type != "mcpToolCall" || len(envelope.Result) == 0 || string(envelope.Result) == "null" {
+		return nil
+	}
+	var result MCPToolResult
+	if err := json.Unmarshal(envelope.Result, &result); err != nil {
+		return err
+	}
+	i.Result = &result
+	return nil
 }
 
 func (i Item) PublicText() string {
