@@ -48,6 +48,11 @@ type Runtime struct {
 	FullScanInterval           time.Duration
 	IdlePollInterval           time.Duration
 	IdleHistoryInterval        time.Duration
+	ActorIdleTimeout           time.Duration
+	ActivationSweepInterval    time.Duration
+	ActivationRetryInitial     time.Duration
+	ActivationRetryMax         time.Duration
+	initialThreads             []string
 	MinProgressIntervalMS      int64
 	SuppressAsyncQuestions     bool
 	AsyncQuestionsSinceMS      int64
@@ -73,25 +78,50 @@ type Runtime struct {
 	AfterDelivery              func(context.Context, string, []codexclient.Turn) error
 	EventObserved              func(codexclient.Event)
 	EventObservedContext       func(context.Context, codexclient.Event) error
-	RenderProgress             func(string, string, string, cards.ProgressView) string
-	NativeCOT                  bool
+	// ActorRetrying and ActorReleased run under the lifecycle lock and must not
+	// reenter Runtime.
+	ActorRetrying  func(string)
+	ActorReleased  func(string)
+	RenderProgress func(string, string, string, cards.ProgressView) string
+	NativeCOT      bool
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
-	Notice       func(string)
-	Now          func() time.Time
-	mu           sync.Mutex
-	actors       map[string]*threadActor
-	running      bool
-	checks       chan string
-	activations  chan string
-	pinSupported bool
-	pinKnown     bool
-	pinSectionID string
+	Notice         func(string)
+	Now            func() time.Time
+	mu             sync.Mutex
+	actors         map[string]*threadActor
+	retries        map[string]actorRetry
+	pending        map[string]bool
+	activating     map[string]bool
+	bindings       map[string]bool
+	carryover      []string
+	running        bool
+	lifecycleReady bool
+	checks         chan string
+	activations    chan struct{}
+	pinSupported   bool
+	pinKnown       bool
+	pinSectionID   string
 }
 
 type threadActor struct {
 	thread    string
 	wake      chan struct{}
 	replay    bool
+	boundOnly bool
+}
+
+type actorExit uint8
+
+const (
+	actorStopped actorExit = iota
+	actorDormant
+	actorRetryLater
+)
+
+type actorRetry struct {
+	due       time.Time
+	delay     time.Duration
+	authorize bool
 	boundOnly bool
 }
 
@@ -109,14 +139,15 @@ func (r *Runtime) notice(code string) {
 func (r *Runtime) ready() bool { return r.Ready == nil || r.Ready() }
 
 // Wake may be called by a Feishu receiver after its durable receipt commit.
-// Unknown threads only enter discovery checks; they never acquire a route.
+// A dormant route is activated on demand; an unknown thread still has to pass
+// discovery before it can acquire a route.
 func (r *Runtime) Wake(thread string) {
 	if thread == "" {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.running {
+	if !r.running || !r.lifecycleReady {
 		return
 	}
 	if a := r.actors[thread]; a != nil {
@@ -124,6 +155,9 @@ func (r *Runtime) Wake(thread string) {
 		case a.wake <- struct{}{}:
 		default:
 		}
+	} else if r.bindings[thread] {
+		delete(r.retries, thread) // Explicit activity bypasses background backoff.
+		r.queueActivationLocked(thread, false)
 	} else if r.DiscoveryEnabled {
 		select {
 		case r.checks <- thread:
@@ -143,12 +177,8 @@ func (r *Runtime) Activate(thread string) bool {
 	if !r.running {
 		return false
 	}
-	select {
-	case r.activations <- thread:
-		return true
-	default:
-		return false
-	}
+	r.queueActivationLocked(thread, true)
+	return true
 }
 
 // ActorStarted reports local actor presence, not current permission or delivery.
@@ -156,6 +186,33 @@ func (r *Runtime) ActorStarted(thread string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.running && r.actors[thread] != nil
+}
+
+func (r *Runtime) bindingLifecycle() (active, retrying map[string]bool, managed bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	active, retrying = map[string]bool{}, map[string]bool{}
+	if !r.running || !r.lifecycleReady {
+		return active, retrying, false
+	}
+	for id := range r.actors {
+		active[id] = true
+	}
+	markPending := func(id string) {
+		if !active[id] {
+			retrying[id] = true
+		}
+	}
+	for id := range r.retries {
+		markPending(id)
+	}
+	for id := range r.pending {
+		markPending(id)
+	}
+	for id := range r.activating {
+		markPending(id)
+	}
+	return active, retrying, true
 }
 
 // Authorize checks actual current native metadata, including registered Git
@@ -205,8 +262,8 @@ func (r *Runtime) authorize(ctx context.Context, t codexclient.Thread, automatic
 }
 
 // Run requires the caller's exclusive deployment lock. It drains births while
-// the baseline snapshot awaits RPCs, starts existing routes without rediscovery,
-// and joins all workers on cancellation/disconnect.
+// the baseline snapshot awaits RPCs, activates only routes with work, and joins
+// all workers on cancellation/disconnect.
 func (r *Runtime) Run(parent context.Context) error {
 	if r.Store == nil || r.Native == nil || r.Messages == nil || r.HostID == "" || r.AppID == "" || r.DiscoveryEnabled && (r.Groups == nil || r.OwnerID == "") {
 		return errors.New("runtime dependencies are incomplete")
@@ -217,23 +274,36 @@ func (r *Runtime) Run(parent context.Context) error {
 		return errors.New("native generation is already running")
 	}
 	r.actors = map[string]*threadActor{}
+	r.retries = map[string]actorRetry{}
+	r.pending = map[string]bool{}
+	r.activating = map[string]bool{}
+	r.bindings = map[string]bool{}
+	r.carryover = nil
 	r.checks = make(chan string, 256)
-	r.activations = make(chan string, 256)
+	r.activations = make(chan struct{}, 1)
 	r.running = true
+	r.lifecycleReady = false
 	r.pinSupported, r.pinKnown, r.pinSectionID = false, false, ""
 	r.mu.Unlock()
 	ctx, cancel := context.WithCancel(parent)
 	var workers sync.WaitGroup
 	defer func() {
+		r.captureCarryover()
 		cancel()
 		workers.Wait()
 		r.mu.Lock()
 		r.running = false
+		r.lifecycleReady = false
 		r.actors = nil
+		r.retries = nil
+		r.pending = nil
+		r.activating = nil
+		r.bindings = nil
+		r.checks = nil
 		r.activations = nil
 		r.mu.Unlock()
 	}()
-	e := &discovery.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, AppID: r.AppID, AllowedRoots: r.AllowedRoots, DirectoryRules: r.DirectoryRules, Now: r.Now}
+	e := &discovery.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, AppID: r.AppID, AllowedRoots: r.AllowedRoots, DirectoryRules: r.DirectoryRules, BoundObserved: r.observeBoundActivity, Now: r.Now}
 	if _, err := e.Begin(ctx); err != nil {
 		return err
 	}
@@ -248,27 +318,93 @@ func (r *Runtime) Run(parent context.Context) error {
 			return err
 		}
 	}
-	bounds, err := r.Store.Bindings(ctx, r.HostID)
+	bindings, err := r.Store.Bindings(ctx, r.HostID)
 	if err != nil {
 		return err
 	}
+	r.mu.Lock()
+	for _, binding := range bindings {
+		r.bindings[binding.ThreadID] = true
+	}
+	r.mu.Unlock()
 	pinNative, previousPins, pinsSupported := r.preparePinning(ctx)
-	startActor := func(id string, replay, boundOnly bool) {
+	startActor := func(id string, replay, boundOnly, force bool) bool {
 		r.mu.Lock()
-		if r.actors[id] != nil {
+		if a := r.actors[id]; a != nil {
+			if force {
+				select {
+				case a.wake <- struct{}{}:
+				default:
+				}
+			}
 			r.mu.Unlock()
-			r.Wake(id)
-			return
+			return false
+		}
+		if retry, ok := r.retries[id]; ok && !force && retry.due.After(r.now()) {
+			r.mu.Unlock()
+			return false
+		}
+		if force {
+			delete(r.retries, id)
+		}
+		if boundOnly {
+			r.bindings[id] = true
 		}
 		a := &threadActor{thread: id, wake: make(chan struct{}, 1), replay: replay, boundOnly: boundOnly}
 		r.actors[id] = a
 		r.mu.Unlock()
 		workers.Add(1)
-		go func() { defer workers.Done(); r.runActor(ctx, a) }()
+		go func() {
+			defer workers.Done()
+			for {
+				reason := r.runActor(ctx, a)
+				r.mu.Lock()
+				if ctx.Err() == nil && reason != actorStopped {
+					select {
+					case <-a.wake:
+						delete(r.retries, id)
+						r.mu.Unlock()
+						continue
+					default:
+					}
+				}
+				if r.actors[id] == a {
+					delete(r.actors, id)
+					if reason == actorRetryLater && r.ActorRetrying != nil {
+						r.ActorRetrying(id)
+					}
+					if r.ActorReleased != nil {
+						r.ActorReleased(id)
+					}
+				}
+				if ctx.Err() == nil && reason == actorRetryLater {
+					r.scheduleRetryLocked(id, false, a.boundOnly)
+				}
+				r.mu.Unlock()
+				return
+			}
+		}()
+		return true
 	}
-	for _, b := range bounds {
-		startActor(b.ThreadID, true, false)
+	recovery, err := r.Store.BindingActivationThreads(ctx, r.HostID, r.AppID)
+	if err != nil {
+		return err
 	}
+	initialThreads := make(map[string]bool, len(recovery)+len(r.initialThreads))
+	for _, id := range recovery {
+		initialThreads[id] = true
+	}
+	for _, id := range r.initialThreads {
+		if id != "" {
+			initialThreads[id] = true
+		}
+	}
+	for id := range initialThreads {
+		startActor(id, true, true, true)
+	}
+	r.mu.Lock()
+	r.lifecycleReady = true
+	r.mu.Unlock()
 	if pinsSupported {
 		workers.Add(1)
 		go func() { defer workers.Done(); r.runPins(ctx, pinNative, previousPins) }()
@@ -286,42 +422,85 @@ func (r *Runtime) Run(parent context.Context) error {
 	if r.DiscoveryEnabled {
 		workers.Add(1)
 		go func() { defer workers.Done(); r.runDiscovery(ctx, e, scanned) }()
+	} else {
+		workers.Add(1)
+		go func() { defer workers.Done(); r.runBoundObservation(ctx, e) }()
 	}
-	// Creation activation is durable. A full notification channel or temporary
-	// metadata/rollout failure must not strand a confirmed native conversation.
-	activationTimer := time.NewTicker(time.Second)
+	activate := func(id string, force bool) {
+		activationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err := r.Store.Binding(activationCtx, r.HostID, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			cancel()
+			if r.DiscoveryEnabled {
+				select {
+				case r.checks <- id:
+				default:
+				}
+			}
+			r.notice("thread.activation_pending")
+			return
+		}
+		if err == nil {
+			var meta codexclient.Thread
+			meta, err = r.Native.Metadata(activationCtx, id)
+			if err == nil && meta.ID == id {
+				err = r.activationAuthorize(activationCtx, meta)
+			} else if err == nil {
+				err = store.ErrConflict
+			}
+		}
+		cancel()
+		if err != nil {
+			r.mu.Lock()
+			if r.ActorRetrying != nil {
+				r.ActorRetrying(id)
+			}
+			r.scheduleRetryLocked(id, true, true)
+			r.mu.Unlock()
+			r.notice("thread.activation_pending")
+		} else if ctx.Err() == nil {
+			r.mu.Lock()
+			r.bindings[id] = true
+			r.mu.Unlock()
+			startActor(id, true, true, force)
+		}
+	}
+	// One scheduler owns durable-work sweeps and exponential activation retry;
+	// dormant bindings do not retain a goroutine or timer of their own.
+	activationTimer := time.NewTicker(r.activationTimerInterval())
 	defer activationTimer.Stop()
+	nextSweep := r.now().Add(r.activationSweepInterval())
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-activationTimer.C:
-			ids, err := r.Store.ConfirmedCreationThreads(ctx, r.HostID, r.AppID)
-			if err != nil {
-				return err
-			}
-			for _, id := range ids {
-				if !r.ActorStarted(id) {
-					startActor(id, true, true)
+			now := r.now()
+			for _, request := range r.dueRetries(now) {
+				if request.authorize {
+					activate(request.thread, false)
+				} else {
+					startActor(request.thread, true, request.boundOnly, false)
 				}
 			}
-		case id := <-r.activations:
-			activationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			_, err := r.Store.Binding(activationCtx, r.HostID, id)
-			if err == nil {
-				var meta codexclient.Thread
-				meta, err = r.Native.Metadata(activationCtx, id)
-				if err == nil && meta.ID == id {
-					err = r.Authorize(activationCtx, meta, false)
-				} else if err == nil {
-					err = store.ErrConflict
+			if !now.Before(nextSweep) {
+				ids, err := r.Store.BindingActivationThreads(ctx, r.HostID, r.AppID)
+				if err != nil {
+					return err
 				}
+				for _, id := range ids {
+					startActor(id, true, true, false)
+				}
+				nextSweep = now.Add(r.activationSweepInterval())
 			}
-			cancel()
-			if err != nil {
-				r.notice("thread.activation_pending")
-			} else if ctx.Err() == nil {
-				startActor(id, true, true)
+		case <-r.activations:
+			for _, request := range r.takeActivations(32) {
+				if request.authorize {
+					activate(request.thread, true)
+				} else {
+					startActor(request.thread, true, true, true)
+				}
+				r.finishActivation(request.thread)
 			}
 		case <-scanned:
 			pending, err := r.Store.PendingObservations(ctx, r.HostID)
@@ -330,7 +509,7 @@ func (r *Runtime) Run(parent context.Context) error {
 			}
 			for _, o := range pending {
 				if o.State == "eligible" {
-					startActor(o.ThreadID, old[o.ThreadID], false)
+					startActor(o.ThreadID, old[o.ThreadID], false, false)
 				}
 			}
 		case event, open := <-r.Native.Events():
@@ -418,7 +597,29 @@ func (r *Runtime) runDiscovery(ctx context.Context, e *discovery.Engine, done ch
 	}
 }
 
-func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
+func (r *Runtime) runBoundObservation(ctx context.Context, e *discovery.Engine) {
+	interval := r.ScanInterval
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	timer := time.NewTicker(interval)
+	defer timer.Stop()
+	if err := e.ScanBindingsSince(ctx, 0); err != nil {
+		r.notice("binding.scan_pending")
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if err := e.ScanBindingsSince(ctx, r.now().Add(-recentActivityWindow).Unix()); err != nil {
+				r.notice("binding.scan_pending")
+			}
+		}
+	}
+}
+
+func (r *Runtime) runActor(ctx context.Context, a *threadActor) actorExit {
 	interval := r.PollInterval
 	if interval <= 0 {
 		interval = time.Second
@@ -522,6 +723,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 	var groupRetryAtMS int64
 	dirty := true
 	lastRead := time.Time{}
+	dormantAt := time.Time{}
 	deliveryAuthorized := false
 	var latestTurns []codexclient.Turn
 	latestHistoryOK := false
@@ -552,7 +754,10 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) {
 actorLoop:
 	for {
 		if ctx.Err() != nil {
-			return
+			return actorStopped
+		}
+		if cold && !dormantAt.IsZero() && !r.now().Before(dormantAt) {
+			return actorDormant
 		}
 		if groupRetryAtMS > 0 && r.now().UnixMilli() >= groupRetryAtMS {
 			groupRetryAtMS = 0
@@ -574,7 +779,7 @@ actorLoop:
 				if err != nil {
 					deliveryAuthorized = false
 					r.notice("worktree.restore_pending")
-					continue actorLoop
+					return actorRetryLater
 				}
 			}
 			if !attached {
@@ -598,6 +803,9 @@ actorLoop:
 					attached = true
 				}
 				cancel()
+				if err != nil {
+					return actorRetryLater
+				}
 			}
 			if attached {
 				tickPending := false
@@ -613,7 +821,7 @@ actorLoop:
 				if err != nil {
 					cancel()
 					r.notice("thread.authorization_pending")
-					continue actorLoop
+					return actorRetryLater
 				}
 				deliveryAuthorized = true
 				if r.RememberWorkspace != nil {
@@ -667,14 +875,20 @@ actorLoop:
 				} else {
 					hydrated = true
 					a.replay = false
+					r.actorHealthy(a.thread)
 				}
 				latestTurns, latestHistoryOK = turns, err == nil
 				b, bindingErr := r.Store.Binding(ctx, r.HostID, a.thread)
 				if bindingErr == nil {
+					r.mu.Lock()
+					if r.bindings != nil {
+						r.bindings[a.thread] = true
+					}
+					r.mu.Unlock()
 					deliver(b, turns, err == nil)
 					syncName(b)
 					mayIdle := err == nil && !tickPending && !deliveryPending && !groupRunning && groupRetryAtMS == 0 &&
-						idleThread(meta, turns, r.now()) && (!nameStateKnown || b.FollowMode == "topic" || r.SyncGroupName == nil || syncedTitle == title)
+						settledThread(meta, turns) && (!nameStateKnown || b.FollowMode == "topic" || r.SyncGroupName == nil || syncedTitle == title)
 					if mayIdle {
 						// An unknown native write can return nil while awaiting
 						// readback. It still needs the normal controller cadence.
@@ -684,9 +898,17 @@ actorLoop:
 							r.notice("input.reconcile_pending")
 						}
 					}
+					if mayIdle {
+						if dormantAt.IsZero() {
+							dormantAt = r.now().Add(r.actorIdleTimeout())
+						}
+					} else {
+						dormantAt = time.Time{}
+					}
 					setCold(mayIdle)
 				} else if !errors.Is(bindingErr, sql.ErrNoRows) {
 					r.notice("binding.read_pending")
+					return actorRetryLater
 				} else if hydrated && !a.boundOnly && !verificationHandled && r.DiscoveryEnabled && r.ready() && !groupRunning && !groupBlocked && r.now().UnixMilli() >= groupRetryAtMS {
 					groupRunning = true
 					groupWG.Add(1)
@@ -702,6 +924,9 @@ actorLoop:
 						case <-ctx.Done():
 						}
 					}(title)
+				}
+				if err != nil {
+					return actorRetryLater
 				}
 			}
 		}
@@ -728,12 +953,13 @@ actorLoop:
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				return actorStopped
 			case <-timer.C:
 				continue actorLoop
 			case <-a.wake:
 				// Coalesce token and status events until the next actor tick.
 				dirty = true
+				dormantAt = time.Time{}
 				if cold {
 					// A new native/Feishu event bypasses the cold timer and
 					// reauthorizes metadata before any thread work resumes.

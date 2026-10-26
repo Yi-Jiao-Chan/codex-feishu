@@ -248,10 +248,21 @@ func TestServiceReceivesOfflineAndReconnectsWithoutSecondReceiverOrAdd(t *testin
 }
 
 func TestServiceButtonsRequireReconciliationInCurrentGeneration(t *testing.T) {
-	s := &Service{}
+	runtime := &Runtime{running: true, lifecycleReady: true, bindings: map[string]bool{"thread": true}, actors: map[string]*threadActor{}, retries: map[string]actorRetry{}, pending: map[string]bool{}, activations: make(chan struct{}, 1)}
+	s := &Service{current: runtime}
 	s.nativeConnected.Store(true)
 	if s.actionAvailable("thread") {
 		t.Fatal("socket handshake enabled stale controls")
+	}
+	runtime.mu.Lock()
+	_, warmed := runtime.pending["thread"]
+	runtime.mu.Unlock()
+	if !warmed {
+		t.Fatal("stale control did not warm its dormant route")
+	}
+	_, retrying, managed := runtime.bindingLifecycle()
+	if !managed || !retrying["thread"] {
+		t.Fatal("queued warmup was hidden from lifecycle health")
 	}
 	s.actionsReady = map[string]bool{"thread": true}
 	if !s.actionAvailable("thread") || s.actionAvailable("other") {

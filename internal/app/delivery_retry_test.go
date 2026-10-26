@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -138,17 +139,38 @@ func TestRuntimeDueDeliveryRechecksAuthorization(t *testing.T) {
 		return nil
 	}
 	a := &threadActor{thread: "thread", wake: make(chan struct{}, 1)}
-	done := make(chan struct{})
-	go func() { defer close(done); r.runActor(ctx, a) }()
+	exits := make(chan actorExit, 2)
+	var actors sync.WaitGroup
+	start := func(actor *threadActor) {
+		actors.Add(1)
+		go func() {
+			defer actors.Done()
+			exits <- r.runActor(ctx, actor)
+		}()
+	}
+	start(a)
 	t.Cleanup(func() {
 		cancel()
+		joined := make(chan struct{})
+		go func() { actors.Wait(); close(joined) }()
 		select {
-		case <-done:
+		case <-joined:
 		case <-time.After(5 * time.Second):
 			t.Error("actor did not stop")
 		}
 	})
-	runtimeWait(t, func() bool { return checks.Load() >= 3 })
+	deadline := time.Now().Add(2 * time.Second)
+	for checks.Load() < 3 && time.Now().Before(deadline) {
+		select {
+		case reason := <-exits:
+			t.Fatalf("actor exited before delivery retry: %v", reason)
+		default:
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if checks.Load() < 3 {
+		t.Fatalf("delivery authorization was not retried: checks=%d reads=%d", checks.Load(), n.reads.Load())
+	}
 	g.mu.Lock()
 	if len(g.writes) != 0 {
 		t.Error("deadline retry bypassed delivery authorization")
@@ -160,6 +182,14 @@ func TestRuntimeDueDeliveryRechecksAuthorization(t *testing.T) {
 	n.denyMetadata.Store(true)
 	a.wake <- struct{}{}
 	runtimeWait(t, func() bool { return n.reads.Load() > reads })
+	select {
+	case reason := <-exits:
+		if reason != actorRetryLater {
+			t.Fatalf("authorization failure exit=%v", reason)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("authorization failure did not release its actor")
+	}
 	allowed.Store(true)
 	time.Sleep(3 * r.PollInterval)
 	g.mu.Lock()
@@ -168,6 +198,7 @@ func TestRuntimeDueDeliveryRechecksAuthorization(t *testing.T) {
 	}
 	g.mu.Unlock()
 	n.denyMetadata.Store(false)
-	a.wake <- struct{}{}
+	a = &threadActor{thread: "thread", wake: make(chan struct{}, 1)}
+	start(a)
 	runtimeWait(t, func() bool { g.mu.Lock(); defer g.mu.Unlock(); return len(g.writes) == 2 })
 }

@@ -26,7 +26,10 @@ type Engine struct {
 	HostID, AppID  string
 	AllowedRoots   []string
 	DirectoryRules func(context.Context) ([]rules.DirectoryRule, error)
-	Now            func() time.Time
+	// BoundObserved reports complete active/archive list metadata for an
+	// existing route. It never creates or mutates the route itself.
+	BoundObserved func(context.Context, codexclient.Thread, bool) error
+	Now           func() time.Time
 }
 
 // CandidateError isolates a temporarily unavailable thread from other scans.
@@ -213,6 +216,72 @@ type recentNative interface {
 	ListArchiveSince(context.Context, bool, int64) ([]codexclient.Thread, error)
 }
 
+// ScanBindingsSince observes metadata for existing routes without running the
+// discovery baseline or candidate workflow. It lets deployments with automatic
+// discovery disabled recover native changes after a process restart.
+func (e *Engine) ScanBindingsSince(ctx context.Context, since int64) error {
+	if e.BoundObserved == nil {
+		return nil
+	}
+	list := func(archived bool) ([]codexclient.Thread, error) {
+		if recent, ok := e.Native.(recentNative); ok && since > 0 {
+			return recent.ListArchiveSince(ctx, archived, since)
+		}
+		return e.Native.ListArchive(ctx, archived)
+	}
+	active, err := list(false)
+	if err != nil {
+		return err
+	}
+	archived, err := list(true)
+	if err != nil {
+		return err
+	}
+	var bound map[string]bool
+	if since <= 0 {
+		bindings, err := e.Store.Bindings(ctx, e.HostID)
+		if err != nil {
+			return err
+		}
+		bound = make(map[string]bool, len(bindings))
+		for _, binding := range bindings {
+			bound[binding.ThreadID] = true
+		}
+	}
+	seen := make(map[string]bool, len(active)+len(archived))
+	observe := func(thread codexclient.Thread, archived bool) error {
+		if thread.ID == "" || seen[thread.ID] {
+			return nil
+		}
+		seen[thread.ID] = true
+		if bound != nil {
+			if !bound[thread.ID] {
+				return nil
+			}
+			return e.BoundObserved(ctx, thread, archived)
+		}
+		if _, err := e.Store.Binding(ctx, e.HostID, thread.ID); errors.Is(err, sql.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return e.BoundObserved(ctx, thread, archived)
+	}
+	// If a native generation returns the same ID in both lists, preserve the
+	// archived hold rather than inferring an active route from inconsistent data.
+	for _, thread := range archived {
+		if err := observe(thread, true); err != nil {
+			return err
+		}
+	}
+	for _, thread := range active {
+		if err := observe(thread, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ScanSince limits ordinary listings to a fixed Unix-second cutoff. A zero
 // cutoff is a full compensation scan; time alone never proves a new birth.
 func (e *Engine) ScanSince(ctx context.Context, since int64) error {
@@ -243,11 +312,13 @@ func (e *Engine) ScanSince(ctx context.Context, since int64) error {
 	}
 	ids := map[string]bool{}
 	activeIDs := map[string]bool{}
+	activeMetadata := map[string]codexclient.Thread{}
 	archivedIDs := map[string]bool{}
 	archivedMetadata := map[string]codexclient.Thread{}
 	for _, t := range active {
 		ids[t.ID] = true
 		activeIDs[t.ID] = true
+		activeMetadata[t.ID] = t
 	}
 	for _, t := range archived {
 		ids[t.ID] = true
@@ -268,6 +339,13 @@ func (e *Engine) ScanSince(ctx context.Context, since int64) error {
 	for id := range ids {
 		if archivedIDs[id] {
 			t := archivedMetadata[id]
+			bound, err := e.observeBound(ctx, id, t, true)
+			if err != nil {
+				return err
+			}
+			if bound {
+				continue
+			}
 			proof := "ambiguous"
 			if bornAfterFence(id, fence, e.now().UnixMilli()) {
 				proof = "v7"
@@ -280,7 +358,11 @@ func (e *Engine) ScanSince(ctx context.Context, since int64) error {
 			}
 			continue
 		}
-		if err = e.check(ctx, id, fence, activeIDs[id]); err != nil {
+		var metadata *codexclient.Thread
+		if t, ok := activeMetadata[id]; ok {
+			metadata = &t
+		}
+		if err = e.check(ctx, id, fence, activeIDs[id], metadata); err != nil {
 			var candidate *CandidateError
 			if errors.As(err, &candidate) {
 				if err = e.Store.NotePending(ctx, e.HostID, id, candidate.Stage+"_unavailable"); err != nil {
@@ -296,10 +378,31 @@ func (e *Engine) ScanSince(ctx context.Context, since int64) error {
 }
 
 func (e *Engine) Check(ctx context.Context, id string, fence int64) error {
-	return e.check(ctx, id, fence, false)
+	return e.check(ctx, id, fence, false, nil)
 }
 
-func (e *Engine) check(ctx context.Context, id string, fence int64, observedActive bool) error {
+func (e *Engine) observeBound(ctx context.Context, id string, metadata codexclient.Thread, archived bool) (bool, error) {
+	if _, err := e.Store.Binding(ctx, e.HostID, id); err == nil {
+		if e.BoundObserved != nil && metadata.ID == id {
+			if err := e.BoundObserved(ctx, metadata, archived); err != nil {
+				return true, err
+			}
+		}
+		return true, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	return false, nil
+}
+
+func (e *Engine) check(ctx context.Context, id string, fence int64, observedActive bool, metadata *codexclient.Thread) error {
+	listed := codexclient.Thread{}
+	if metadata != nil {
+		listed = *metadata
+	}
+	if bound, err := e.observeBound(ctx, id, listed, false); err != nil || bound {
+		return err
+	}
 	o, err := e.Store.Observation(ctx, e.HostID, id)
 	if err == nil && (o.State == "ignored" || o.State == "excluded") {
 		return nil
@@ -316,11 +419,6 @@ func (e *Engine) check(ctx context.Context, id string, fence int64, observedActi
 		if err := e.Store.NotePending(ctx, e.HostID, id, ""); err != nil {
 			return err
 		}
-	}
-	if _, err = e.Store.Binding(ctx, e.HostID, id); err == nil {
-		return nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return err
 	}
 	if err = e.Store.ObserveCandidate(ctx, e.HostID, id, o.CWD, o.CreatedAt, "ambiguous"); err != nil {
 		return err

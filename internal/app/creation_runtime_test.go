@@ -253,6 +253,7 @@ func TestCreationRuntimeLateConfirmedIntentRecoversWithoutReconnect(t *testing.T
 			}
 			r.Native = n
 			creationRuntimeService(r)
+			r.ActivationSweepInterval = 20 * time.Millisecond
 			d := prepareRuntimeCreation(t, r, n, "created-thread")
 			activationFailed := make(chan struct{}, 1)
 			r.Notice = func(code string) {

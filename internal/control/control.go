@@ -60,8 +60,12 @@ type Snapshot struct {
 // ordinary readiness. Nil retains the total-binding semantics of older hosts.
 // Durable operation journals still include both scopes.
 type BindingHydrationScope struct {
-	OrdinaryBindings     int `json:"ordinary_bindings"`
-	VerificationBindings int `json:"verification_bindings"`
+	OrdinaryBindings     int  `json:"ordinary_bindings"`
+	VerificationBindings int  `json:"verification_bindings"`
+	LifecycleManaged     bool `json:"lifecycle_managed,omitempty"`
+	ActiveBindings       int  `json:"active_bindings,omitempty"`
+	DormantBindings      int  `json:"dormant_bindings,omitempty"`
+	RetryingBindings     int  `json:"retrying_bindings,omitempty"`
 }
 
 type request struct {

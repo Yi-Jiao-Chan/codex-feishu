@@ -96,7 +96,8 @@ func TestRuntimePinAndUnpinOldBoundThreadWithoutActivityOrNativeEvent(t *testing
 	n := &pinNativeFixture{runtimeNative: base, sections: []codexclient.ThreadSection{{ID: "pin", Name: "Pinned"}}}
 	r.Native, r.DiscoveryEnabled = n, false
 	r.PinScanInterval = 10 * time.Millisecond
-	r.IdlePollInterval = time.Hour // A pin wakeup must bypass the cold timer.
+	r.IdlePollInterval = 10 * time.Millisecond
+	r.ActorIdleTimeout = 30 * time.Millisecond
 	base.set("thread", r.AllowedRoots[0], "completed")
 	pinMeta(base, "thread", "", "Task")
 	runtimeBind(t, db, r, "thread", "chat")
@@ -130,6 +131,7 @@ func TestRuntimePinAndUnpinOldBoundThreadWithoutActivityOrNativeEvent(t *testing
 		})
 	}
 	waitName("🤖 Task")
+	runtimeWait(t, func() bool { return !r.ActorStarted("thread") })
 	pinMeta(base, "thread", "pin", "Task")
 	// A pin in an unbound old thread must not start discovery or create a group.
 	base.set("unbound", r.AllowedRoots[0], "completed")

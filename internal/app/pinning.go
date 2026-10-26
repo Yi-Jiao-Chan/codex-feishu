@@ -150,6 +150,9 @@ func (r *Runtime) runPins(ctx context.Context, native pinnedNative, previous sto
 					case actor.wake <- struct{}{}:
 					default:
 					}
+				} else if r.bindings[id] {
+					delete(r.retries, id)
+					r.queueActivationLocked(id, false)
 				}
 			}
 			r.mu.Unlock()

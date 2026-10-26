@@ -48,7 +48,7 @@ schema v4 已实现公开镜像、outbox、不可变投递 attempt、原生输�
 
 goal 自动续跑复用 schema 31：`Mirror.Direct` 明确表示进度或最终卡直接投递到绑定，其持久编码是 `parent_key` 与 `parent_message_id` 均为空，读回时恢复该标志。只有同步器核验原生 goal 来源后才创建这类公开镜像；未明确标记 Direct 的 AI 镜像仍要求恰好一个父消息。投递方式与父锚点一样不可变，重启和后续 steer 不改挂新输入；topic 领取时继续冻结原根消息。存在此类镜像后，旧二进制不能正确投递它们，不能自动回退或用旧数据库覆盖新活动。
 
-2026-10-16 的发现覆盖检查点和置顶快照复用 `m0_operations` 的独立 kind（`codex.discovery_checkpoint`、`codex.pinned_snapshot`），不新增 schema 迁移。键按 host/app 分开，保存前核验 deployment；发现的 last scan/full 时间不改变 baseline 出生 fence。置顶仅在完整读取成功后原子保存分区 ID、完整会话 ID 集合和观察时间，失败不覆盖旧集合。ID 集合是私有恢复数据，不进入普通日志或 status 诊断。服务重连先恢复已绑定 actor 和最后确认分区，再独立更新快照，不能将首次未知身份当成未置顶。
+2026-10-16 的发现覆盖检查点和置顶快照复用 `m0_operations` 的独立 kind（`codex.discovery_checkpoint`、`codex.pinned_snapshot`），不新增 schema 迁移。键按 host/app 分开，保存前核验 deployment；发现的 last scan/full 时间不改变 baseline 出生 fence。置顶仅在完整读取成功后原子保存分区 ID、完整会话 ID 集合和观察时间，失败不覆盖旧集合。ID 集合是私有恢复数据，不进入普通日志或 status 诊断。服务重连恢复断开时仍 active/retrying 的路由及持久待办，最后确认分区另行更新；其余已同步绑定保持 dormant，由 active/archive 元数据变化或新事件按需激活，不能将首次未知分区身份当成未置顶。自适应调度复用现有绑定、水位和操作日志，不新增 schema，也不把进程内 actor 状态写成新的授权事实。
 
 schema 29 为创建草稿保存 `workspace_mode` / `base_branch`，为创建 workflow 冻结基准 commit、Git 根/common-dir 与工作树路径。旧草稿和 workflow 保持 local，既有正文、远程 ID、收据和 attempt 不变。工作树同样使用 prepared / dispatching / unknown / rejected / confirmed 日志，只有明确 rejected 才能显式 retry；unknown 只核验既有完整检出。Materialize 必须有匹配目标路径的 confirmed 工作树收据，cwd 使用最终执行路径。详见 [09 新建工作树](09-feishu-task-creation.md#新建工作树)。
 

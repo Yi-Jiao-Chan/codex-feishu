@@ -65,7 +65,6 @@ type Service struct {
 	interactions         *interactions.Controller
 	creation             *creation.Manager
 	current              *Runtime
-	tasks                map[string]*TaskControls
 	taskIcons            cards.TaskIcons
 	actionsReady         map[string]bool
 	nativeConnected      atomic.Bool
@@ -122,8 +121,15 @@ func (s *Service) actionAvailable(thread string) bool {
 		return false
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.actionsReady[thread]
+	ready := s.actionsReady[thread]
+	runtime := s.current
+	s.mu.RUnlock()
+	if !ready && runtime != nil {
+		// The callback still fails closed, but its durable route is warmed so a
+		// retry can use freshly reconciled native state.
+		runtime.Wake(thread)
+	}
+	return ready
 }
 
 func (s *Service) clearActionsReady(thread string) {
@@ -400,6 +406,7 @@ func (s *Service) nativeLoop(ctx context.Context) {
 		interval = time.Second
 	}
 	offlineStaged := false
+	var carryover []string
 	for ctx.Err() == nil {
 		native, err := s.Connect(ctx)
 		if err != nil {
@@ -411,16 +418,17 @@ func (s *Service) nativeLoop(ctx context.Context) {
 		} else {
 			offlineStaged = false
 			runtime := s.generation(native)
+			runtime.initialThreads = append([]string(nil), carryover...)
 			s.mu.Lock()
 			s.current = runtime
 			s.mu.Unlock()
 			s.nativeConnected.Store(true)
 			s.notice("codex.connected")
 			err = runtime.Run(ctx) // Run cancels and joins its actors before returning.
+			carryover = runtime.carryoverThreads()
 			s.nativeConnected.Store(false)
 			s.mu.Lock()
 			s.current = nil
-			s.tasks = nil
 			s.interactions = nil
 			s.actionsReady = nil
 			s.mu.Unlock()
@@ -569,9 +577,9 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	settings := SessionSettings{Store: s.Store, Native: settingsNative, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID,
 		Operators: s.Config.Access.OperatorOpenIDs, BeginWrite: s.beginThreadDelivery, Now: s.now}
 	controllers := map[string]*submissions.Controller{}
-	var controllerMu sync.Mutex
+	tasks := map[string]*TaskControls{}
+	var actorStateMu sync.Mutex
 	s.mu.Lock()
-	s.tasks = map[string]*TaskControls{}
 	s.actionsReady = map[string]bool{}
 	s.mu.Unlock()
 	readQueue := native.Queue
@@ -579,12 +587,12 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		readQueue = metadata.QueueState
 	}
 	task := func(thread string) *TaskControls {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		t := s.tasks[thread]
+		actorStateMu.Lock()
+		defer actorStateMu.Unlock()
+		t := tasks[thread]
 		if t == nil {
 			t = &TaskControls{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, InFeishu: interactive != nil, Queue: readQueue, Icons: s.taskIcons}
-			s.tasks[thread] = t
+			tasks[thread] = t
 		}
 		return t
 	}
@@ -678,7 +686,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		return true, verification.ErrNotReady
 	}
 	r.ActorTick = func(ctx context.Context, thread string) error {
-		controllerMu.Lock()
+		actorStateMu.Lock()
 		c := controllers[thread]
 		if c == nil {
 			c = &submissions.Controller{Store: s.Store, Native: native, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, ThreadID: thread}
@@ -687,7 +695,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 			}
 			controllers[thread] = c
 		}
-		controllerMu.Unlock()
+		actorStateMu.Unlock()
 		if interactive != nil {
 			if err := interactive.Tick(ctx, thread); err != nil {
 				return err
@@ -698,6 +706,13 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		// or ordinary messages. Only further settings mutations are blocked.
 		return errors.Join(settingsErr, c.Tick(ctx))
 	}
+	r.ActorReleased = func(thread string) {
+		actorStateMu.Lock()
+		delete(controllers, thread)
+		delete(tasks, thread)
+		actorStateMu.Unlock()
+	}
+	r.ActorRetrying = s.clearActionsReady
 	r.HistoryPreparing = func(ctx context.Context, thread string, turns []codexclient.Turn) error {
 		opctx, release, _, err := s.beginVerificationOperation(ctx, thread)
 		if err != nil {
