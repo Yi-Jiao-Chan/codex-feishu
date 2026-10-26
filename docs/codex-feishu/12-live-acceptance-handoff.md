@@ -8,7 +8,7 @@
 
 停桥一致备份核验通过，schema 34 无迁移，原配置与共享 daemon 保持。PID 2936034，active/running/enabled，进程、稳定 CLI 与管理通道的版本摘要一致，两侧连接正常，历史 unknown 计数未增加。doctor/status 仍只有原来的 bindings_reconciled / operations_known 两项 required pending；恢复绑定数由 70/110 变为 66/110，差异尚未定位，不能记为整体健康通过。
 
-全仓业务测试、相关 race 与文档检查通过；真实飞书免 @ 输入、客户端队列和成员变化交互仍待验收，`phase1_released=false`。构建身份、备份和验证边界见[部署记录](../records/one-to-one-group-deployment-2026-10-26.md)。
+全仓业务测试、相关 race 与文档检查通过。部署后用户确认本轮测试没有问题，并授权合并 PR；该确认不扩展为全部客户端、成员变化边界或完整一期验收通过，两项历史对账 pending 及 `phase1_released=false` 保持。构建身份、备份和验证边界见[部署记录](../records/one-to-one-group-deployment-2026-10-26.md)。
 
 ## 2026-10-23 卡片邮箱分隔符替换（修正版已部署）
 
