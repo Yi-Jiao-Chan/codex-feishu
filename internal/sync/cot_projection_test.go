@@ -120,3 +120,42 @@ func TestCOTProjectionRejectsPartialAndConflictingSnapshotsBeforeClockMutation(t
 		t.Fatal("exact native pagination duplicate was projected twice")
 	}
 }
+
+func TestCOTProjectionVersionOneRetainsExactLegacyToolMetadata(t *testing.T) {
+	exit, duration := 0, int64(25)
+	turn := codexclient.Turn{ID: "turn", Status: "completed", ItemsView: "full", Items: []codexclient.Item{
+		{ID: "mixed", Type: "commandExecution", Status: "completed", Command: "cat fixture.go && git status && go test ./...", CommandActions: []codexclient.CommandAction{{Type: "read", Path: "/private/fixture.go"}}, ExitCode: &exit, DurationMS: &duration},
+		{ID: "unknown", Type: "commandExecution", Status: "declined", Command: "tail fixture.go"},
+		{ID: "file", Type: "fileChange", Status: "completed", Changes: []codexclient.FileChange{{Path: "/private/a.go", Kind: json.RawMessage(`{"type":"update"}`)}, {Path: "/private/b.go", Kind: json.RawMessage(`{"type":"add"}`)}}},
+	}}
+	raw, err := cotDocumentVersion("thread", turn, nil, 1000, cot.LegacyVersion)
+	doc := parseProjection(t, raw, err)
+	want := []cot.Item{
+		{ID: "mixed", Kind: "tool", Title: "读取 fixture.go；查看 Git 状态；运行 Go 测试", Status: "completed", Icon: "bash", TimestampMS: 1000},
+		{ID: "unknown", Kind: "tool", Title: "运行 tail（用途未识别）", Status: "declined", Icon: "bash", TimestampMS: 1000},
+		{ID: "file", Kind: "tool", Title: "编辑 a.go 等", Status: "completed", Icon: "write", TimestampMS: 1000},
+	}
+	if doc.Version != cot.LegacyVersion || !reflect.DeepEqual(doc.Items, want) {
+		t.Fatalf("version 1 history changed: %+v", doc)
+	}
+	for _, key := range []string{"tool_name", "details", "result_summary", "exit_code", "duration_ms"} {
+		if strings.Contains(raw, `"`+key+`"`) {
+			t.Fatal("version 2 fields entered a version 1 document")
+		}
+	}
+	raw, err = cotDocument("thread", turn, nil, 1000)
+	doc = parseProjection(t, raw, err)
+	if doc.Version != cot.Version || doc.Items[0].Title != "执行复合命令" || doc.Items[0].ExitCode == nil || doc.Items[0].DurationMS == nil || doc.Items[2].ResultSummary != "已修改 2 个文件" {
+		t.Fatal("current version did not provide the safe details")
+	}
+}
+
+func TestCOTProjectionRejectsUnsupportedVersionBeforeClockMutation(t *testing.T) {
+	turn := codexclient.Turn{ID: "turn", Status: "inProgress", Items: []codexclient.Item{agent("public", "公开说明", "commentary")}}
+	for _, version := range []int{0, -1, cot.Version + 1} {
+		clocks := map[string]int64{"old": 10}
+		if _, err := cotDocumentVersion("thread", turn, clocks, 1000, version); err == nil || !reflect.DeepEqual(clocks, map[string]int64{"old": 10}) {
+			t.Fatal("unsupported version mutated first-observation clocks")
+		}
+	}
+}

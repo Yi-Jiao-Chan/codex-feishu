@@ -164,15 +164,15 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			if old.Kind != m.Kind || old.TurnID != m.TurnID || old.Direct != m.Direct || old.ParentKey != m.ParentKey || old.ParentMessageID != m.ParentMessageID {
 				return ErrConflict
 			}
-			_, oldCOT, parseErr := cot.Parse(old.Card)
+			oldDocument, oldCOT, parseErr := cot.Parse(old.Card)
 			if parseErr != nil {
 				return parseErr
 			}
-			_, newCOT, parseErr := cot.Parse(m.Card)
+			newDocument, newCOT, parseErr := cot.Parse(m.Card)
 			if parseErr != nil {
 				return parseErr
 			}
-			if oldCOT != newCOT {
+			if oldCOT != newCOT || oldCOT && oldDocument.Version != newDocument.Version {
 				return ErrConflict
 			}
 			if oldCOT {

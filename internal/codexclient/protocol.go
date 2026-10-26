@@ -65,6 +65,11 @@ type CommandAction struct {
 }
 
 type Item struct {
+	// Native ThreadItem commandExecution has nullable int32 exitCode;
+	// commandExecution/mcpToolCall/dynamicToolCall have nullable int64 durationMs.
+	// Consumers must check the variant before projecting these optional facts.
+	ExitCode       *int              `json:"exitCode,omitempty"`
+	DurationMS     *int64            `json:"durationMs,omitempty"`
 	CommandActions []CommandAction   `json:"commandActions"`
 	Server         string            `json:"server"`
 	Tool           string            `json:"tool"`

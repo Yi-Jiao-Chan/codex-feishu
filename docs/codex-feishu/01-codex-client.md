@@ -64,6 +64,8 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 
 该字段集依据 0.162.1 的本地离线 experimental schema，生成摘要与 [固定协议基线](../../compat/protocol.go) 一致；没有因此修改兼容版本白名单或启动替代 app-server。协议事件和工具类型概览见 [OpenAI App Server](https://learn.chatgpt.com/docs/app-server#items)。
 
+原生 CoT 的安全结果另外接收 nullable `exitCode` / `durationMs`：退出码只用于 commandExecution，耗时只用于 commandExecution、mcpToolCall 和 dynamicToolCall；fileChange 没有这两个字段。缺失/null 与 0 分开，投影仅接受 int32 范围退出码及非负 int64 毫秒值，不用首次观察时间推算工具耗时。字段形状已核对本地 0.162.1 schema 与[固定官方源码](https://github.com/openai/codex/blob/25f50de6ed95627e1ffe7f11ca30d3d62c6e20e6/codex-rs/app-server-protocol/src/protocol/v2/item.rs#L255-L317)，没有增加 stdout、stderr、MCP error 或结果正文的采集。
+
 ## 兼容清单
 
 发布清单至少记录：实际 app-server 版本、CLI 版本、协议 schema 摘要、支持的方法与字段、27 项实验结果、真实 App / 飞书联调报告。版本与方法字段同时核验；仅 CLI 版本正确不算通过。

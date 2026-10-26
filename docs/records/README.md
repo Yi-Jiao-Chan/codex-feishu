@@ -8,6 +8,7 @@
 
 | 文档 | 日期 / 版本 |
 | --- | --- |
+| [原生 CoT 短标题与工具详情](cot-tool-details-2026-10-26.md) | 2026-10-26 |
 | [单用户任务群免 @ 输入与本地部署](one-to-one-group-deployment-2026-10-26.md) | 2026-10-26 |
 | [飞书卡片邮箱脱敏与受控重发](feishu-email-redaction-2026-10-23.md) | 2026-10-23 |
 | [飞书输入触发原工作树快照恢复](feishu-worktree-auto-restore-2026-10-23.md) | 2026-10-23 |

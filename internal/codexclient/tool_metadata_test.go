@@ -27,3 +27,37 @@ func TestNativeToolMetadataDecodesWithoutRetainingUnusedPayloads(t *testing.T) {
 		t.Fatal("unused action commands, search queries, arguments or tool output were retained", err)
 	}
 }
+
+func TestNativeToolExecutionFactsPreserveMissingNullAndZero(t *testing.T) {
+	// Nullable fields follow the pinned native ThreadItem schema. Only command
+	// execution defines exitCode; MCP and dynamic calls also define durationMs.
+	for _, raw := range []string{
+		`{"type":"commandExecution"}`,
+		`{"type":"commandExecution","exitCode":null,"durationMs":null}`,
+		`{"type":"commandExecution","exitCode":0,"durationMs":0}`,
+		`{"type":"commandExecution","exitCode":-1,"durationMs":17}`,
+		`{"type":"mcpToolCall","durationMs":0}`,
+		`{"type":"dynamicToolCall","durationMs":23}`,
+	} {
+		var item Item
+		if err := json.Unmarshal([]byte(raw), &item); err != nil {
+			t.Fatal(err)
+		}
+		var expected struct {
+			ExitCode   *int   `json:"exitCode"`
+			DurationMS *int64 `json:"durationMs"`
+		}
+		_ = json.Unmarshal([]byte(raw), &expected)
+		if !reflect.DeepEqual(item.ExitCode, expected.ExitCode) || !reflect.DeepEqual(item.DurationMS, expected.DurationMS) {
+			t.Fatal("nullable execution facts were lost")
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if item.ExitCode != nil && *item.ExitCode == 0 && !strings.Contains(string(encoded), `"exitCode":0`) ||
+			item.DurationMS != nil && *item.DurationMS == 0 && !strings.Contains(string(encoded), `"durationMs":0`) {
+			t.Fatal("explicit zero was omitted from the execution facts")
+		}
+	}
+}

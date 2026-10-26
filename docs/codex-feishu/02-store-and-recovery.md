@@ -28,7 +28,9 @@
 
 ## Schema 31：原生 CoT 投递状态
 
-新增 `cot_deliveries` 保存每个进度镜像的 cot_id、已确认公开投影和 completed 标志；原 outbound_attempts 新增 cot_step、cot_id、cot_events_json、cot_state_json、cot_state_before 与 cot_caught_up。继续复用原 mirrors/outbound、绑定、授权租约和启动恢复，不新增接收器或独立出站队列。CoT 文档以 codex_feishu_cot=1 与普通 Card JSON 区分；每轮首次投影后固定传输类型，旧卡片、旧 unknown 和回调均保留。
+新增 `cot_deliveries` 保存每个进度镜像的 cot_id、已确认公开投影和 completed 标志；原 outbound_attempts 新增 cot_step、cot_id、cot_events_json、cot_state_json、cot_state_before 与 cot_caught_up。继续复用原 mirrors/outbound、绑定、授权租约和启动恢复，不新增接收器或独立出站队列。CoT 文档以 `codex_feishu_cot` 标记与普通 Card JSON 区分；每轮首次投影后固定传输类型，旧卡片、旧 unknown 和回调均保留。
+
+2026-10-26 起新进度文档使用展示版本 2，保存短标题、工具身份、安全详情和可选退出码/耗时；旧版本 1 继续原样投影，活动轮次也不升级。StageSnapshot 拒绝同一镜像切换展示版本；新 ACK 保存 `document_version=2`，已开始但没有该字段的旧 ACK 按版本 1 解释，避免重启后重复标题或结果。停止目标查询同时识别版本 1/2。无需 SQL 迁移；出现版本 2 文档后，不能回退到只理解版本 1 的二进制或用旧数据库覆盖新活动。
 
 单个 claim 只冻结 Create、一次 Append 或 Complete。确认 Create 只保存远程身份；Append 原子安装该批次确认后的投影；终态仅在 Complete 确认后推进整个 revision。运行态追上当前快照时可标记该 revision 已同步，后续快照继续追加。状态哈希不匹配、结果 unknown 或本地提交失败均不推进；重启 dispatching 转 unknown，不能通过普通 post 占位读回解冻。终态事件已确认的进度冻结原投影与完成原因，不因 Complete 前后迟到修正重新打开，最终答复仍可通过原链路更正。
 

@@ -33,7 +33,7 @@ func cotStateHash(raw string) string {
 // interrupt its successor. Ambiguous running turns fail closed; native terminal
 // turns cannot block stopping their successor while CoT delivery is unfinished.
 func cotStopTarget(ctx context.Context, tx *sql.Tx, scope SubmissionScope) (turn string, hasCOT, unambiguous bool, err error) {
-	rows, err := tx.QueryContext(ctx, `SELECT m.turn_id,m.terminal,COALESCE(d.completed,0),(o.state='rejected' AND m.remote_id='' AND COALESCE(d.cot_id,'')='') FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) LEFT JOIN cot_deliveries d USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? AND m.kind='progress' AND json_extract(m.card_json,'$.codex_feishu_cot')=1`, scope.HostID, scope.ThreadID)
+	rows, err := tx.QueryContext(ctx, `SELECT m.turn_id,m.terminal,COALESCE(d.completed,0),(o.state='rejected' AND m.remote_id='' AND COALESCE(d.cot_id,'')='') FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) LEFT JOIN cot_deliveries d USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? AND m.kind='progress' AND json_extract(m.card_json,'$.codex_feishu_cot') IN (?,?)`, scope.HostID, scope.ThreadID, cot.LegacyVersion, cot.Version)
 	if err != nil {
 		return "", false, false, err
 	}

@@ -17,6 +17,7 @@ type State struct {
 	ThreadID        string               `json:"thread_id,omitempty"`
 	TurnID          string               `json:"turn_id,omitempty"`
 	Started         bool                 `json:"started"`
+	DocumentVersion int                  `json:"document_version,omitempty"`
 	Finished        bool                 `json:"finished"`
 	LastTimestampMS int64                `json:"last_timestamp_ms,omitempty"`
 	Items           map[string]ItemState `json:"items,omitempty"`
@@ -74,8 +75,20 @@ func Plan(doc Document, confirmed State, nowMS int64) (Batch, error) {
 		(confirmed.Finished && !confirmed.Started) {
 		return Batch{}, errors.New("invalid confirmed COT state")
 	}
+	if confirmed.Started {
+		version := confirmed.DocumentVersion
+		if version == 0 {
+			version = LegacyVersion // Pre-versioning ACKs keep their original rendering.
+		}
+		if version != doc.Version {
+			return Batch{}, errors.New("COT presentation version changed after confirmation")
+		}
+	}
 	p := planner{doc: doc, now: nowMS, Batch: Batch{State: confirmed}}
 	p.State.ThreadID, p.State.TurnID = doc.ThreadID, doc.TurnID
+	if doc.Version == Version {
+		p.State.DocumentVersion = Version
+	}
 	p.State.Items = make(map[string]ItemState, len(confirmed.Items))
 	for id, value := range confirmed.Items {
 		p.State.Items[id] = value
@@ -305,7 +318,14 @@ func (p *planner) tool(item Item, terminal bool, state *ItemState) bool {
 	// An unavailable or declined item is not evidence that an invocation began.
 	// Keep it visible as a public note without inflating native tool-call counts.
 	if !state.Tool.Started && (status == "unknown" || status == "declined") {
-		return p.message("tool-note:"+item.ID, toolResult(item.Title, status), item.TimestampMS, true, &state.Note)
+		note := toolResult(item.Title, status)
+		if p.doc.Version == Version {
+			note = item.Title
+			if status == "declined" {
+				note += " · 已拒绝"
+			}
+		}
+		return p.message("tool-note:"+item.ID, note, item.TimestampMS, true, &state.Note)
 	}
 	const summaryPrefix = "工具动作摘要更新："
 	// Note.Text is the acknowledged public summary, including any correction
@@ -327,10 +347,17 @@ func (p *planner) tool(item Item, terminal bool, state *ItemState) bool {
 			icon = "default"
 		}
 		title := item.Title
-		if status == "failed" {
+		if p.doc.Version == LegacyVersion && status == "failed" {
 			title += " · 执行失败"
 		}
-		if !p.emit("TOOL_CALL_START", map[string]any{"toolCallId": id, "toolCallName": title, "title": title, "icon": icon}, item.TimestampMS) {
+		name := title
+		if p.doc.Version == Version {
+			name = item.ToolName
+			if name == "" {
+				name = "tool"
+			}
+		}
+		if !p.emit("TOOL_CALL_START", map[string]any{"toolCallId": id, "toolCallName": name, "title": title, "icon": icon}, item.TimestampMS) {
 			return false
 		}
 		state.Tool.Started, state.Tool.Title = true, item.Title
@@ -356,8 +383,16 @@ func (p *planner) tool(item Item, terminal bool, state *ItemState) bool {
 		return true
 	}
 	result := toolResult(item.Title, status)
+	content := map[string]any{"messageId": StableID(p.doc, "result", item.ID, 0), "toolCallId": id, "role": "tool", "content": result}
+	if p.doc.Version == Version {
+		content = p.detailedToolResult(item, status, state.Tool.Title)
+		// Compare all rendered fields, including a newly available exit code or
+		// duration. The legacy state retains its historical text-only value.
+		encoded, _ := json.Marshal(content)
+		result = string(encoded)
+	}
 	if state.Tool.Result != result {
-		if !p.emit("TOOL_CALL_RESULT", map[string]any{"messageId": StableID(p.doc, "result", item.ID, 0), "toolCallId": id, "role": "tool", "content": result}, item.TimestampMS) {
+		if !p.emit("TOOL_CALL_RESULT", content, item.TimestampMS) {
 			return false
 		}
 		state.Tool.Result = result

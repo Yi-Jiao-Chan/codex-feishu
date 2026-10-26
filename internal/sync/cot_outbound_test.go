@@ -215,6 +215,112 @@ func (f *cotOutboundFixture) drain(t *testing.T) {
 	t.Fatal("COT outbound did not settle")
 }
 
+func TestCOTOutboundToolDetailsSurvivePersistenceAndRestart(t *testing.T) {
+	f := newCOTOutboundFixture(t, false, "synthetic progress")
+	f.turn.Items[3] = codexclient.Item{
+		ID: "tool", Type: "commandExecution", Status: "inProgress", Command: "cat PRIVATE_ARGUMENT",
+		CommandActions: []codexclient.CommandAction{{Type: "read", Path: "/PRIVATE_DIRECTORY/first.go"}, {Type: "read", Path: "/PRIVATE_DIRECTORY/second.go"}},
+		Text:           "PRIVATE_OUTPUT",
+	}
+	f.turn.Items = append(f.turn.Items, codexclient.Item{ID: "failed-tool", Type: "commandExecution", Status: "inProgress", Command: "go test ./... -run PRIVATE_PATTERN"})
+	apply(t, f.e, 201, false, f.turn)
+	f.drain(t)
+	f.recover(t)
+	zero, failure, elapsed := 0, 2, int64(25)
+	f.turn.Items[3].ExitCode, f.turn.Items[3].DurationMS = &zero, &elapsed
+	f.turn.Items[4].Status, f.turn.Items[4].ExitCode = "failed", &failure
+	f.terminal(t)
+	f.drain(t)
+	starts, results := make(map[string]bool), make(map[string]map[string]any)
+	for _, call := range f.g.cotCalls {
+		for _, event := range call.events {
+			var content map[string]any
+			if err := json.Unmarshal([]byte(event.Content), &content); err != nil {
+				t.Fatal(err)
+			}
+			switch event.EventType {
+			case "TOOL_CALL_START":
+				id := content["toolCallId"].(string)
+				if starts[id] || content["toolCallName"] != "commandExecution" {
+					t.Fatal("tool identity changed or invocation was duplicated")
+				}
+				starts[id] = true
+			case "TOOL_CALL_RESULT":
+				id := content["toolCallId"].(string)
+				if !starts[id] || results[id] != nil {
+					t.Fatal("tool detail lost its invocation or was repeated")
+				}
+				results[id] = content
+			}
+		}
+	}
+	if len(starts) != 2 || len(results) != 2 {
+		t.Fatal("missing independent native tools and expandable details")
+	}
+	for _, result := range results {
+		body := result["content"].(string)
+		if strings.Contains(body, "仅同步状态") || strings.Contains(body, "原始输出未同步") || strings.Contains(body, "用途未识别") {
+			t.Fatal("normal detail contained legacy diagnostic boilerplate")
+		}
+		if result["exitCode"] == float64(0) {
+			if result["isError"] != false || result["durationMs"] != float64(25) || !strings.Contains(body, "first.go") || !strings.Contains(body, "second.go") {
+				t.Fatal("completed tool lost safe file details or native execution facts")
+			}
+		} else if result["exitCode"] != float64(2) || result["isError"] != true || !strings.Contains(body, "执行失败") {
+			t.Fatal("failed tool result was misrepresented")
+		}
+	}
+	before := f.g.writesCount()
+	apply(t, f.e, 400, false, f.turn)
+	f.drain(t)
+	if f.g.writesCount() != before {
+		t.Fatal("replayed terminal history repeated completed tool details")
+	}
+}
+
+func TestCOTOutboundLegacyDocumentKeepsPresentationAfterUpgradeAndRestart(t *testing.T) {
+	f := newCOTOutboundFixture(t, false, "synthetic progress")
+	legacy, err := cotDocumentVersion("thread", f.turn, nil, 200, cot.LegacyVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the persisted document produced before presentation version 2.
+	if _, err := f.e.Store.DB.Exec(`UPDATE mirrors SET card_json=? WHERE host_id='host' AND thread_id='thread' AND mirror_key=?`, legacy, mirrorKey("progress", "turn")); err != nil {
+		t.Fatal(err)
+	}
+	f.drain(t)
+	f.recover(t)
+	f.e.NativeCOT = false // An existing native stream must still finish normally.
+	elapsed := int64(25)
+	f.turn.Items[3].DurationMS = &elapsed
+	f.terminal(t)
+	m, err := f.e.Store.Mirror(context.Background(), "host", "thread", mirrorKey("progress", "turn"))
+	doc, native, parseErr := cot.Parse(m.Card)
+	if err != nil || parseErr != nil || !native || doc.Version != cot.LegacyVersion {
+		t.Fatal("existing COT document changed presentation version", err, parseErr)
+	}
+	f.drain(t)
+	results := 0
+	for _, call := range f.g.cotCalls {
+		for _, event := range call.events {
+			if event.EventType != "TOOL_CALL_RESULT" {
+				continue
+			}
+			results++
+			var content map[string]any
+			if err := json.Unmarshal([]byte(event.Content), &content); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(content["content"].(string), "已完成（仅同步状态，原始输出未同步）") || content["durationMs"] != nil || content["isError"] != nil {
+				t.Fatal("legacy acknowledged stream received new detail rendering")
+			}
+		}
+	}
+	if results != 1 {
+		t.Fatal("legacy stream did not finish exactly once")
+	}
+}
+
 func TestCOTOutboundEngineRunsChunkedLifecycleOnOneMessage(t *testing.T) {
 	f := newCOTOutboundFixture(t, false, strings.Repeat("公开进度😀<>&", 10000))
 	grants, releases := 0, 0

@@ -33,6 +33,7 @@
 | [飞书原生目录选择卡：平台能力与 UX 边界](feishu-directory-card-platform-ux-2026-10-15.md) | 2026-10-15 |
 | [飞书目录选择：交互模式对标与方案判断](feishu-directory-picker-patterns-2026-10-15.md) | 2026-10-15 |
 | [执行过程折叠标题与记录间距](feishu-progress-typography-2026-10-13.md) | 2026-10-13 |
+| [飞书原生 COT 内容质量：实现诊断、开源对照与改进目标](feishu-cot-content-quality-2026-10-26.md) | 2026-10-26 |
 | [同一张过程卡与原消息状态 reaction 调研](progress-cards-reactions-2026-10-10.md) | 2026-10-10 |
 
 新增研究沿用 `topic-version.md` 或 `topic-YYYY-MM-DD.md`，标明范围、来源、已核实事实及推断。实施进度和候选部署日志写入 records，不继续追加到本目录。
