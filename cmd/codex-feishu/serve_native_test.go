@@ -122,6 +122,9 @@ func (g *serveVersionGateway) CreateGroupWithDescription(context.Context, string
 	return "", errors.New("unexpected group mutation")
 }
 func (*serveVersionGateway) BotInChat(context.Context, string) (bool, error) { return true, nil }
+func (*serveVersionGateway) IsOneToOneGroup(context.Context, string, string) (bool, error) {
+	return false, nil
+}
 func (*serveVersionGateway) MemberIDs(context.Context, string) ([]string, error) {
 	return []string{"ou_fixture_owner_valid"}, nil
 }
