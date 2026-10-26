@@ -1,17 +1,10 @@
 package app
 
-import (
-	"time"
+import "codex-feishu/internal/codexclient"
 
-	"codex-feishu/internal/codexclient"
-)
-
-// Unknown activity and unfinished work stay on the normal reconciliation path.
-// Only a successfully read, old and idle thread can reduce native polling.
-func idleThread(meta codexclient.Thread, turns []codexclient.Turn, now time.Time) bool {
-	if meta.UpdatedAt <= 0 || meta.UpdatedAt >= now.Add(-recentActivityWindow).Unix() {
-		return false
-	}
+// Only a complete terminal history with an idle native status can release its
+// actor. Durable work checks in the runtime remain authoritative.
+func settledThread(meta codexclient.Thread, turns []codexclient.Turn) bool {
 	if meta.Status.Type != "idle" && meta.Status.Type != "notLoaded" {
 		return false
 	}

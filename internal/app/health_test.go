@@ -69,6 +69,47 @@ func TestHealthReadsExistingConnectionsAndHydrationWithoutBodies(t *testing.T) {
 	}
 }
 
+func TestHealthReportsAdaptiveBindingLifecycleWithoutRouteIdentities(t *testing.T) {
+	db, cfg, _ := serviceFixture(t)
+	gateway := &serviceGateway{}
+	gateway.ready.Store(true)
+	runtime := &Runtime{running: true, actors: map[string]*threadActor{}, retries: map[string]actorRetry{}}
+	s := &Service{Store: db, Config: cfg, Gateway: gateway, current: runtime, actionsReady: map[string]bool{"thread": true}}
+	s.running.Store(true)
+	s.nativeConnected.Store(true)
+
+	live, err := s.Health(context.Background())
+	if err != nil || live.BindingHydrationScope == nil || live.BindingHydrationScope.LifecycleManaged || live.HydratedBindings != 1 {
+		t.Fatal("initializing lifecycle published adaptive counts before classification", live, err)
+	}
+	runtime.mu.Lock()
+	runtime.lifecycleReady = true
+	runtime.mu.Unlock()
+	live, err = s.Health(context.Background())
+	if err != nil || live.BindingHydrationScope == nil || !live.BindingHydrationScope.LifecycleManaged || live.BindingHydrationScope.ActiveBindings != 0 || live.BindingHydrationScope.DormantBindings != 1 || live.BindingHydrationScope.RetryingBindings != 0 || live.HydratedBindings != 0 {
+		t.Fatal("dormant route was reported as an active hydration target", live, err)
+	}
+	runtime.mu.Lock()
+	runtime.retries["thread"] = actorRetry{due: time.Now().Add(time.Minute), delay: time.Minute}
+	runtime.mu.Unlock()
+	live, err = s.Health(context.Background())
+	if err != nil || live.BindingHydrationScope.RetryingBindings != 1 || live.BindingHydrationScope.DormantBindings != 0 || live.HydratedBindings != 0 {
+		t.Fatal("activation retry was hidden as dormant", live, err)
+	}
+	runtime.mu.Lock()
+	delete(runtime.retries, "thread")
+	runtime.actors["thread"] = &threadActor{thread: "thread"}
+	runtime.mu.Unlock()
+	live, err = s.Health(context.Background())
+	if err != nil || live.BindingHydrationScope.ActiveBindings != 1 || live.BindingHydrationScope.RetryingBindings != 0 || live.HydratedBindings != 1 {
+		t.Fatal("active hydrated route was not reported", live, err)
+	}
+	b, _ := json.Marshal(live)
+	if strings.Contains(string(b), `"thread"`) {
+		t.Fatal("adaptive health exposed a route identity", string(b))
+	}
+}
+
 func TestHealthAndButtonsFailClosedBeforeDisconnectedActorsJoin(t *testing.T) {
 	db, cfg, root := serviceFixture(t)
 	native := &healthNative{serviceNative: serviceTestNative(root), done: make(chan struct{})}

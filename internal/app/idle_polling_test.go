@@ -9,32 +9,27 @@ import (
 	"codex-feishu/internal/codexclient"
 )
 
-func TestIdleThreadRequiresOldConfirmedIdleMetadataAndTerminalHistory(t *testing.T) {
-	now := time.Unix(2000000000, 0)
-	old := codexclient.Thread{UpdatedAt: now.Add(-48 * time.Hour).Unix()}
-	old.Status.Type = "idle"
+func TestSettledThreadRequiresIdleMetadataAndTerminalHistory(t *testing.T) {
+	idle := codexclient.Thread{}
+	idle.Status.Type = "idle"
 	completed := []codexclient.Turn{{Status: "completed"}}
-	if !idleThread(old, completed, now) {
-		t.Fatal("old idle thread stayed hot")
+	if !settledThread(idle, completed) {
+		t.Fatal("idle terminal thread did not settle")
 	}
 	for _, tc := range []struct {
 		name   string
-		update int64
 		status string
 		turn   string
 	}{
-		{"unknown activity", 0, "idle", "completed"},
-		{"at cutoff", now.Add(-24 * time.Hour).Unix(), "idle", "completed"},
-		{"recent activity", now.Unix(), "idle", "completed"},
-		{"active", old.UpdatedAt, "active", "completed"},
-		{"unknown status", old.UpdatedAt, "", "completed"},
-		{"unfinished history", old.UpdatedAt, "idle", "inProgress"},
+		{"active", "active", "completed"},
+		{"unknown status", "", "completed"},
+		{"unfinished history", "idle", "inProgress"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			meta := old
-			meta.UpdatedAt, meta.Status.Type = tc.update, tc.status
-			if idleThread(meta, []codexclient.Turn{{Status: tc.turn}}, now) {
-				t.Fatal("unconfirmed idle state reduced polling")
+			meta := idle
+			meta.Status.Type = tc.status
+			if settledThread(meta, []codexclient.Turn{{Status: tc.turn}}) {
+				t.Fatal("unsettled native state permitted actor eviction")
 			}
 		})
 	}
@@ -46,6 +41,7 @@ func TestIdleActorSkipsNormalHistoryPollAndWakesImmediately(t *testing.T) {
 	r.Native, r.DiscoveryEnabled = n, false
 	r.IdlePollInterval = 50 * time.Millisecond
 	r.IdleHistoryInterval = 5 * time.Minute
+	r.ActorIdleTimeout = time.Hour
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixMilli())
 	r.Now = func() time.Time { return time.UnixMilli(clock.Load()) }

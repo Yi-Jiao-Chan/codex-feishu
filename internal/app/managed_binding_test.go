@@ -455,10 +455,11 @@ func TestRuntimeActivationReportsQueueAdmissionAndLocalPresence(t *testing.T) {
 	if r.Activate("thread") || r.ActorStarted("thread") {
 		t.Fatal("stopped runtime admitted activation")
 	}
-	r.running, r.activations = true, make(chan string, 1)
+	r.running, r.activations = true, make(chan struct{}, 1)
+	r.pending = map[string]bool{}
 	r.actors = map[string]*threadActor{}
-	if !r.Activate("thread") || r.Activate("other") || r.ActorStarted("thread") {
-		t.Fatal("queue admission masqueraded as actor start")
+	if !r.Activate("thread") || !r.Activate("other") || r.ActorStarted("thread") || len(r.pending) != 2 {
+		t.Fatal("coalesced queue admission masqueraded as actor start or dropped work")
 	}
 	r.actors["thread"] = &threadActor{thread: "thread"}
 	if !r.ActorStarted("thread") {

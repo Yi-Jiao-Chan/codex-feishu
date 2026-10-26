@@ -71,13 +71,39 @@ func (s *Service) Health(ctx context.Context) (control.Snapshot, error) {
 	}
 	result.BindingHydrationScope = &control.BindingHydrationScope{OrdinaryBindings: len(bindings), VerificationBindings: verificationCount}
 	s.mu.RLock()
+	runtime := s.current
+	ready := make(map[string]bool, len(s.actionsReady))
+	for thread, value := range s.actionsReady {
+		ready[thread] = value
+	}
+	s.mu.RUnlock()
 	if result.NativeConnected {
-		for _, b := range bindings {
-			if s.actionsReady[b.ThreadID] {
-				result.HydratedBindings++
+		active, retrying, managed := map[string]bool{}, map[string]bool{}, false
+		if runtime != nil {
+			active, retrying, managed = runtime.bindingLifecycle()
+		}
+		result.BindingHydrationScope.LifecycleManaged = managed
+		if managed {
+			for _, b := range bindings {
+				switch {
+				case active[b.ThreadID]:
+					result.BindingHydrationScope.ActiveBindings++
+					if ready[b.ThreadID] {
+						result.HydratedBindings++
+					}
+				case retrying[b.ThreadID]:
+					result.BindingHydrationScope.RetryingBindings++
+				default:
+					result.BindingHydrationScope.DormantBindings++
+				}
+			}
+		} else {
+			for _, b := range bindings {
+				if ready[b.ThreadID] {
+					result.HydratedBindings++
+				}
 			}
 		}
 	}
-	s.mu.RUnlock()
 	return result, nil
 }

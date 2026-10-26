@@ -104,12 +104,19 @@ func liveStatus(s control.Snapshot) (output, int) {
 	observe("instance.feishu_connection", s.FeishuConnected, "existing Feishu receiver ready state")
 	target := s.Persistent.Bindings
 	scopeKnown := target >= 0 && s.HydratedBindings >= 0
+	retrying := int64(0)
 	if scope := s.BindingHydrationScope; scope != nil {
 		ordinary, verification := int64(scope.OrdinaryBindings), int64(scope.VerificationBindings)
 		scopeKnown = scopeKnown && ordinary >= 0 && verification >= 0 && ordinary <= target && verification == target-ordinary
 		target = ordinary
+		if scope.LifecycleManaged {
+			active, dormant := int64(scope.ActiveBindings), int64(scope.DormantBindings)
+			retrying = int64(scope.RetryingBindings)
+			scopeKnown = scopeKnown && active >= 0 && dormant >= 0 && retrying >= 0 && active+dormant+retrying == ordinary
+			target = active
+		}
 	}
-	observe("instance.bindings_reconciled", scopeKnown && int64(s.HydratedBindings) == target, "ordinary bound threads hydrated in this native generation; explicitly marked private test routes are reported separately")
+	observe("instance.bindings_reconciled", scopeKnown && retrying == 0 && int64(s.HydratedBindings) == target, "active ordinary bindings are hydrated, dormant bindings consume no actor, and queued or retrying activations are reported as pending; explicitly marked private test routes are separate")
 	if s.DiscoveryEnabled {
 		observe("instance.discovery_baseline", s.Persistent.BaselineComplete, "initial history baseline must complete before automatic group discovery is ready")
 	}

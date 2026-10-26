@@ -196,18 +196,18 @@ func TestRuntimeVerificationActivateSerializesValidRoutesAndShutdown(t *testing.
 		t.Fatal("missing binding was not rejected")
 	}
 	runtimeVerificationBind(t, r, "verified")
-	r.Wake("verified") // Unknown Wake cannot activate the new route.
+	r.Wake("verified") // A newly persisted route needs its explicit activation handoff.
 	r.mu.Lock()
 	actors := len(r.actors)
 	r.mu.Unlock()
 	if actors != 0 {
-		t.Fatal("Wake activated an unknown thread")
+		t.Fatal("unknown Wake activated a route before its handoff")
 	}
 	r.Activate("verified") // Durable marker is currently invalid.
 	select {
 	case <-notices:
 	case <-time.After(5 * time.Second):
-		t.Fatal("invalid marker was not rejected")
+		t.Fatal("invalid activation was not rejected")
 	}
 	if wrapped.attachCount.Load() != 0 {
 		t.Fatal("invalid activation attached a native thread")

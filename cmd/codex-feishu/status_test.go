@@ -94,6 +94,40 @@ func TestLiveStatusRequiresConnectionsHydrationAndKnownOperations(t *testing.T) 
 	}
 }
 
+func TestLiveStatusAcceptsDormantBindingsAndSurfacesActivationRetries(t *testing.T) {
+	base := control.Snapshot{Running: true, NativeConnected: true, FeishuConnected: true,
+		Persistent: store.PersistentHealth{Bindings: 100},
+		BindingHydrationScope: &control.BindingHydrationScope{
+			OrdinaryBindings: 100, LifecycleManaged: true, DormantBindings: 100,
+		}}
+	if got, code := liveStatus(base); code != 0 || !got.OK {
+		t.Fatal("dormant bindings blocked an otherwise healthy adaptive runtime", got, code)
+	}
+	active := base
+	active.BindingHydrationScope = &control.BindingHydrationScope{
+		OrdinaryBindings: 100, LifecycleManaged: true, ActiveBindings: 2, DormantBindings: 98,
+	}
+	active.HydratedBindings = 2
+	if got, code := liveStatus(active); code != 0 || !got.OK {
+		t.Fatal("active adaptive scope did not use its actual hydration target", got, code)
+	}
+	retrying := active
+	retrying.BindingHydrationScope = &control.BindingHydrationScope{
+		OrdinaryBindings: 100, LifecycleManaged: true, ActiveBindings: 1, DormantBindings: 98, RetryingBindings: 1,
+	}
+	retrying.HydratedBindings = 1
+	if got, code := liveStatus(retrying); code != 5 || got.OK {
+		t.Fatal("activation retry was reported healthy", got, code)
+	}
+	inconsistent := base
+	inconsistent.BindingHydrationScope = &control.BindingHydrationScope{
+		OrdinaryBindings: 100, LifecycleManaged: true, DormantBindings: 99,
+	}
+	if got, code := liveStatus(inconsistent); code != 5 || got.OK {
+		t.Fatal("inconsistent adaptive scope was accepted", got, code)
+	}
+}
+
 func TestLiveStatusRequiresEveryJournalAndRecoveredRequestToBeKnown(t *testing.T) {
 	base := control.Snapshot{Running: true, NativeConnected: true, FeishuConnected: true, HydratedBindings: 1, Persistent: store.PersistentHealth{Bindings: 1}}
 	for _, test := range []struct {
