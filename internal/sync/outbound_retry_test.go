@@ -57,6 +57,34 @@ func TestRateLimitedFinalWaitsAcrossRestartThenDeliversLatestBody(t *testing.T) 
 	}
 }
 
+func TestRateLimitedFinalPermanentRetryFailureSendsNotice(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := outboundFixture(t, "final")
+	limited := &feishu.RateLimited{Rejection: &feishu.Rejected{Code: 99991400, HTTPStatus: 429}, RetryAfter: time.Second}
+	rejected := &feishu.Rejected{Code: 230099, HTTPStatus: 400, RequestID: "req-after-rate-limit"}
+	g := &outboundGateway{s: s, t: t, errs: []error{limited, rejected, nil}}
+	clock := time.UnixMilli(1000)
+	o := Outbound{Store: s, Gateway: g, Now: func() time.Time { return clock }}
+	first, err := o.DispatchOne(ctx, "host", "thread", clock.UnixMilli())
+	if err != nil || first.State != "deferred" {
+		t.Fatalf("initial rate limit: %+v %v", first, err)
+	}
+	clock = time.UnixMilli(2000)
+	retry, err := o.DispatchOne(ctx, "host", "thread", clock.UnixMilli())
+	if err != nil || retry.State != "rejected" {
+		t.Fatalf("permanent retry rejection: %+v %v", retry, err)
+	}
+	attempt, err := s.MirrorAttempt(ctx, retry.AttemptID)
+	if err != nil || attempt.RetryOfAttemptID != first.AttemptID {
+		t.Fatalf("rate retry ancestry was not frozen: %+v %v", attempt, err)
+	}
+	notice, err := o.DispatchOne(ctx, "host", "thread", clock.UnixMilli()+1)
+	if err != nil || notice.State != "confirmed" || !strings.HasPrefix(notice.Key, "ui:delivery-failure:") ||
+		!strings.Contains(g.cards[2], "req-after-rate-limit") {
+		t.Fatalf("rate retry failure notice: %+v %v card=%q", notice, err, g.cards[2])
+	}
+}
+
 func TestRateLimitedUpdateEventuallyPatchesSameMessage(t *testing.T) {
 	ctx := context.Background()
 	s, _, m := outboundFixture(t, "progress")

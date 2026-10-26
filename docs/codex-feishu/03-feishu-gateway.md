@@ -59,6 +59,8 @@ Card JSON 2.0 用原生 API 发送与更新，保留 message/card ID。每 turn 
 
 当前开发版对正式镜像 outbox 的 send/reply/PATCH 实现持久限流恢复：完整错误 JSON 的通用 `99991400`（HTTP 400/429），或这三个消息接口的 `230020`（HTTP 400）才进入延后路径。等待 `x-ogw-ratelimit-reset` 指定的响应接收后秒数，缺失/非法时采用持久指数退避（1 秒起、最高 60 秒；合法平台等待下限可以更长）。每次拒绝保存原 attempt，下一次重新冻结最新正文与 UUID，并重新检查 @ 规则与群成员；没有接受过的旧正文不会强行补发。暂停期间不反复读取成员。超时、5xx、不完整错误、无法解释的 429、`230049` 消息发送中均保持 unknown，不能靠 UUID 去重窗口盲重试；额度耗尽 `99991403` 保留明确拒绝，需管理员处理。reaction add/delete 已接入同一通用限流代码的持久恢复；等待从响应收到时计，保留已确认删除的证据，下一次领取按最新状态更新，unknown 不重试。reaction 接口的 `230020` 不在重试 allowlist。建群已接入通用频控的持久等待、独立 attempt 和到期重验；平台 UUID 与原创建参数不变，unknown 不重发。命令回复也已接入持久等待：复用原命令结果和引用关系，明确拒绝后才换新 UUID，不重做规则或任务操作。App 待处理提醒也已有 schema 15 的独立限流恢复；这些限流能力不代表所有 unknown 已能读回核验。[频控策略](https://open.feishu.cn/document/server-docs/api-call-guide/frequency-control.md)、[发送错误码](https://open.feishu.cn/document/server-docs/im-v1/message/create.md)、[回复错误码](https://open.feishu.cn/document/server-docs/im-v1/message/reply.md)、[卡片更新](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/patch.md)
 
+最终回复首次创建被明确拒绝后，只有后续完整快照产生不同且已安全过滤的卡片，才允许一次带来源 attempt 的纠正投递；原 rejected attempt 不改写。若纠正投递或明确限流后的重试仍被平台明确拒绝，桥在同一持久事务安排独立失败卡，展示受限的 code、HTTP status 与安全 request ID，提醒回 Codex 查看完整回复。unknown 不走此路径，失败卡被拒绝也不递归。持久字段与旧库迁移见 [Schema 35](02-store-and-recovery.md#schema-35最终回复纠正重试与拒绝证据)。
+
 @ 必须由桥根据 07 的策略生成结构化 mention；用户/AI 正文中的类似 mention 标签作为普通内容显示，不能绕过免打扰。目标须已在群内；不可达成员在状态中明确标注，不退回 @所有人。
 
 **提醒能否由更新卡片触发须实测。** 首版可靠默认：流式卡片不 @；最终事件需要提醒时，发送一条包含 @ 和原回复定位的简短结果通知，和正文卡分开。若最终正文第一次发出时已完成，可在该发送中提醒，无需额外通知。持久 delivery key 保证同一最终事件最多安排一次提醒，补齐旧历史不补 @。

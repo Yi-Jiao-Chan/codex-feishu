@@ -1,9 +1,18 @@
 package cards
 
 import (
+	"html"
+	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 const maxPublicBodyElements = 64
@@ -11,6 +20,7 @@ const maxPublicBodyElements = 64
 // SafeMarkdown retains only structural quote prefixes from the original
 // Markdown. Native tags remain escaped, including tags inside quoted code.
 func SafeMarkdown(body string) string {
+	body = publicSafeImages(body)
 	var out strings.Builder
 	var fence *messageFence
 	fenceQuoteDepth, inlineWidth := 0, 0
@@ -58,6 +68,157 @@ func SafeMarkdown(body string) string {
 		out.WriteString(Safe(publicCodeReferences(text, &inlineWidth)))
 	}
 	return out.String()
+}
+
+type publicImage struct {
+	node        *ast.Image
+	start, stop int
+}
+
+// recordingImages observes only image nodes accepted by CommonMark. Code,
+// escaped examples and malformed lookalikes therefore remain literal.
+type recordingImages struct {
+	parser.InlineParser
+	source []byte
+	images []publicImage
+}
+
+func (p *recordingImages) Parse(parent ast.Node, reader text.Reader, pc parser.Context) ast.Node {
+	node := p.InlineParser.Parse(parent, reader, pc)
+	image, ok := node.(*ast.Image)
+	if !ok {
+		return node
+	}
+	_, after := reader.Position()
+	start, stop := image.Pos(), after.Start
+	if start >= 0 && start < stop && stop <= len(p.source) && p.source[start] == '!' {
+		p.images = append(p.images, publicImage{node: image, start: start, stop: stop})
+	}
+	return node
+}
+
+func (p *recordingImages) CloseBlock(parent ast.Node, reader text.Reader, pc parser.Context) {
+	if closer, ok := p.InlineParser.(parser.CloseBlocker); ok {
+		closer.CloseBlock(parent, reader, pc)
+	}
+}
+
+type publicImageEdit struct {
+	start, stop int
+	value       string
+}
+
+// publicSafeImages prevents model-produced Markdown images from reaching a
+// Feishu markdown component. Feishu image syntax expects an uploaded image key,
+// not a local path or arbitrary URL. Web images become ordinary links; every
+// other destination becomes path-free text. Reference definitions for unsafe
+// images are removed as well so their destinations cannot leak in the card.
+func publicSafeImages(body string) string {
+	if !strings.Contains(body, "![") {
+		return body
+	}
+	source := []byte(body)
+	edits := publicSafeImageEdits(source)
+	if len(edits) == 0 {
+		return body
+	}
+	return applyPublicImageEdits(source, 0, len(source), edits)
+}
+
+func publicSafeImageEdits(source []byte) []publicImageEdit {
+	inline := parser.DefaultInlineParsers()
+	recorder := &recordingImages{InlineParser: parser.NewLinkParser(), source: source}
+	for i, candidate := range inline {
+		if candidate.Value == parser.NewLinkParser() {
+			inline[i].Value = recorder
+		}
+	}
+	p := parser.NewParser(parser.WithBlockParsers(parser.DefaultBlockParsers()...),
+		parser.WithInlineParsers(inline...), parser.WithParagraphTransformers(parser.DefaultParagraphTransformers()...))
+	document := goldmark.New(goldmark.WithParser(p)).Parser().Parse(text.NewReader(source))
+	if len(recorder.images) == 0 {
+		return nil
+	}
+	unsafeReferences := map[string]bool{}
+	edits := make([]publicImageEdit, 0, len(recorder.images))
+	for _, image := range recorder.images {
+		if publicWebImage(image.node.Destination) {
+			nested := false
+			for parent := image.node.Parent(); parent != nil && parent != document; parent = parent.Parent() {
+				if parent.Kind() == ast.KindLink {
+					nested = true
+					break
+				}
+			}
+			if nested {
+				edits = append(edits, publicImageEdit{start: image.start, stop: image.stop, value: "查看图片"})
+			} else {
+				// Removing only the image marker preserves the parser-accepted
+				// destination, title, label and reference spelling as a link.
+				edits = append(edits, publicImageEdit{start: image.start, stop: image.start + 1})
+			}
+			continue
+		}
+		edits = append(edits, publicImageEdit{start: image.start, stop: image.stop, value: "图片请回 Codex 查看"})
+		if image.node.Reference != nil {
+			unsafeReferences[util.ToLinkReference(image.node.Reference.Value)] = true
+		}
+	}
+	if len(unsafeReferences) != 0 {
+		_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+			definition, ok := node.(*ast.LinkReferenceDefinition)
+			if !entering || !ok || !unsafeReferences[util.ToLinkReference(definition.Label)] || definition.Lines().Len() == 0 {
+				return ast.WalkContinue, nil
+			}
+			first := definition.Lines().At(0)
+			last := definition.Lines().At(definition.Lines().Len() - 1)
+			replacement := ""
+			if last.Stop > first.Start && source[last.Stop-1] == '\n' {
+				replacement = "\n"
+			}
+			edits = append(edits, publicImageEdit{start: first.Start, stop: last.Stop, value: replacement})
+			return ast.WalkContinue, nil
+		})
+	}
+	sort.Slice(edits, func(i, j int) bool { return edits[i].start < edits[j].start })
+	return edits
+}
+
+func applyPublicImageEdits(source []byte, start, stop int, edits []publicImageEdit) string {
+	if len(edits) == 0 {
+		return string(source[start:stop])
+	}
+	var out strings.Builder
+	out.Grow(stop - start)
+	previous := start
+	for _, edit := range edits {
+		if edit.stop <= start {
+			continue
+		}
+		if edit.start >= stop {
+			break
+		}
+		// SplitMessage keeps multi-byte edit ranges atomic. Ignore a partial
+		// range defensively instead of dropping bytes at a segment boundary.
+		if edit.start < previous || edit.start < start || edit.stop > stop || edit.stop < edit.start || edit.stop > len(source) {
+			continue
+		}
+		out.Write(source[previous:edit.start])
+		out.WriteString(edit.value)
+		previous = edit.stop
+	}
+	out.Write(source[previous:stop])
+	return out.String()
+}
+
+func publicWebImage(destination []byte) bool {
+	raw := html.UnescapeString(string(util.UnescapePunctuations(destination)))
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Host == "" {
+		return false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	return scheme == "http" || scheme == "https"
 }
 
 // Only ordinary single-layer quotes receive compact explicit line breaks.
@@ -152,6 +313,7 @@ func publicBlockKind(line string) string {
 // Only unambiguous blank paragraph boundaries become separate components.
 // Complex lists, quotes and code retain their original internal layout.
 func publicBodyElements(body, size string) []element {
+	body = publicSafeImages(body)
 	var blocks []string
 	start, offset, kind := 0, 0, ""
 	pendingBlank := false

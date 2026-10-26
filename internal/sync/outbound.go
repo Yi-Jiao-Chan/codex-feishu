@@ -284,9 +284,9 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 		return result, true, nil
 	}
 	result.State = "confirmed"
+	var rejected *feishu.Rejected
 	if sendErr != nil || remoteID == "" {
 		result.State, remoteID = "unknown", ""
-		var rejected *feishu.Rejected
 		if errors.As(sendErr, &rejected) {
 			result.State = "rejected"
 		}
@@ -299,6 +299,8 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 	var finishErr error
 	if a.COTStep != "" {
 		finishErr = o.Store.FinishCOTAttempt(leaseCtx, a.ID, result.State, remoteID, cotID)
+	} else if result.State == "rejected" && rejected != nil {
+		finishErr = o.Store.FinishRejectedMirrorAttempt(leaseCtx, a.ID, store.MirrorRejection{Code: rejected.Code, HTTPStatus: rejected.HTTPStatus, RequestID: rejected.RequestID})
 	} else {
 		finishErr = o.Store.FinishMirrorAttempt(leaseCtx, a.ID, result.State, remoteID)
 	}

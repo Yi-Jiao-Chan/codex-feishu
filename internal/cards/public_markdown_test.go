@@ -38,6 +38,74 @@ func TestCodeReferenceLabelsKeepTargetsAndLiteralExamples(t *testing.T) {
 	}
 }
 
+func TestSafeMarkdownDowngradesParsedImagesWithoutExposingLocalTargets(t *testing.T) {
+	input := "web ![preview](https://example.invalid/image.png \"title\")\n" +
+		"local ![secret](/private/work/review.png) relative ![draft](images/review.png)\n" +
+		"file ![file](file:///private/work/review.png) data ![inline](data:image/png;base64,private)"
+	got := SafeMarkdown(input)
+	if !strings.Contains(got, "web [preview](https://example.invalid/image.png \"title\")") ||
+		strings.Count(got, "图片请回 Codex 查看") != 4 || strings.Contains(got, "![") ||
+		strings.Contains(got, "/private/") || strings.Contains(got, "images/review.png") || strings.Contains(got, "base64") {
+		t.Fatalf("unsafe image destination reached public markdown: %q", got)
+	}
+}
+
+func TestSafeMarkdownKeepsLiteralImageExamplesAndHandlesReferences(t *testing.T) {
+	input := "`![inline](/private/inline.png)`\n\n" +
+		"```md\n![fenced](/private/fenced.png)\n```\n\n" +
+		"\\![escaped](/private/escaped.png)\n\n" +
+		"![remote][web] and ![local][disk] and [ordinary][disk]\n\n" +
+		"[web]: https://example.invalid/image.png\n[disk]: /private/reference.png\n"
+	got := SafeMarkdown(input)
+	for _, literal := range []string{"`![inline](/private/inline.png)`", "![fenced](/private/fenced.png)", `\![escaped](/private/escaped.png)`} {
+		if !strings.Contains(got, literal) {
+			t.Fatalf("literal image example changed: %q", got)
+		}
+	}
+	if !strings.Contains(got, "[remote][web]") || !strings.Contains(got, "[web]: https://example.invalid/image.png") ||
+		!strings.Contains(got, "图片请回 Codex 查看") || strings.Contains(got, "/private/reference.png") ||
+		strings.Contains(got, "![remote]") || strings.Contains(got, "![local]") {
+		t.Fatalf("reference image downgrade was unsafe: %q", got)
+	}
+	card := Message("AI 回复", "Codex", "![local][disk]\n\n[disk]: /private/card-reference.png")
+	if strings.Contains(card, "![local]") || strings.Contains(card, "/private/card-reference.png") || !strings.Contains(card, "图片请回 Codex 查看") {
+		t.Fatalf("block splitting bypassed reference image safety: %s", card)
+	}
+}
+
+func TestSafeMarkdownDoesNotCreateNestedLinksFromLinkedImages(t *testing.T) {
+	input := "[![preview](https://example.invalid/image.png)](https://example.invalid/report)"
+	if got := SafeMarkdown(input); got != "[查看图片](https://example.invalid/report)" {
+		t.Fatalf("linked image became nested markdown links: %q", got)
+	}
+}
+
+func TestSplitMessageKeepsUnsafeImageReplacementAtomic(t *testing.T) {
+	limit := len(Message("AI 回复", "Codex · 第 9 / 共 9 段", strings.Repeat("x", 700)))
+	for name, body := range map[string]string{
+		"inline":    strings.Repeat("a", 900) + " ![preview](/private/" + strings.Repeat("directory-", 180) + "review.png) " + strings.Repeat("b", 900),
+		"reference": "![preview][disk]\n\n" + strings.Repeat("a", 1800) + "\n\n[disk]: /private/" + strings.Repeat("reference-", 180) + "review.png\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			parts, err := SplitMessage("AI 回复", "Codex", body, limit)
+			if err != nil || len(parts) < 2 {
+				t.Fatalf("long image fixture was not split safely: parts=%d err=%v", len(parts), err)
+			}
+			var raw strings.Builder
+			for _, part := range parts {
+				raw.WriteString(part.Raw)
+				if strings.Contains(part.Card, "/private/") || strings.Contains(part.Card, "directory-") ||
+					strings.Contains(part.Card, "reference-") || strings.Contains(part.Card, "![preview]") {
+					t.Fatalf("a segment exposed partial image syntax or its local target: %s", part.Card)
+				}
+			}
+			if raw.String() != body {
+				t.Fatal("safe display splitting changed the original Raw bytes")
+			}
+		})
+	}
+}
+
 func TestMessageSeparatesParagraphsAndKeepsCompleteStructures(t *testing.T) {
 	body := "开头\n\n1. 第一条\n\n   属于第一条的第二段\n\n2. 第二条\n\n" +
 		"> **引用**\n>\n> 完整段落\n\n```text\n\n> literal\n\n```\n\n结束"

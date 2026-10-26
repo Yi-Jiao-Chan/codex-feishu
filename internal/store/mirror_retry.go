@@ -82,7 +82,11 @@ func (s *Store) DeferMirrorAttempt(ctx context.Context, id string, nowMS, minimu
 	if err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET state='rejected' WHERE attempt_id=?`, id); err != nil {
 		return err
 	}
-	if err = mirrorWriteOne(ctx, tx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=?`, a.HostID, a.ThreadID, a.Key); err != nil {
+	retryOf := a.RetryOfAttemptID
+	if retryOf == "" {
+		retryOf = a.ID
+	}
+	if err = mirrorWriteOne(ctx, tx, `UPDATE outbound SET state='ready',retry_of_attempt_id=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, retryOf, a.HostID, a.ThreadID, a.Key); err != nil {
 		return err
 	}
 	var selected int64
@@ -104,7 +108,7 @@ func (s *Store) DeferMirrorAttempt(ctx context.Context, id string, nowMS, minimu
 // attempt is definitely rejected (or absent). Unknown/dispatching journals stay
 // frozen, and known remote cards still need their replacement notice update.
 func retireUnacceptedMirror(ctx context.Context, tx *sql.Tx, host, thread, key string) error {
-	result, err := tx.ExecContext(ctx, `UPDATE outbound SET state='confirmed'
+	result, err := tx.ExecContext(ctx, `UPDATE outbound SET state='confirmed',retry_of_attempt_id=''
  WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='ready'
  AND EXISTS(SELECT 1 FROM mirrors m WHERE m.host_id=outbound.host_id AND m.thread_id=outbound.thread_id AND m.mirror_key=outbound.mirror_key AND m.retired=1 AND m.remote_id='')
  AND NOT EXISTS(SELECT 1 FROM outbound_attempts a WHERE a.host_id=outbound.host_id AND a.thread_id=outbound.thread_id AND a.mirror_key=outbound.mirror_key AND a.state!='rejected')`, host, thread, key)

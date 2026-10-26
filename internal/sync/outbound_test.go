@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"codex-feishu/internal/feishu"
@@ -14,7 +15,9 @@ type outboundGateway struct {
 	s                  *store.Store
 	t                  *testing.T
 	calls              []string
+	cards              []string
 	err                error
+	errs               []error
 	missingID, closeDB bool
 }
 
@@ -36,13 +39,18 @@ func (g *outboundGateway) dispatched(ctx context.Context, operation, target, car
 		}
 	}
 	g.calls = append(g.calls, operation)
+	g.cards = append(g.cards, card)
 	if g.closeDB {
 		g.s.Close()
 	}
 	if g.missingID {
 		return "", nil
 	}
-	return "remote-message", g.err
+	err := g.err
+	if len(g.errs) >= len(g.calls) {
+		err = g.errs[len(g.calls)-1]
+	}
+	return "remote-message", err
 }
 
 func (g *outboundGateway) SendCard(ctx context.Context, targetType, target, card, uuid string) (string, error) {
@@ -93,6 +101,9 @@ func outboundFixture(t *testing.T, kind string) (*store.Store, string, store.Mir
 	m := store.Mirror{Key: "document", TurnID: "turn", Kind: kind, Card: `{"body":"public text"}`}
 	if kind != "human" {
 		m.ParentMessageID = "original-input"
+	}
+	if kind == "final" {
+		m.Terminal = true
 	}
 	if err := s.StageMirrors(ctx, "host", "thread", []store.Mirror{m}, store.Watermark{ObservedAtMS: 102}); err != nil {
 		t.Fatal(err)
@@ -156,6 +167,105 @@ func TestOutboundAmbiguousAndRejectedResultsAreFrozenWithoutFallback(t *testing.
 				t.Fatalf("unknown/rejected resent: %+v %v", r, err)
 			}
 		})
+	}
+}
+
+func TestOutboundCorrectedFinalRetriesOnceThenSendsFailureNotice(t *testing.T) {
+	ctx := context.Background()
+	s, _, m := outboundFixture(t, "final")
+	firstRejection := &feishu.Rejected{Code: 230099, HTTPStatus: 400, RequestID: "req-first"}
+	retryRejection := &feishu.Rejected{Code: 230099, HTTPStatus: 400, RequestID: "req-retry"}
+	g := &outboundGateway{s: s, t: t, errs: []error{firstRejection, retryRejection, nil}}
+	o := Outbound{Store: s, Gateway: g}
+
+	first, err := o.DispatchOne(ctx, "host", "thread", 1000)
+	if err != nil || first.State != "rejected" || len(g.calls) != 1 {
+		t.Fatalf("initial definite rejection: %+v %v calls=%v", first, err, g.calls)
+	}
+	if err := s.StageMirrors(ctx, "host", "thread", []store.Mirror{m}, store.Watermark{ObservedAtMS: 103}); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := o.DispatchOne(ctx, "host", "thread", 1500); err != nil || result.AttemptID != "" || len(g.calls) != 1 {
+		t.Fatalf("identical rejected payload was retried: %+v %v calls=%v", result, err, g.calls)
+	}
+
+	m.Card = `{"body":"corrected public text"}`
+	if err := s.StageMirrors(ctx, "host", "thread", []store.Mirror{m}, store.Watermark{ObservedAtMS: 104}); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := o.DispatchOne(ctx, "host", "thread", 2000)
+	if err != nil || retry.State != "rejected" || len(g.calls) != 2 {
+		t.Fatalf("corrected final was not retried once: %+v %v calls=%v", retry, err, g.calls)
+	}
+	attempt, err := s.MirrorAttempt(ctx, retry.AttemptID)
+	if err != nil || attempt.RetryOfAttemptID != first.AttemptID || attempt.RejectionCode != 230099 ||
+		attempt.RejectionHTTPStatus != 400 || attempt.RejectionRequestID != "req-retry" {
+		t.Fatalf("repair/rejection evidence was not persisted: %+v %v", attempt, err)
+	}
+
+	notice, err := o.DispatchOne(ctx, "host", "thread", 2001)
+	if err != nil || notice.State != "confirmed" || notice.Kind != "progress" ||
+		!strings.HasPrefix(notice.Key, "ui:delivery-failure:") || len(g.calls) != 3 ||
+		!strings.Contains(g.cards[2], "最终回复发送失败") || !strings.Contains(g.cards[2], "req-retry") ||
+		strings.Contains(g.cards[2], "corrected public text") {
+		t.Fatalf("failure notice was not isolated and delivered: %+v %v card=%q", notice, err, g.cards[2])
+	}
+	if result, err := o.DispatchOne(ctx, "host", "thread", 3000); err != nil || result.AttemptID != "" || len(g.calls) != 3 {
+		t.Fatalf("repair or failure notice recursed: %+v %v calls=%v", result, err, g.calls)
+	}
+}
+
+func TestOutboundCorrectedFinalSuccessDoesNotSendFailureNotice(t *testing.T) {
+	ctx := context.Background()
+	s, _, m := outboundFixture(t, "final")
+	g := &outboundGateway{s: s, t: t, errs: []error{&feishu.Rejected{Code: 230099, HTTPStatus: 400}, nil}}
+	o := Outbound{Store: s, Gateway: g}
+	first, err := o.DispatchOne(ctx, "host", "thread", 1000)
+	if err != nil || first.State != "rejected" {
+		t.Fatalf("initial rejection: %+v %v", first, err)
+	}
+	m.Card = `{"body":"corrected public text"}`
+	if err := s.StageMirrors(ctx, "host", "thread", []store.Mirror{m}, store.Watermark{ObservedAtMS: 103}); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := o.DispatchOne(ctx, "host", "thread", 2000)
+	if err != nil || retry.State != "confirmed" || len(g.calls) != 2 {
+		t.Fatalf("corrected final did not confirm: %+v %v calls=%v", retry, err, g.calls)
+	}
+	if result, err := o.DispatchOne(ctx, "host", "thread", 2001); err != nil || result.AttemptID != "" || len(g.calls) != 2 {
+		t.Fatalf("successful repair created a failure notice: %+v %v calls=%v", result, err, g.calls)
+	}
+	var failures int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM mirrors WHERE mirror_key LIKE 'ui:delivery-failure:%'`).Scan(&failures); err != nil || failures != 0 {
+		t.Fatalf("successful repair persisted failure mirrors: %d %v", failures, err)
+	}
+}
+
+func TestOutboundRejectedFailureNoticeDoesNotRecurse(t *testing.T) {
+	ctx := context.Background()
+	s, _, m := outboundFixture(t, "final")
+	rejected := &feishu.Rejected{Code: 230099, HTTPStatus: 400}
+	g := &outboundGateway{s: s, t: t, errs: []error{rejected, rejected, rejected}}
+	o := Outbound{Store: s, Gateway: g}
+	if result, err := o.DispatchOne(ctx, "host", "thread", 1000); err != nil || result.State != "rejected" {
+		t.Fatalf("initial rejection: %+v %v", result, err)
+	}
+	m.Card = `{"body":"corrected public text"}`
+	if err := s.StageMirrors(ctx, "host", "thread", []store.Mirror{m}, store.Watermark{ObservedAtMS: 103}); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := o.DispatchOne(ctx, "host", "thread", 2000); err != nil || result.State != "rejected" {
+		t.Fatalf("repair rejection: %+v %v", result, err)
+	}
+	if result, err := o.DispatchOne(ctx, "host", "thread", 2001); err != nil || result.State != "rejected" || !strings.HasPrefix(result.Key, "ui:delivery-failure:") {
+		t.Fatalf("failure-notice rejection: %+v %v", result, err)
+	}
+	if result, err := o.DispatchOne(ctx, "host", "thread", 3000); err != nil || result.AttemptID != "" || len(g.calls) != 3 {
+		t.Fatalf("rejected failure notice recursed: %+v %v calls=%v", result, err, g.calls)
+	}
+	var failures int
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM mirrors WHERE mirror_key LIKE 'ui:delivery-failure:%'`).Scan(&failures); err != nil || failures != 1 {
+		t.Fatalf("failure notice count=%d err=%v", failures, err)
 	}
 }
 
