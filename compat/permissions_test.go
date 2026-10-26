@@ -19,7 +19,7 @@ func TestManifestEmbeddedAndBounded(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(old) })
 	m := FeishuManifest()
 	want := []string{"im:message.p2p_msg:readonly", "im:message.group_at_msg:readonly", "im:chat:create", "im:chat:read", "im:chat:update", "im:chat.members:read", "im:message:send_as_bot", "im:message.reactions:write_only", "im:resource:upload"}
-	if !reflect.DeepEqual(m.RecommendedTenantScopes, want) || m.SDKVersion != "v3.12.0" || len(m.Capabilities) != 18 {
+	if !reflect.DeepEqual(m.RecommendedTenantScopes, want) || m.SDKVersion != "v3.12.0" || len(m.Capabilities) != 19 {
 		t.Fatalf("unexpected manifest boundary: %+v", m)
 	}
 	for _, c := range m.Capabilities {
@@ -27,7 +27,7 @@ func TestManifestEmbeddedAndBounded(t *testing.T) {
 			t.Fatalf("incomplete capability: %+v", c)
 		}
 		for _, s := range c.AnyOfPermissions {
-			if c.ID != "receive_standalone_attachments" && (strings.HasPrefix(s, "im:message.group_msg") || strings.HasPrefix(s, "contact:") || strings.HasPrefix(s, "cardkit:") || s == "application:bot.basic_info:read") {
+			if c.ID != "receive_standalone_attachments" && c.ID != "receive_one_to_one_group_without_mention" && (strings.HasPrefix(s, "im:message.group_msg") || strings.HasPrefix(s, "contact:") || strings.HasPrefix(s, "cardkit:") || s == "application:bot.basic_info:read") {
 				t.Fatalf("unrequested scope: %s", s)
 			}
 		}
@@ -78,5 +78,22 @@ func TestPermissionAlternativesAreOR(t *testing.T) {
 		if (check.ID == "bot_identity" || check.ID == "card_callback") && (check.DocumentedPermissionSatisfied != "pass" || check.RuntimeObserved != "unknown") {
 			t.Fatalf("scope-free capability incorrectly evaluated: %+v", check)
 		}
+	}
+}
+
+func TestOneToOneGroupPermissionRemainsOptionalWithoutAttachments(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		scopes     []string
+	}{
+		{"mentions only", "fail", FeishuManifest().RecommendedTenantScopes},
+		{"all group messages", "pass", []string{"im:message.group_msg"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check, ok := capabilityByID(EvaluatePermissionsForAttachments(tc.scopes, false, false), "receive_one_to_one_group_without_mention")
+			if !ok || check.Required || check.DocumentedPermissionSatisfied != tc.want || check.RuntimeObserved != "unknown" || !check.VerificationPending {
+				t.Fatalf("incorrect optional no-mention capability: %+v", check)
+			}
+		})
 	}
 }

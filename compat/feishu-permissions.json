@@ -81,7 +81,34 @@
         "application_availability",
         "sender_filter"
       ],
-      "verification_method": "Receive an actual human group @ message; ignore ordinary non-@ group messages."
+      "verification_method": "Receive an actual human group @ message; ordinary non-@ messages require the separate one-to-one group capability."
+    },
+    {
+      "id": "receive_one_to_one_group_without_mention",
+      "required": false,
+      "api": [
+        "im.message.receive_v1"
+      ],
+      "any_of_permissions": [
+        "im:message.group_msg"
+      ],
+      "source": [
+        "https://open.feishu.cn/document/server-docs/im-v1/message/events/receive.md",
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/chat/get.md",
+        "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/chat-members/get.md"
+      ],
+      "sdk": "github.com/larksuite/oapi-sdk-go/v3",
+      "sdk_version": "v3.12.0",
+      "documentation_status": "documented",
+      "non_scope_conditions": [
+        "event_subscribed",
+        "bound_task_target",
+        "authorized_operator",
+        "get_chat_and_membership_capabilities_satisfied",
+        "fresh_group_counts_one_user_and_one_bot",
+        "current_bot_in_chat_and_sole_user_matches_sender"
+      ],
+      "verification_method": "Receive unmentioned text/post from the sole authorized user in a bound task group; after another user or bot joins, require an @. Failed membership reads must not admit unmentioned input."
     },
     {
       "id": "create_chat_with_initial_owner_members",

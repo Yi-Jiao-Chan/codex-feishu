@@ -39,6 +39,7 @@ type Receiver struct {
 	Store               *store.Store
 	Config              config.Config
 	BotID               string
+	IsOneToOneGroup     func(context.Context, string, string) (bool, error)
 	Wake                func(string)
 	Command             func(context.Context, InboundCommand) error
 	Create              func(context.Context, creation.Inbound) (bool, error)
@@ -105,6 +106,7 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 		return nil
 	}
 	standalone := r.Config.Attachments.Enabled && r.Config.Attachments.ReceiveStandalone && (ptr(msg.MessageType) == "image" || ptr(msg.MessageType) == "file")
+	unmentionedGroup := false
 	if chatType == "group" {
 		mentioned := false
 		for _, mention := range msg.Mentions {
@@ -113,7 +115,37 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 				break
 			}
 		}
-		if !mentioned && !standalone {
+		unmentionedGroup = !mentioned && !standalone
+		if unmentionedGroup && (!r.Config.Operator(user) || r.IsOneToOneGroup == nil) {
+			return nil
+		}
+		if unmentionedGroup && ptr(msg.MessageType) != "text" && ptr(msg.MessageType) != "post" {
+			return nil // Keep standalone attachment reception behind its own flag.
+		}
+	}
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	var b store.Binding
+	var bindingErr error
+	if unmentionedGroup {
+		// Resolve the exact bound target before any remote membership reads.
+		// Unbound chats and a topic group's main stream still require an @.
+		b, bindingErr = r.Store.BindingByTarget(ctx, r.Config.Host.ID, ptr(msg.ChatId), ptr(msg.RootId), ptr(msg.ThreadId))
+		if errors.Is(bindingErr, sql.ErrNoRows) {
+			return nil
+		}
+		if bindingErr != nil {
+			return bindingErr
+		}
+		if b.RepairRequired {
+			return store.ErrTargetRepair
+		}
+		allowed, err := r.IsOneToOneGroup(ctx, b.ChatID, user)
+		if err != nil || ctx.Err() != nil {
+			r.notice("input.group_membership_unverified")
+			return nil
+		}
+		if !allowed {
 			return nil
 		}
 	}
@@ -146,8 +178,6 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 	if text == "" && !unsupported && !hasResources {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
-	defer cancel()
 	if r.VerificationGroups != nil && chatType == "group" && !unsupported && strings.HasPrefix(strings.TrimSpace(text), "/verify-group ") {
 		_, err := r.VerificationGroups.Message(ctx, user, strings.TrimPrefix(strings.TrimSpace(text), "/verify-group "), ptr(msg.MessageId), ptr(msg.ChatId))
 		return err
@@ -156,7 +186,9 @@ func (r *Receiver) Message(parent context.Context, e *im.P2MessageReceiveV1) err
 		_, err := r.Verification.PrivateMessage(ctx, user, strings.TrimPrefix(strings.TrimSpace(text), "/verify "), ptr(msg.MessageId))
 		return err
 	}
-	b, bindingErr := r.Store.BindingByTarget(ctx, r.Config.Host.ID, ptr(msg.ChatId), ptr(msg.RootId), ptr(msg.ThreadId))
+	if !unmentionedGroup {
+		b, bindingErr = r.Store.BindingByTarget(ctx, r.Config.Host.ID, ptr(msg.ChatId), ptr(msg.RootId), ptr(msg.ThreadId))
+	}
 	bound := bindingErr == nil && chatType == "group"
 	sourceRoot, sourceThread := "", ""
 	if b.FollowMode == "topic" || ptr(msg.ThreadId) != "" {

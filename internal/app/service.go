@@ -39,6 +39,7 @@ type ServiceGateway interface {
 	ReactionGateway
 	Ready() bool
 	BotInChat(context.Context, string) (bool, error)
+	IsOneToOneGroup(context.Context, string, string) (bool, error)
 	Listen(context.Context, func(context.Context, *im.P2MessageReceiveV1) error, func(context.Context, *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error)) error
 }
 
@@ -325,6 +326,7 @@ func (s *Service) Run(parent context.Context) error {
 	}
 	commands := &Commands{Store: s.Store, Config: s.Config, Wake: s.Wake, Now: s.Now, BeginDelivery: s.beginCommandDelivery}
 	receiver := &Receiver{Store: s.Store, Config: s.Config, BotID: s.BotID, Wake: s.Wake, Command: commands.Handle, Notice: s.Notice, Verification: s.Verification, VerificationGroups: s.VerificationGroups}
+	receiver.IsOneToOneGroup = s.Gateway.IsOneToOneGroup
 	receiver.TaskAction = s.claimTask
 	receiver.InteractionAction = s.claimInteraction
 	receiver.ModelSettingsAction = commands.ModelSettingsAction

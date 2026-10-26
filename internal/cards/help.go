@@ -24,7 +24,7 @@ func CommandHelp(topic string, creationEnabled, previewEnabled bool) string {
 		{"new", "选择目录并创建 Codex 任务（本部署" + creationState + "）。",
 			"用法：`/new [任务描述]`，例如 `/new 检查项目中的测试失败原因`。\n\n" +
 				"仅操作者可用。私聊机器人、在授权入口群或已绑定任务群/话题中发送，随后在卡片中填写任务、选择目录和跟进位置，点击创建。\n\n" +
-				"支持附件的部署可随命令携带图片或文件。已绑定会话中，普通 @ 消息继续原会话，`/new` 创建另一项任务。\n\n" +
+				"支持附件的部署可随命令携带图片或文件。已绑定会话中，普通消息继续原会话，`/new` 创建另一项任务。\n\n" +
 				"本部署的飞书创建功能：" + creationState + "。"},
 		{"model", "打开卡片，查看和修改模型、思考强度与 Fast。",
 			"用法：`/model`，不需要参数。\n\n" +
@@ -78,7 +78,7 @@ func CommandHelp(topic string, creationEnabled, previewEnabled bool) string {
 		name := strings.TrimPrefix(topic, "/")
 		for _, command := range commands {
 			if command.name == name {
-				return Message("指令帮助", "/"+command.name, "**/"+command.name+"**\n\n"+command.details+"\n\n群聊中使用指令时请先 @机器人。")
+				return Message("指令帮助", "/"+command.name, "**/"+command.name+"**\n\n"+command.details+"\n\n群聊中通常需要 @机器人；已绑定任务群只有你和机器人时，操作者可免 @。未响应时请 @机器人。")
 			}
 		}
 		return Message("指令帮助", "本部署", "未找到该指令的帮助。发送 `/help` 查看全部指令，例如 `/help model` 或 `/help /notify`。")
@@ -91,6 +91,6 @@ func CommandHelp(topic string, creationEnabled, previewEnabled bool) string {
 	if !creationEnabled {
 		body.WriteString("\n这里暂不创建新任务，请从 Codex App 发起任务。\n")
 	}
-	body.WriteString("\n发送 `/help 指令名` 查看具体语法、示例和适用范围，例如 `/help model`；也支持 `/help /model`。\n\n群聊中请先 @机器人。会话设置和任务控制请进入对应任务群或话题。")
+	body.WriteString("\n发送 `/help 指令名` 查看具体语法、示例和适用范围，例如 `/help model`；也支持 `/help /model`。\n\n群聊中通常需要 @机器人；已绑定任务群只有你和机器人时，操作者可免 @。未响应时请 @机器人。会话设置和任务控制请进入对应任务群或话题。")
 	return Message("指令帮助", "本部署", body.String())
 }

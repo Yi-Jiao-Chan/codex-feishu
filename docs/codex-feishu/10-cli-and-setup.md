@@ -6,7 +6,7 @@
 
 ## 命令表
 
-飞书中发送 `/help` 可查看分点列出的全部聊天指令；使用 `/help 指令名` 查看单条用法，例如 `/help model` 或 `/help /notify`。未启用功能会明确标注，群聊中须 @机器人。详见 [指令帮助](08-cards-and-actions.md#飞书指令帮助)。
+飞书中发送 `/help` 可查看分点列出的全部聊天指令；使用 `/help 指令名` 查看单条用法，例如 `/help model` 或 `/help /notify`。未启用功能会明确标注，群聊中通常须 @机器人；符合[单人任务群条件](03-feishu-gateway.md)的操作者可免 @。详见 [指令帮助](08-cards-and-actions.md#飞书指令帮助)。
 
 飞书任务群或对应话题内发送不带参数的 `/model` 打开原生设置表单；仅操作者可用。表单显示当前模型、思考强度和 Fast，保存一次提交全部修改，取消不写原生设置；修改只用于后续轮次，不修改部署配置文件。选项取当前服务端模型目录，具体行为见 [08 卡片与动作](08-cards-and-actions.md#会话模型思考强度与-fast)。
 
@@ -82,7 +82,7 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 
 安装前 doctor 默认允许桥尚未运行：仅在配置、私有密钥、实际共享 server 版本、tenant 机器人身份及必需权限全部确认后返回 `prerequisites-ready-bridge-not-observed`，未观察到的实例仍以非必需 pending 列出。启动后必须加 `--require-running`；连接、绑定恢复、初次历史基线或远端操作待核验时退出 5。若已存在运行实例，即使没有该标志，其未恢复状态也不能忽略。配置摘要或 socket 身份冲突退出 6。已有数据库不可读、版本不支持或部署身份不符退出 3；从未初始化的数据库只作安装前说明，不创建或迁移。
 
-配置 doctor 只查询既有管理端点、daemon version、机器人身份与权限 GET，不新建原生客户端或飞书长连接。独立的 `doctor --codex-only` 才执行短暂只读 handshake / thread list。权限按 API 文档认可的 OR 替代关系检查，只计算 `grant_status=1` 且 `scope_type=tenant`；缺字段、未知状态或授权响应不明确保留 pending。附件下载权限只在 `enabled=true` 时成为 required；独立附件的群接收权限还需 `receive_standalone=true`。关闭时不改变 baseline required/recommended scopes。scope 满足不证明消息订阅、卡片回调、建群、更新、reaction、附件收取或 App UI 已验收：每项能力的 `runtime_observed` 仍为 unknown，实际 verify 单独提供证据。
+配置 doctor 只查询既有管理端点、daemon version、机器人身份与权限 GET，不新建原生客户端或飞书长连接。独立的 `doctor --codex-only` 才执行短暂只读 handshake / thread list。权限按 API 文档认可的 OR 替代关系检查，只计算 `grant_status=1` 且 `scope_type=tenant`；缺字段、未知状态或授权响应不明确保留 pending。附件下载权限只在 `enabled=true` 时成为 required；独立附件的群接收权限还需 `receive_standalone=true`。关闭时不改变 baseline required/recommended scopes。单人任务群免 @ 的 `receive_one_to_one_group_without_mention` 独立报告 `im:message.group_msg`，保持可选，不受附件开关影响。scope 满足不证明消息订阅、卡片回调、建群、更新、reaction、附件收取、免 @ 或 App UI 已验收：每项能力的 `runtime_observed` 仍为 unknown，实际 verify 单独提供证据。
 
 ## 配置与输入文件
 
@@ -117,7 +117,7 @@ apply 用部署配置锁，备份旧配置，原子写临时文件并 rename；�
 
 apply 同时取得应用与数据库监听锁。已有规则的更新要求私有、准确 schema 26 数据库；完整状态比较后在同一 SQLite 事务提交规则与审计，重复执行不增加 revision 或审计。数据库旁的部署标记与配置 prepared 日志在配置替换前持久化，完整更新完成后保存 applied 并清理部署标记。中断返回 `setup-recovery-pending` / 退出 5；保持原输入文件、二进制、密钥、原 plan_id、配置备份和事务文件，再重跑原 apply。不要用新计划覆盖未完成事务，也不要删除日志。serve 在连接或迁移前拒绝未完成事务；改用备份/复制配置或数据库 symlink 别名也不能绕过同一数据库的恢复检查。当前 apply 不创建或迁移数据库，旧 M0 schema 1 仍须单独迁移与绑定接管验收。自动测试证据见[通知配置事务进展](../records/m3-policy-apply-2026-10-12.md)。
 
-附件设置通过 setup JSON 顶层可选 `attachments` 对象传入；省略时保留既有设置，显式提供时整体替换并按配置校验。`enabled` 和 `receive_standalone` 都是布尔开关，默认关闭；目录省略时为数据库旁的 `attachments`，预算为 10 资源、5 图片、单图 10 MiB、图片合计 20 MiB、单文件 20 MiB、批次 50 MiB、单图 40M 像素、1 GiB 磁盘和 2 个下载 worker。plan 在启用时列出本地私有存储与限额；只有 `receive_standalone=true` 才提示敏感 `im:message.group_msg` 和权限发布，设为 `false` 时只接收带 @ 的 post 图文。doctor 仅输出 enabled、根目录、限额聚合和 `ui_verified=false`，不输出正文、资源 key 或密钥。
+附件设置通过 setup JSON 顶层可选 `attachments` 对象传入；省略时保留既有设置，显式提供时整体替换并按配置校验。`enabled` 和 `receive_standalone` 都是布尔开关，默认关闭；目录省略时为数据库旁的 `attachments`，预算为 10 资源、5 图片、单图 10 MiB、图片合计 20 MiB、单文件 20 MiB、批次 50 MiB、单图 40M 像素、1 GiB 磁盘和 2 个下载 worker。plan 在启用时列出本地私有存储与限额；只有 `receive_standalone=true` 才提示敏感 `im:message.group_msg` 和权限发布，设为 `false` 时关闭免 @ 的独立图片/文件收取，post 图文仍按结构化 @ 或单人任务群免 @ 规则接收。doctor 仅输出 enabled、根目录、限额聚合和 `ui_verified=false`，不输出正文、资源 key 或密钥。
 
 改变运行中配置前须停止本工具实例，再重新 plan / apply；应用锁或数据库锁被占用时拒绝替换配置。service install 更新正在使用的 unit 后仅报告 restart pending，须明确 stop / start；start 对已运行服务是 no-op。配置 Agent 不应将这两种情况写成更新已经生效。
 

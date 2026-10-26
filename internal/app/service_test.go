@@ -71,6 +71,9 @@ type serviceGateway struct {
 
 func (g *serviceGateway) Ready() bool                                   { return g.ready.Load() }
 func (*serviceGateway) BotInChat(context.Context, string) (bool, error) { return true, nil }
+func (*serviceGateway) IsOneToOneGroup(context.Context, string, string) (bool, error) {
+	return false, nil
+}
 func (*serviceGateway) MemberIDs(context.Context, string) ([]string, error) {
 	return []string{"ou_operator"}, nil
 }
