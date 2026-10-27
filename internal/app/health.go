@@ -81,6 +81,7 @@ func (s *Service) Health(ctx context.Context) (control.Snapshot, error) {
 		active, retrying, managed := map[string]bool{}, map[string]bool{}, false
 		if runtime != nil {
 			active, retrying, managed = runtime.bindingLifecycle()
+			result.SyncTimings = runtime.timings.snapshot()
 		}
 		result.BindingHydrationScope.LifecycleManaged = managed
 		if managed {

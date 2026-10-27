@@ -331,7 +331,13 @@ func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T
 				return false
 			}
 			for _, m := range mirrors {
-				if m.Kind == "progress" && m.TurnID == "fixture-followup-turn" && m.RemoteID != "" && strings.Contains(m.Card, "fixture progress one") && m.DeliveredRevision == m.Revision {
+				g.mu.Lock()
+				wireHasProgress := false
+				for _, write := range g.writes {
+					wireHasProgress = wireHasProgress || strings.Contains(write.card, "fixture progress one")
+				}
+				g.mu.Unlock()
+				if m.Kind == "progress" && m.TurnID == "fixture-followup-turn" && m.RemoteID != "" && m.Card == "" && m.CardHash != "" && m.DeliveredRevision == m.Revision && wireHasProgress {
 					progress = m
 					return true
 				}
@@ -348,8 +354,14 @@ func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T
 				return false
 			}
 			for _, m := range mirrors {
-				if m.Kind == "progress" && m.TurnID == "fixture-followup-turn" && m.RemoteID == progress.RemoteID && strings.Contains(m.Card, "fixture progress two") && m.DeliveredRevision == m.Revision {
-					return true
+				if m.Kind == "progress" && m.TurnID == "fixture-followup-turn" && m.RemoteID == progress.RemoteID && m.Card == "" && m.CardHash != "" && m.DeliveredRevision == m.Revision {
+					g.mu.Lock()
+					defer g.mu.Unlock()
+					for _, write := range g.writes {
+						if write.op == "update" && write.target == progress.RemoteID && strings.Contains(write.card, "fixture progress two") {
+							return true
+						}
+					}
 				}
 			}
 			return false
@@ -402,14 +414,14 @@ func TestManagedBindingActivatesOnExistingServiceAndStateIsReadOnly(t *testing.T
 			}
 			if m.Kind == "progress" && m.TurnID == "fixture-followup-turn" {
 				progressCount++
-				if m.RemoteID != progress.RemoteID || !m.Terminal || m.ParentMessageID != parent || m.DeliveredRevision != m.Revision {
+				if m.RemoteID != progress.RemoteID || !m.Terminal || m.ParentMessageID != parent || m.DeliveredRevision != m.Revision || m.Card != "" || m.CardHash == "" {
 					t.Fatal("progress lost original card, final state or reply relation", m.Key)
 				}
 			}
 			if m.Kind == "final" {
 				finalCount++
 				finalID = m.RemoteID
-				if m.RemoteID == "" || m.RemoteID == progress.RemoteID || m.ParentMessageID != parent || m.DeliveredRevision != m.Revision || !strings.Contains(m.Card, "fixture-final-ready") {
+				if m.RemoteID == "" || m.RemoteID == progress.RemoteID || m.ParentMessageID != parent || m.DeliveredRevision != m.Revision || m.Card != "" || m.CardHash == "" {
 					t.Fatal("final was not a separate confirmed reply", m.Key)
 				}
 			}

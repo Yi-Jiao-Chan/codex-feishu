@@ -44,6 +44,7 @@ type Snapshot struct {
 	FeishuConnected                     bool                   `json:"feishu_connected"`
 	HydratedBindings                    int                    `json:"hydrated_bindings"`
 	BindingHydrationScope               *BindingHydrationScope `json:"binding_hydration_scope,omitempty"`
+	SyncTimings                         *SyncTimings           `json:"sync_timings,omitempty"`
 	DiscoveryEnabled                    bool                   `json:"discovery_enabled"`
 	PairingSupported                    bool                   `json:"pairing_supported"`
 	VerificationCardSupported           bool                   `json:"verification_card_supported"`
@@ -66,6 +67,22 @@ type BindingHydrationScope struct {
 	ActiveBindings       int  `json:"active_bindings,omitempty"`
 	DormantBindings      int  `json:"dormant_bindings,omitempty"`
 	RetryingBindings     int  `json:"retrying_bindings,omitempty"`
+}
+
+// SyncTimings covers the current native generation and contains aggregates
+// only. The input stage includes the history read handed to the projector;
+// history_read measures fallback reads when no handoff was available.
+type SyncTimings struct {
+	HistoryReuses          uint64                  `json:"history_reuses"`
+	IgnoredReasoningEvents uint64                  `json:"ignored_reasoning_events"`
+	Stages                 map[string]SyncDuration `json:"stages"`
+}
+
+type SyncDuration struct {
+	Count   uint64  `json:"count"`
+	TotalMS float64 `json:"total_ms"`
+	MaxMS   float64 `json:"max_ms"`
+	LastMS  float64 `json:"last_ms"`
 }
 
 type request struct {

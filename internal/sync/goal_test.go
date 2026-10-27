@@ -22,7 +22,7 @@ func proveGoalTurns(t *testing.T, e *Engine, allowed ...string) {
 	for _, id := range allowed {
 		set[id] = true
 	}
-	e.ReadGoalTurns = func(_ context.Context, thread string, turnIDs []string) (map[string]bool, error) {
+	e.ReadUnanchoredTurns = func(_ context.Context, thread string, turnIDs []string) (map[string]bool, error) {
 		if thread != "thread" {
 			if t != nil {
 				t.Fatalf("goal reader received foreign thread: %q", thread)
@@ -185,7 +185,7 @@ func TestGoalSteerKeepsExistingEmptyParentsAndRequiresProofAgain(t *testing.T) {
 	ordinary := completedTurn("ordinary", "ordinary-human", "ordinary request", "ordinary-final", "ordinary answer")
 	goal := goalTurn("goal-steer", "inProgress", agent("goal-progress", "goal before steer", "commentary"))
 	readCalls := 0
-	e.ReadGoalTurns = func(_ context.Context, thread string, turnIDs []string) (map[string]bool, error) {
+	e.ReadUnanchoredTurns = func(_ context.Context, thread string, turnIDs []string) (map[string]bool, error) {
 		if thread != "thread" {
 			t.Fatalf("goal reader received foreign thread: %q", thread)
 		}
@@ -227,7 +227,7 @@ func TestGoalSteerKeepsExistingEmptyParentsAndRequiresProofAgain(t *testing.T) {
 			continue
 		}
 		if mirror.Kind == "human" {
-			if strings.Contains(mirror.Card, "synthetic steer") {
+			if mirror.Key == mirrorKey("human", goal.ID, "steer", "0") && mirror.RemoteID != "" && mirror.Card == "" && mirror.CardHash != "" {
 				foundSteer = true
 			}
 			continue
@@ -248,7 +248,7 @@ func TestGoalSteerKeepsExistingEmptyParentsAndRequiresProofAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.ReadGoalTurns = func(context.Context, string, []string) (map[string]bool, error) {
+	e.ReadUnanchoredTurns = func(context.Context, string, []string) (map[string]bool, error) {
 		return map[string]bool{}, nil
 	}
 	if err := e.Apply(context.Background(), "thread", []codexclient.Turn{ordinary, goal}, false, 5000); err == nil {
@@ -281,7 +281,7 @@ func TestGoalProofAndSnapshotValidationAreAtomic(t *testing.T) {
 			name: "reader does not prove turn",
 			goal: goalTurn("goal-unproved", "completed", agent("final", "unproved answer", "final_answer")),
 			configure: func(e *Engine) {
-				e.ReadGoalTurns = func(context.Context, string, []string) (map[string]bool, error) {
+				e.ReadUnanchoredTurns = func(context.Context, string, []string) (map[string]bool, error) {
 					return map[string]bool{}, nil
 				}
 			},
@@ -290,7 +290,7 @@ func TestGoalProofAndSnapshotValidationAreAtomic(t *testing.T) {
 			name: "reader error",
 			goal: goalTurn("goal-reader-error", "completed", agent("final", "reader error answer", "final_answer")),
 			configure: func(e *Engine) {
-				e.ReadGoalTurns = func(context.Context, string, []string) (map[string]bool, error) {
+				e.ReadUnanchoredTurns = func(context.Context, string, []string) (map[string]bool, error) {
 					return nil, errors.New("synthetic goal reader failure")
 				}
 			},

@@ -243,6 +243,13 @@ type discoveredNative struct {
 // the CLI version nor a caller's environment authorizes filesystem protocols.
 func (n *discoveredNative) AppServerVersion() string { return n.serverVersion }
 
+func (n *discoveredNative) Retry(ctx context.Context, thread, attempt string) (codexclient.Turn, error) {
+	if n.serverVersion != codexclient.ManualRetrySchemaVersion {
+		return codexclient.Turn{}, &codexclient.RPCError{Code: -32601}
+	}
+	return n.Client.Retry(ctx, thread, attempt)
+}
+
 func serveNativeConnect(cli string, discover func(context.Context, string) (codexclient.Daemon, error), connect func(context.Context, string) (*codexclient.Client, error), creationEnabled ...bool) func(context.Context) (app.ServiceNative, error) {
 	return func(ctx context.Context) (app.ServiceNative, error) {
 		inspectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

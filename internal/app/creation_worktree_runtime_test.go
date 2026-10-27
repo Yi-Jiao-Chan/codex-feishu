@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/creation"
 	"codex-feishu/internal/store"
 	"codex-feishu/internal/submissions"
@@ -80,15 +81,15 @@ func TestCreationRuntimeWorktreeDeliversAndProcessesPendingInput(t *testing.T) {
 				t.Fatal("followup receipt failed", err)
 			}
 			controller := &submissions.Controller{Store: db, Native: n, HostID: r.HostID, AppID: r.AppID, ThreadID: receipt.ThreadID}
-			r.ActorTick = func(ctx context.Context, thread string) error {
+			r.ActorTick = func(ctx context.Context, thread string) ([]codexclient.Turn, error) {
 				meta, err := n.Metadata(ctx, thread)
 				if err != nil {
-					return err
+					return nil, err
 				}
 				if _, err := s.authorizeCreation(ctx, meta, false); err != nil {
-					return err
+					return nil, err
 				}
-				return controller.Tick(ctx)
+				return controller.TickWithHistory(ctx)
 			}
 			runCreationRuntime(t, r, n)
 			runtimeWait(t, func() bool {

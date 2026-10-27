@@ -307,7 +307,7 @@ func TestServiceOfflineNewInputCanCancelBeforeNativeRecovery(t *testing.T) {
 		}
 		queued = ns[0]
 		card, err = db.Mirror(ctx, "host", "thread", store.QueueCardKey(queued.ID))
-		return err == nil && card.RemoteID != "" && card.DeliveredRevision == card.Revision && strings.Contains(card.Card, "cancel_pending")
+		return err == nil && card.RemoteID != "" && card.DeliveredRevision == card.Revision && card.Card == "" && card.CardHash != "" && card.HasCallback && card.CallbackProofs != ""
 	})
 	if card.ParentMessageID != "local-pending" || strings.Contains(card.Card, queued.Body) {
 		t.Fatal("offline card lost original parent or echoed body", card)

@@ -322,12 +322,12 @@ func (s *Store) StageInteractionSubmissionCard(ctx context.Context, r Interactio
 	terminal := r.State == "resolved"
 	old, err := readMirror(ctx, tx, r.HostID, r.ThreadID, key)
 	if errors.Is(err, sql.ErrNoRows) {
-		_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,replay,parent_key,parent_message_id,event_type,event_at) VALUES(?,?,?,?,'progress',?,?,?,?,?,'needs_user',?)`, r.HostID, r.ThreadID, key, key, card, terminal, r.Replay, actual.ParentKey, actual.ParentMessageID, r.EventAt)
+		_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,card_hash,terminal,replay,parent_key,parent_message_id,event_type,event_at) VALUES(?,?,?,?,'progress',?,?,?,?,?,?,'needs_user',?)`, r.HostID, r.ThreadID, key, key, card, cardHash(card), terminal, r.Replay, actual.ParentKey, actual.ParentMessageID, r.EventAt)
 		if err == nil {
 			_, err = tx.ExecContext(ctx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state)VALUES(?,?,?,'ready')`, r.HostID, r.ThreadID, key)
 		}
-	} else if err == nil && old.Card != card {
-		_, err = tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,terminal=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, card, terminal, r.HostID, r.ThreadID, key)
+	} else if err == nil && !mirrorCardEqual(old, card) {
+		_, err = tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,card_hash=?,projection_version=0,terminal=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, card, cardHash(card), terminal, r.HostID, r.ThreadID, key)
 		if err == nil {
 			_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, r.HostID, r.ThreadID, key)
 		}

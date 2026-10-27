@@ -6,10 +6,12 @@
   "origin_source": "daemon-provided rollout under initialize.codexHome sessions or archived_sessions",
   "identity_fields": ["session_meta.payload.id", "event_msg.payload.turn_id", "event_msg.payload.turn_attribution.turn_id"],
   "start_event_types": ["task_started", "turn_started"],
-  "required_trigger": "turn_attribution.turn_trigger=goal",
+  "accepted_triggers": ["goal", "capacity_retry_manual"],
+  "accepted_trigger_prefixes": [{"prefix": "feishu_retry_manual:", "suffix": "32 lowercase hex characters"}],
   "max_rollout_bytes": 268435456,
   "max_line_bytes": 33554432,
   "remote_writes_for_origin_detection": false,
   "goal_ui_acceptance": "pending",
+  "capacity_retry_manual_ui_acceptance": "pending",
   "evidence": "docs/records/goal-sync-and-worktree-lifecycle-2026-10-23.md"
 }

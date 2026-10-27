@@ -97,12 +97,14 @@ func TestOutboundMentionMembershipAndSendPolicyAreRechecked(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			hasMention := strings.Contains(a.Card, `\u003cat id=`)
+			wire := gateway.cards[0]
+			hasMention := strings.Contains(wire, `\u003cat id=`)
 			if hasMention != (variant == "reachable") {
-				t.Fatalf("unsafe/missing mention for %s: %s", variant, a.Card)
+				t.Fatalf("unsafe/missing mention for %s: %s", variant, wire)
 			}
 			base, err := s.Mirror(ctx, "host", "thread", "document")
-			if err != nil || strings.Contains(base.Card, `\u003cat id=`) {
+			expectedBase := cards.Message("AI", "Codex", `public result <at id="all"></at>`)
+			if err != nil || base.Card != "" || base.CardHash != testCardHash(expectedBase) || a.Card != "" || a.CardHash != testCardHash(wire) {
 				t.Fatal("mention contaminated public body mirror")
 			}
 			decisions, err := s.MentionDecisions(ctx, "host", "thread", "document")
@@ -155,7 +157,11 @@ func TestOutboundMentionUnknownRejectedAndFailedConfirmationNeverRetry(t *testin
 			if variant == "rejected" {
 				want = "rejected"
 			}
-			if err != nil || a.State != want || !strings.Contains(a.Card, `\u003cat id=`) {
+			wantCard := ""
+			if want == "unknown" {
+				wantCard = gateway.cards[0]
+			}
+			if err != nil || a.State != want || a.Card != wantCard || a.CardHash != testCardHash(gateway.cards[0]) || !strings.Contains(gateway.cards[0], `\u003cat id=`) {
 				t.Fatalf("frozen mention payload lost: %+v %v", a, err)
 			}
 			decisions, err := reopened.MentionDecisions(ctx, "host", "thread", "document")

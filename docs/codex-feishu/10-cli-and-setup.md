@@ -36,6 +36,8 @@
 
 所有路径用绝对路径。setup/verify 的文件输入可走受控 stdin，但密钥正文不通过命令行参数。帮助与 --json 不打印长期密钥或全量对话。version 输出必须提供权限与兼容清单的内容或实际可读位置，不能要求配置 Agent 猜发布包内路径。
 
+`version` 的 `feishu_turn_retry=true` 表示已实现可重试失败的卡片入口；运行时只对已发现的 0.162.1 连接、完整来源核验和当前失败状态开启。`feishu_turn_retry_native_verified=true` 来自 0.162.1 现有 daemon 中的隔离本地模型写入验证：容量故障后空输入重试完成、nonce 归因准确、测试会话归档读回。`feishu_turn_retry_ui_verified` 仍为 false，飞书客户端点击尚待验收；部署及只读状态检查不会提升客户端验收状态。
+
 工作树维护复用已有 daemon，仅连接读取 metadata；不启动 app-server、不 resume、不新建工作树或聊天。兼容层限定 App Server 0.162.1 / 桌面 26.1016.62342，桌面版本无法由远程协议自动检测。`repair` 的独立步骤先落盘后写 owner，unknown 只核验原结果；不会恢复其他 creation lane 或改写已完成 workflow。服务未停止返回 `stop-required` / 退出 6，有冲突或 unknown 返回 `repair-pending` / 退出 5。私有报告不可覆盖，修复后使用新报告路径再次 audit。已排队的桌面删除不能靠补 owner 撤销；维护窗口、冲突处置和回归边界见[实施记录](../records/managed-worktree-ownership-2026-10-23.md)。
 
 verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`、`--allow-test-binding` 四个显式标志；无标志只复用配置 doctor 的 GET 与管理健康 / 只读快照，不新开 native 客户端或接收器、不创建 / chmod / 迁移数据库。完整 P1 场景证据尚未整合，必需项 pending、退出 5；连接与权限通过不表示验收通过。CLI 不从“用户愿意配置”自动推断能给任意人发消息。
@@ -144,6 +146,8 @@ prepared marker 在写数据库之前持久化，中断阻止 serve 和配置 ap
 Linux 首选 systemd --user，ExecStart 使用绝对二进制路径和配置路径，WorkingDirectory 不影响 Codex 会话 cwd。设置合理 Restart=on-failure，保留日志脱敏和本工具部署锁。安装器只管理 codex-feishu.service，不管理 App 的 daemon。
 
 运行中 status/verify/pair 复用现有实例，不另开竞争正式事件的 ws 连接。可以通过仅同用户可访问的本机 Unix 控制通道查询健康与提交测试/配对请求，限制为这些管理用例，不提供额外网络执行 API。
+
+运行实例的可选 `sync_timings` 提供当前 native generation 的分段耗时：metadata、inputs、history_read、history_prepare、projection、history_stage、delivery，各含 count、total_ms、max_ms、last_ms，以及成功交接完整历史的 history_reuses、无需唤醒公开投影的 ignored_reasoning_events。inputs 包含输入协调读取的历史；history_read 仅统计交接不可用时的补读。projection 包含安全投影、附件准备及快照事务，delivery 包含该轮出站批次和反馈协调，并非单次飞书 RPC。统计只存聚合数值，不含会话标识、正文或路径；重连重置，字段缺失不能当作零延迟。
 
 当前新版 serve 提供 Linux Unix socket 管理通道，私有目录 0700、socket 0600，客户端和服务端均核验 SO_PEERCRED 的系统用户；只允许 health、限时 pair.begin / pair.state / pair.cancel，以及固定 owner 的 verify.card.begin / verify.card.state、verify.group.begin / verify.group.state 方法，不提供任务输入或执行 API。请求绑定物理配置路径与当前完整配置摘要，配置已改变而服务未重启时拒绝报告生效。消息大小、并发连接和等待均有上限；退出关闭全部管理连接，清理只删除自己的 socket。
 

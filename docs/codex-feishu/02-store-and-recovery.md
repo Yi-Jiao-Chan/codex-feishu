@@ -2,9 +2,23 @@
 
 负责 `internal/store/`、迁移、恢复协调器。依赖 00；必须在输入提交与自动建群之前可用。
 
+## Schema 37：失败轮次的手动重试
+
+`submission_actions.kind` 增加 `retry`，沿用原生动作与 attempt 日志。迁移只重建该表的 kind 约束并恢复部分唯一索引，按原顺序保留全部记录；旧的 dispatching / unknown 不重置、不重发。迁移不调用原生接口或飞书接口。
+
+重试按钮的 token、revision 和原失败 turn 保存在 `task_controls`，点击与原生重试意图在同一事务领取。原生 attempt 先落库再发出，attempt ID 作为 `turnTrigger=feishu_retry_manual:<attempt_id>` 的关联值；它不是原生幂等键。响应丢失或提交结果前崩溃时，只能用同一可信原生日志中的唯一、身份匹配的启动归因核验实际新 turn；普通 App 活动、相似正文或其他重试均不能代替。没有准确证据时保留 unknown，不重发。
+
+最终结果卡和过程卡都保留 `has_callback` / `callback_proofs`，因此失败卡正文结算释放后仍可核验真实投递版本。重试只接受承载按钮的实际最终分片；其他分片、旧 revision 或转发卡不构成授权。迁移到 schema 37 后不得启动只理解 schema 36 的二进制。
+
+## Schema 36：投递正文工作集与紧凑账本
+
+`mirrors` 新增 `card_hash`、`projection_version`、`has_callback` 与 `callback_proofs`，`outbound_attempts` 新增 `card_hash` 与 `cot_payload_hash`。完整 Card JSON 只属于投递工作集：`ready / dispatching / unknown` mirror 与 `dispatching / unknown` attempt 必须保留实际正文；远程结果明确为 confirmed / rejected 后，attempt 在同一事务清空 `card_json` 以及冻结的 CoT events / next state，保留各自 SHA-256、revision、目标、远端 ID、请求标记关系、CoT 步骤和拒绝证据，unknown 不清空。mirror 当前 revision 已确认、或已明确拒绝且不存在未决 attempt 时也清空正文；原生终态 CoT 只有 Complete 已确认后才能清空，完成后的 `cot_deliveries.state_json` 同时收缩为完成标志和远端身份。
+
+完整历史重放以 `card_hash` 判断相同投影，不因 `card_json` 已释放而增加 revision 或重发；CoT 类型与展示版本由独立列恢复，活动 CoT 的当前 ACK state 仍保留到 Complete。`has_callback` 记录已投递卡是否带操作，`callback_proofs` 只保存卡内 `(action, token, revision)` 的单向摘要，不保存按钮值或正文。断线时可据能力位把已压缩的可操作卡更新为不可操作提示；任务控制回调还须命中该次已投递 revision 的摘要，并继续核验操作者、远端消息 ID 与业务状态账本，摘要本身不构成授权。升级清理尚未扫到的旧任务卡若摘要为空，可从仍在工作集里的旧正文复核一次；正文释放后不再依赖它。正文变化会重新安装工作集内容并沿原远端 ID 更新。schema 35 及更早的已结算正文和 CoT 状态不在 schema 迁移事务里一次性重写；正式 service 启动后以小批事务渐进清理，避免升级时产生无界 WAL 或长时间独占数据库。清空释放的 SQLite 页可被后续写入复用，但不会自动缩小数据库文件；物理缩容仍须在停服、持锁和容量充足时执行受控重建，不能在运行中的投递链路自动 `VACUUM`。
+
 ## Schema 35：最终回复纠正重试与拒绝证据
 
-`outbound` 新增 `retry_of_attempt_id`；`outbound_attempts` 新增同名来源字段以及飞书拒绝的 code、HTTP status、request ID。原 attempt、冻结卡片和结果保持不可变。只有终态 final 首次创建被明确拒绝、没有远端消息、没有 dispatching / unknown 或限流等待，且后续完整快照生成了不同的安全卡片时，才把该 final 重新置为 ready；新 attempt 必须引用被拒绝的来源。unknown 继续只读核验，不能因正文变化进入重发。
+`outbound` 新增 `retry_of_attempt_id`；`outbound_attempts` 新增同名来源字段以及飞书拒绝的 code、HTTP status、request ID。原 attempt 的身份、正文哈希和结果保持不可变；完整冻结卡片按 schema 36 的结算规则释放。只有终态 final 首次创建被明确拒绝、没有远端消息、没有 dispatching / unknown 或限流等待，且后续完整快照生成了不同的安全卡片时，才把该 final 重新置为 ready；新 attempt 必须引用被拒绝的来源。unknown 继续只读核验，不能因正文变化进入重发。
 
 明确限流的后续 attempt 同样保留 retry 来源。带来源的 final 重试若再次被明确拒绝，保存受限错误字段，并在同一事务创建一张独立、纯文本、无提醒的投递失败卡；失败卡只显示安全的 code、HTTP status 和 request ID（无安全 request ID 时显示本地 attempt ID），不包含原回复、平台错误正文、路径或凭据。失败卡自己的拒绝是终态，不再生成下一张失败卡。旧 schema 34 的 rejected 记录不会在迁移时自动重发或补造失败卡，须由真实的新安全快照触发纠正。
 
@@ -39,6 +53,8 @@
 2026-10-26 起新进度文档使用展示版本 2，保存短标题、工具身份、安全详情和可选退出码/耗时；工具输入与输出节选经脱敏、截断后保存在可选 `input_preview` / `output_preview` 中，原始工具载荷不进入镜像。结果字段后到仍更正同一个 RESULT，完整结果参与 ACK 比较。旧版本 1 继续原样投影，活动轮次也不升级。StageSnapshot 拒绝同一镜像切换展示版本；新 ACK 保存 `document_version=2`，已开始但没有该字段的旧 ACK 按版本 1 解释，避免重启后重复标题或结果。停止目标查询同时识别版本 1/2。无需 SQL 迁移；出现版本 2 文档后，不能回退到只理解版本 1 的二进制或用旧数据库覆盖新活动。
 
 单个 claim 只冻结 Create、一次 Append 或 Complete。确认 Create 只保存远程身份；Append 原子安装该批次确认后的投影；终态仅在 Complete 确认后推进整个 revision。运行态追上当前快照时可标记该 revision 已同步，后续快照继续追加。状态哈希不匹配、结果 unknown 或本地提交失败均不推进；重启 dispatching 转 unknown，不能通过普通 post 占位读回解冻。终态事件已确认的进度冻结原投影与完成原因，不因 Complete 前后迟到修正重新打开，最终答复仍可通过原链路更正。
+
+同步投影可读取同 host/thread 的 completed 或 ACK state.finished 凭据，省去存储层必定忽略的已冻结进度重算。该读取只影响计算量：不改变 outbox、Complete 待办、unknown attempt 或已冻结正文；没有终态 ACK 凭据时不能省略投影。完整历史校验、输入关联和水位仍按原事务执行。
 
 原生 `/stop` 在命令入账的同一事务中冻结唯一未收口且非终态 CoT 的 turn_id，复用原 expected_turn_id 与 actor 的停止核验；有多个未收口过程或状态不明时不创建停止动作。重复入站沿原消息去重。平台裸 `/stop` 不包含可核验的点击时 run token，因此仍是对应线程的当前任务命令；只能保证接收后等待 actor 的期间不漂移到后来轮次，不能声称还原网络延迟前点击的旧 run。单聊继续不路由到任务。
 
@@ -107,7 +123,7 @@ schema 30 为 `creation_drafts` 增加 `attachments_json`；旧草稿迁移为�
 | input_receipts | receipt_id；app_id + message_id 唯一 | 输入、client 相关 ID、queue/turn/item、状态 |
 | action_receipts | action_token + revision + action | 操作者、绑定、原始目标、处理结果 |
 | rpc_attempts | attempt_id | 收据/意图、connection generation、RPC ID、请求摘要、响应分类 |
-| mirrors | host/thread/item + segment_index | 角色、飞书 message/card ID、正文版本、来源 |
+| mirrors | host/thread/item + segment_index | 角色、飞书 message/card ID、正文哈希、投影版本与 callback 摘要、来源；仅未决投递保留正文 |
 | outbound | delivery_id | send/update/reply、目标、稳定幂等标识、状态、重试时间、通知类型 |
 | history_watermarks | host_id + thread_id | 已确认 turn/item 水位、补齐状态 |
 | directory_rules | canonical_path + recursive | 规则与添加者；同一路径可有精确和递归两条 |

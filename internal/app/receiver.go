@@ -468,7 +468,7 @@ func (r *Receiver) Action(parent context.Context, e *callback.CardActionTriggerE
 	}
 	queue, _ := a.Action.Value["queue_id"].(string)
 	revision, validRevision := callbackRevision(a.Action.Value["revision"])
-	if (kind == "stop" || kind == "continue") && token != "" && validRevision && r.TaskAction != nil {
+	if (kind == "stop" || kind == "continue" || kind == "retry") && token != "" && validRevision && r.TaskAction != nil {
 		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 		defer cancel()
 		b, err := r.actionBinding(ctx, a.Context.OpenChatID, a.Context.OpenMessageID)

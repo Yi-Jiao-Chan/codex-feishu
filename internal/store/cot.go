@@ -28,12 +28,33 @@ func cotStateHash(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// FrozenCOTMirrors returns the same monotonic terminal-ACK proof used by
+// StageSnapshot. Their progress document can no longer change, including while
+// Complete is pending/unknown. Final answers remain independently mutable.
+func (s *Store) FrozenCOTMirrors(ctx context.Context, host, thread string) (map[string]bool, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT mirror_key FROM cot_deliveries
+		WHERE host_id=? AND thread_id=? AND (completed=1 OR json_extract(state_json,'$.finished')=1)`, host, thread)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := make(map[string]bool)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys[key] = true
+	}
+	return keys, rows.Err()
+}
+
 // Native stop arrives as a command, without a card token. Freeze the unique
 // locally known running turn at receipt time, so delayed actor dispatch cannot
 // interrupt its successor. Ambiguous running turns fail closed; native terminal
 // turns cannot block stopping their successor while CoT delivery is unfinished.
 func cotStopTarget(ctx context.Context, tx *sql.Tx, scope SubmissionScope) (turn string, hasCOT, unambiguous bool, err error) {
-	rows, err := tx.QueryContext(ctx, `SELECT m.turn_id,m.terminal,COALESCE(d.completed,0),(o.state='rejected' AND m.remote_id='' AND COALESCE(d.cot_id,'')='') FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) LEFT JOIN cot_deliveries d USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? AND m.kind='progress' AND json_extract(m.card_json,'$.codex_feishu_cot') IN (?,?)`, scope.HostID, scope.ThreadID, cot.LegacyVersion, cot.Version)
+	rows, err := tx.QueryContext(ctx, `SELECT m.turn_id,m.terminal,COALESCE(d.completed,0),(o.state='rejected' AND m.remote_id='' AND COALESCE(d.cot_id,'')='') FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) LEFT JOIN cot_deliveries d USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? AND m.kind='progress' AND (m.projection_version IN (?,?) OR json_extract(NULLIF(m.card_json,''),'$.codex_feishu_cot') IN (?,?))`, scope.HostID, scope.ThreadID, cot.LegacyVersion, cot.Version, cot.LegacyVersion, cot.Version)
 	if err != nil {
 		return "", false, false, err
 	}
@@ -167,7 +188,11 @@ func finishCOTMirror(ctx context.Context, tx *sql.Tx, a MirrorAttempt, m Mirror,
 	if a.COTStep == "complete" {
 		completed = true
 	}
-	if err := mirrorWriteOne(ctx, tx, `UPDATE cot_deliveries SET cot_id=?,state_json=?,completed=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, actualID, a.COTState, completed, a.HostID, a.ThreadID, a.Key); err != nil {
+	storedState := a.COTState
+	if completed {
+		storedState = "{}"
+	}
+	if err := mirrorWriteOne(ctx, tx, `UPDATE cot_deliveries SET cot_id=?,state_json=?,completed=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, actualID, storedState, completed, a.HostID, a.ThreadID, a.Key); err != nil {
 		return "", err
 	}
 	if err := mirrorWriteOne(ctx, tx, `UPDATE mirrors SET remote_id=? WHERE host_id=? AND thread_id=? AND mirror_key=?`, remoteID, a.HostID, a.ThreadID, a.Key); err != nil {
@@ -177,7 +202,11 @@ func finishCOTMirror(ctx context.Context, tx *sql.Tx, a MirrorAttempt, m Mirror,
 		// A snapshot may have arrived while this terminal batch was in flight.
 		// Freeze the exact terminal document whose events were acknowledged;
 		// Complete must not borrow a newer status/reason or claim unseen text.
-		if err := mirrorWriteOne(ctx, tx, `UPDATE mirrors SET card_json=?,terminal=1,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, a.Card, a.HostID, a.ThreadID, a.Key); err != nil {
+		hash, version, err := cardMetadata(a.Card)
+		if err != nil {
+			return "", err
+		}
+		if err := mirrorWriteOne(ctx, tx, `UPDATE mirrors SET card_json=?,card_hash=?,projection_version=?,has_callback=0,callback_proofs='',terminal=1,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, a.Card, hash, version, a.HostID, a.ThreadID, a.Key); err != nil {
 			return "", err
 		}
 	}

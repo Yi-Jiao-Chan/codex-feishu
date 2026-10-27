@@ -81,9 +81,16 @@ func TestRuntimeDormantBindingStartsOnDemandAndEvicts(t *testing.T) {
 	if released.Load() != 1 {
 		t.Fatalf("dormant actor retained generation-local state: releases=%d", released.Load())
 	}
+	projectionCache := runtime.cotProjectionCache
+	if projectionCache == nil {
+		t.Fatal("runtime did not retain its bounded projection cache")
+	}
 	reads := native.reads.Load()
 	runtime.Wake("thread")
 	runtimeWait(t, func() bool { return native.reads.Load() > reads })
+	if runtime.cotProjectionCache != projectionCache {
+		t.Fatal("dormant actor activation replaced the generation-wide projection cache")
+	}
 }
 
 func TestRuntimeBoundScanActivatesNativeChangeAfterRestart(t *testing.T) {

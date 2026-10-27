@@ -121,6 +121,8 @@ cards 是纯渲染：输入后端视图模型，输出 JSON，不在模板内发
 
 token 由服务端映射到 binding、receipt/native queue ID、动作、可操作人、有效期和 revision。客户端 value 中的 threadId、路径、操作者或正文即使存在，也不能替代服务端记录。表单目录/任务内容是草稿输入，需再次校验。
 
+可重试失败的最终结果首片可提供“重试”，其按钮独立于已终态的原生 CoT。回调绑定该失败轮次和实际已投递结果卡，正文释放后用保留的 callback 摘要核验；其他分片或旧卡不授权。点击后先显示处理状态，确认后显示已提交重试，unknown 时显示核验状态并移除按钮；模型设置引用保留在底部。普通错误仍提示回 App，不把配额、鉴权或策略错误当成暂时故障。原生操作规则见 [06 手动重试](06-queue-and-steering.md#可重试失败的手动重试)。
+
 任务停止沿用已有领取与原轮次锁定链路。校验已确认投递的卡片时，同时识别顶层按钮和原生 `column_set → column → elements` 中的按钮，必须唯一匹配 action / token / revision；普通文本或任意 JSON 字段中的类似 payload 不构成操作授权。旧的顶层继续按钮保持兼容。文件动作的 path/kind 变更参与任务控制 revision 摘要，diff 不参与；原卡已投递版本的校验保持。
 
 流程：原始 callback → 身份与令牌验证 → ClaimAction 短事务 → 3 秒内 pending toast → 异步用例 → 更新原卡。动作领取失败或数据库失败时不进入异步用例。[回调规范](https://open.feishu.cn/document/feishu-cards/card-callback-communication)

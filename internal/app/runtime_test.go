@@ -302,7 +302,7 @@ func TestRuntimeRoutesMultipleThreadsCoalescesAndJoinsOnDisconnect(t *testing.T)
 	active := map[string]bool{}
 	counts := map[string]int{}
 	overlap := false
-	r.ActorTick = func(ctx context.Context, id string) error {
+	r.ActorTick = func(ctx context.Context, id string) ([]codexclient.Turn, error) {
 		mu.Lock()
 		if active[id] {
 			overlap = true
@@ -317,7 +317,7 @@ func TestRuntimeRoutesMultipleThreadsCoalescesAndJoinsOnDisconnect(t *testing.T)
 		mu.Lock()
 		active[id] = false
 		mu.Unlock()
-		return nil
+		return nil, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

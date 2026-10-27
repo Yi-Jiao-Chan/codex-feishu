@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS submission_inputs (
 CREATE TABLE IF NOT EXISTS submission_actions (
  action_id TEXT PRIMARY KEY, host_id TEXT NOT NULL, app_id TEXT NOT NULL, thread_id TEXT NOT NULL,
  receipt_id TEXT NOT NULL DEFAULT '', token TEXT NOT NULL, revision INTEGER NOT NULL,
- kind TEXT NOT NULL CHECK(kind IN ('steer','remove','stop','continue')),
+ kind TEXT NOT NULL CHECK(kind IN ('steer','remove','stop','continue','retry')),
  stage TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('ready','running','unknown','confirmed','rejected')),
  queue_id TEXT NOT NULL DEFAULT '', expected_turn_id TEXT NOT NULL DEFAULT '',
  client_id TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', created_at_ms INTEGER NOT NULL,
@@ -355,7 +355,7 @@ func (s *Store) ClaimThreadSubmissionAction(ctx context.Context, scope Submissio
 // ClaimThreadSubmissionActionExpected seeds a task card's immutable target at
 // claim time. Replays return the original action, including its original target.
 func (s *Store) ClaimThreadSubmissionActionExpected(ctx context.Context, scope SubmissionScope, kind, token, expectedTurnID string) (SubmissionAction, error) {
-	if token == "" || kind != "stop" && kind != "continue" {
+	if token == "" || kind != "stop" && kind != "continue" && kind != "retry" || kind == "retry" && expectedTurnID == "" {
 		return SubmissionAction{}, ErrSubmissionStale
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -449,6 +449,7 @@ func (s *Store) PrepareSubmissionAction(ctx context.Context, scope SubmissionSco
 		initial && (stage != "steer" && stage != "restore" || stage == "steer" && turnID == "" || stage == "restore" && turnID != "" || queueID != "" || a.ClientID != clientID) ||
 		!initial && (a.Kind == "steer" || a.Kind == "remove") && (stage != "delete" || a.QueueID != queueID || a.ClientID != clientID) ||
 		a.Kind == "stop" && (stage != "interrupt" || turnID == "") ||
+		a.Kind == "retry" && (stage != "retry" || turnID == "") ||
 		a.Kind == "continue" && stage != "start" || !initial && a.Kind == "steer" && turnID == "" {
 		return ErrSubmissionStale
 	}
@@ -596,6 +597,7 @@ func (s *Store) FinishSubmissionAttempt(ctx context.Context, scope SubmissionSco
 		return err
 	}
 	if a.State != "dispatching" && a.State != "unknown" ||
+		a.Stage == "retry" && outcome == "confirmed" && remoteID == "" ||
 		a.Stage == "delete" && outcome == "confirmed" && deleted != 0 && deleted != 1 {
 		return ErrConflict
 	}
@@ -622,7 +624,7 @@ func (s *Store) FinishSubmissionAttempt(ctx context.Context, scope SubmissionSco
 		op.State, op.Result = outcome, ""
 	}
 	if outcome == "unknown" {
-		if a.Stage != "start" && a.Stage != "interrupt" {
+		if a.Stage != "start" && a.Stage != "interrupt" && a.Stage != "retry" {
 			n.State = "unknown"
 		}
 	} else {
@@ -674,6 +676,12 @@ func (s *Store) FinishSubmissionAttempt(ctx context.Context, scope SubmissionSco
 		case "start":
 			if outcome == "confirmed" {
 				op.Result = "continued"
+			} else {
+				op.Result = "rejected"
+			}
+		case "retry":
+			if outcome == "confirmed" {
+				op.Result = "retried"
 			} else {
 				op.Result = "rejected"
 			}

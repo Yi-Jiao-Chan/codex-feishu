@@ -36,18 +36,23 @@ type Engine struct {
 	TimeZone               string
 	MaxCardBytes           int
 	MentionTargets         []string // Reserve the complete structured reminder before splitting final text.
-	PrepareHuman           func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
+	// COTProjectionCache is a Runtime-scoped, bounded cache of already-redacted
+	// tool projections. It never replaces durable mirrors, clocks or watermarks.
+	COTProjectionCache *COTProjectionCache
+	PrepareHuman       func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
 	// PreparePublic registers local file references before they enter durable
 	// cards. It changes only a display copy, never native history or input.
 	PreparePublic func(context.Context, string, string) (string, error)
-	// ReadGoalTurns proves automatic goal starts from native session metadata.
-	// It must not infer an origin from a missing user message or current goal state.
-	ReadGoalTurns    func(context.Context, string, []string) (map[string]bool, error)
-	goalTurns        map[string]bool
-	humanAttachments map[string][]cards.AttachmentView
+	// ReadUnanchoredTurns proves goal starts or manual capacity retries from native
+	// session metadata. Missing input or a previous failure alone is not evidence.
+	ReadUnanchoredTurns func(context.Context, string, []string) (map[string]bool, error)
+	unanchoredTurns     map[string]bool
+	frozenCOT           map[string]bool
+	humanAttachments    map[string][]cards.AttachmentView
 	// ProgressRender is pure; the actor prepares its durable control state first.
 	// An empty interrupted render suppresses a new historical progress card.
 	ProgressRender func(thread, turn, nativeStatus string, progress cards.ProgressView) string
+	FinalRender    func(thread, turn, nativeStatus, card string) string
 }
 
 // HistoryError keeps native payloads out of ordinary error text.
@@ -56,7 +61,7 @@ type HistoryError struct{ Cause error }
 func (*HistoryError) Error() string   { return "message sync awaits complete native history" }
 func (e *HistoryError) Unwrap() error { return e.Cause }
 
-func (e Engine) Reconcile(ctx context.Context, thread string, replay bool, observedAtMS int64) error {
+func (e *Engine) Reconcile(ctx context.Context, thread string, replay bool, observedAtMS int64) error {
 	if e.Native == nil {
 		return errors.New("sync requires native history")
 	}
@@ -69,10 +74,21 @@ func (e Engine) Reconcile(ctx context.Context, thread string, replay bool, obser
 
 // Apply accepts only a complete, hydrated snapshot in native history order.
 // Receipt links, all public documents and the scan checkpoint commit together.
-func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Turn, replay bool, observedAtMS int64) error {
+func (e *Engine) Apply(ctx context.Context, thread string, turns []codexclient.Turn, replay bool, observedAtMS int64) error {
 	if e.Store == nil || e.HostID == "" || thread == "" {
 		return errors.New("sync requires a store and thread identity")
 	}
+	if e.COTProjectionCache == nil {
+		e.COTProjectionCache = NewCOTProjectionCache()
+	}
+	// These maps describe only this complete snapshot. Apply used a value
+	// receiver before the projection cache became persistent; explicitly reset
+	// them so retaining the cache cannot retain stale proof or attachment state.
+	e.asyncItems = nil
+	e.replySources = nil
+	e.unanchoredTurns = nil
+	e.frozenCOT = nil
+	e.humanAttachments = nil
 	receipts, err := e.Store.ReceiptsForDeployment(ctx, e.HostID, thread)
 	if err != nil {
 		return err
@@ -81,8 +97,12 @@ func (e Engine) Apply(ctx context.Context, thread string, turns []codexclient.Tu
 	if err != nil {
 		return err
 	}
-	if ids := goalProofRequired(turns, old); len(ids) > 0 && e.ReadGoalTurns != nil {
-		e.goalTurns, err = e.ReadGoalTurns(ctx, thread, ids)
+	e.frozenCOT, err = e.Store.FrozenCOTMirrors(ctx, e.HostID, thread)
+	if err != nil {
+		return err
+	}
+	if ids := unanchoredProofRequired(turns, old); len(ids) > 0 && e.ReadUnanchoredTurns != nil {
+		e.unanchoredTurns, err = e.ReadUnanchoredTurns(ctx, thread, ids)
 		if err != nil {
 			return &HistoryError{Cause: err}
 		}
@@ -307,7 +327,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 		if parentKey == "" && parentID == "" {
 			// Empty drafts and standalone compaction turns have no public
 			// message or reply anchor. Their items still advance the scan
-			// checkpoint. Public turns need an input anchor or verified goal origin.
+			// checkpoint. Public turns need an input anchor or verified native origin.
 			internalOnly := true
 			for _, item := range turn.Items {
 				if item.Type != "contextCompaction" {
@@ -317,20 +337,38 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			if internalOnly {
 				continue
 			}
-			if !e.goalTurns[turn.ID] {
+			if !e.unanchoredTurns[turn.ID] {
 				return snapshotPlan{}, errors.New("public turn has no initiating human input")
 			}
-			// Goal continuations have no initiating human message. Deliver to
-			// this binding directly; never borrow another turn's reply anchor.
+			// Proven goal starts and manual capacity retries need no new human
+			// message. Deliver directly without borrowing another turn's anchor.
 			direct = true
 		}
 		key := mirrorKey("progress", turn.ID)
 		previousProgress, hadProgress := existing[key]
-		previousDocument, previousCOT, parseErr := cot.Parse(previousProgress.Card)
-		if hadProgress && parseErr != nil {
-			return snapshotPlan{}, parseErr
+		previousVersion, previousCOT := 0, false
+		if hadProgress {
+			if previousProgress.Card == "" {
+				previousVersion = previousProgress.ProjectionVersion
+				previousCOT = previousVersion != 0
+			} else {
+				previousDocument, nativeCOT, parseErr := cot.Parse(previousProgress.Card)
+				if parseErr != nil {
+					return snapshotPlan{}, parseErr
+				}
+				previousCOT = nativeCOT
+				if nativeCOT {
+					previousVersion = previousDocument.Version
+				}
+			}
 		}
-		if turn.Status == "inProgress" || hadProgress || turn.Status == "interrupted" && e.ProgressRender != nil {
+		// The store already ignores all changes after the terminal event batch
+		// was acknowledged. Omit only that immutable progress document instead
+		// of reprojecting every old tool and discarding the result. Full history
+		// validation, input links, final corrections and the watermark still run.
+		frozenProgress := previousCOT && previousProgress.Terminal && e.frozenCOT[key] &&
+			(previousVersion == cot.LegacyVersion || previousVersion == cot.Version)
+		if !frozenProgress && (turn.Status == "inProgress" || hadProgress || turn.Status == "interrupted" && e.ProgressRender != nil) {
 			render := func(progress cards.ProgressView) string {
 				return cards.Task(cards.TaskView{Status: turn.Status, Progress: progress})
 			}
@@ -339,36 +377,38 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 					return e.ProgressRender(thread, turn.ID, turn.Status, progress)
 				}
 			}
-			view := progressView(turn, observedAtMS)
-			view.TimeZone = e.TimeZone
-			clocks := make(map[string]int64, len(previousProgress.ProgressObservedAt)+len(view.Records))
+			clocks := make(map[string]int64, len(previousProgress.ProgressObservedAt))
 			for id, at := range previousProgress.ProgressObservedAt {
 				clocks[id] = at
-			}
-			for n := range view.Records {
-				record := &view.Records[n]
-				if record.Tools != nil {
-					continue // Tool groups do not have public-message reception clocks.
-				}
-				at := clocks[record.ItemID]
-				if at <= 0 {
-					// This is the first complete snapshot that records a local
-					// reception time, including replay and legacy unknown clocks.
-					// Persist it once; it is not the native generation time.
-					at = observedAtMS
-					clocks[record.ItemID] = at
-				}
-				record.ReceivedAtMS = at
 			}
 			var card string
 			var err error
 			if previousCOT || e.NativeCOT && !hadProgress && turn.Status == "inProgress" {
 				version := cot.Version
 				if previousCOT {
-					version = previousDocument.Version
+					version = previousVersion
 				}
-				card, err = cotDocumentVersion(thread, turn, clocks, observedAtMS, version)
+				// Native COT builds its own message and tool clocks. Avoid the
+				// legacy ProgressView scan and its duplicate command summaries.
+				card, err = cotDocumentVersionWithCache(thread, turn, clocks, observedAtMS, version, e.COTProjectionCache)
 			} else {
+				view := progressView(turn, observedAtMS)
+				view.TimeZone = e.TimeZone
+				for n := range view.Records {
+					record := &view.Records[n]
+					if record.Tools != nil {
+						continue // Tool groups do not have public-message reception clocks.
+					}
+					at := clocks[record.ItemID]
+					if at <= 0 {
+						// This is the first complete snapshot that records a local
+						// reception time, including replay and legacy unknown clocks.
+						// Persist it once; it is not the native generation time.
+						at = observedAtMS
+						clocks[record.ItemID] = at
+					}
+					record.ReceivedAtMS = at
+				}
 				card, err = boundedRenderedProgress(view, markerCardBudget(e.MaxCardBytes), render)
 			}
 			if err != nil {
@@ -397,6 +437,23 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 			if err != nil {
 				return snapshotPlan{}, err
 			}
+			if e.FinalRender != nil && len(parts) > 0 {
+				decorated := e.FinalRender(thread, turn.ID, turn.Status, parts[0].Card)
+				if len(decorated) > budget {
+					// Controls count toward the same complete JSON byte budget.
+					// Reserve their measured overhead before splitting again.
+					reserve := len(decorated) - len(parts[0].Card)
+					parts, err = cards.SplitMessage(replyRole, replySource, body, budget-reserve)
+					if err != nil {
+						return snapshotPlan{}, err
+					}
+					decorated = e.FinalRender(thread, turn.ID, turn.Status, parts[0].Card)
+				}
+				if len(decorated) > budget || !json.Valid([]byte(decorated)) {
+					return snapshotPlan{}, errors.New("final renderer returned invalid or oversized card")
+				}
+				parts[0].Card = decorated
+			}
 			for n, part := range parts {
 				key := mirrorKey("final", turn.ID, fmt.Sprint(n))
 				doc := store.Mirror{Key: key, TurnID: turn.ID, Kind: "final", Card: part.Card, Terminal: true, Replay: replay, Direct: direct, ParentKey: parentKey, ParentMessageID: parentID}
@@ -424,7 +481,7 @@ func (e Engine) renderSnapshot(thread string, turns []codexclient.Turn, receipts
 	return snapshotPlan{Docs: docs, Links: links, Mark: mark}, nil
 }
 
-func goalProofRequired(turns []codexclient.Turn, old []store.Mirror) []string {
+func unanchoredProofRequired(turns []codexclient.Turn, old []store.Mirror) []string {
 	previouslyUnanchored := map[string]bool{}
 	hasPrevious := map[string]bool{}
 	for _, m := range old {

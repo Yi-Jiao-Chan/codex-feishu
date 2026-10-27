@@ -67,7 +67,7 @@ func stageAttachmentMirrorTx(ctx context.Context, tx *sql.Tx, b AttachmentBatch,
 	key := AttachmentCardKey(b.ID)
 	old, err := readMirror(ctx, tx, b.Scope.HostID, b.Scope.ThreadID, key)
 	if errors.Is(err, sql.ErrNoRows) {
-		if err := mirrorWriteOne(ctx, tx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,parent_message_id) VALUES(?,?,?,?,'progress',?,?)`, b.Scope.HostID, b.Scope.ThreadID, key, key, card, b.FirstMessageID); err != nil {
+		if err := mirrorWriteOne(ctx, tx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,card_hash,parent_message_id) VALUES(?,?,?,?,'progress',?,?,?)`, b.Scope.HostID, b.Scope.ThreadID, key, key, card, cardHash(card), b.FirstMessageID); err != nil {
 			return err
 		}
 		return mirrorWriteOne(ctx, tx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, b.Scope.HostID, b.Scope.ThreadID, key)
@@ -75,10 +75,10 @@ func stageAttachmentMirrorTx(ctx context.Context, tx *sql.Tx, b AttachmentBatch,
 	if err != nil {
 		return err
 	}
-	if old.Card == card {
+	if mirrorCardEqual(old, card) {
 		return nil
 	}
-	if err := mirrorWriteOne(ctx, tx, `UPDATE mirrors SET card_json=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, card, b.Scope.HostID, b.Scope.ThreadID, key); err != nil {
+	if err := mirrorWriteOne(ctx, tx, `UPDATE mirrors SET card_json=?,card_hash=?,projection_version=0,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, card, cardHash(card), b.Scope.HostID, b.Scope.ThreadID, key); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, b.Scope.HostID, b.Scope.ThreadID, key)

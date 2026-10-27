@@ -218,7 +218,11 @@ func TestMentionsPersistFrozenAttemptAcrossReopenAndCorrection(t *testing.T) {
 				wantState = "unknown"
 			}
 			frozen, err := reopened.MirrorAttempt(ctx, a.ID)
-			if err != nil || frozen.State != wantState || frozen.Card != a.Card || mentionDecision(t, reopened).State != wantState {
+			wantCard := ""
+			if wantState == "unknown" {
+				wantCard = a.Card
+			}
+			if err != nil || frozen.State != wantState || frozen.Card != wantCard || frozen.CardHash != a.CardHash || mentionDecision(t, reopened).State != wantState {
 				t.Fatalf("reopen lost attempt state/payload: %+v %v", frozen, err)
 			}
 			m.Card, m.Replay = cards.Message("AI", "Codex", "corrected result"), true

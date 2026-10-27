@@ -67,15 +67,20 @@ func (s *Store) StageDisconnectedCards(ctx context.Context, scope SubmissionScop
 		if strings.HasPrefix(m.Key, "ui:interaction:") || strings.HasPrefix(m.Key, "ui:session-settings:") {
 			continue
 		}
-		if _, nativeCOT, parseErr := cot.Parse(m.Card); parseErr != nil {
-			rows.Close()
-			return parseErr
-		} else if nativeCOT {
+		nativeCOT := m.ProjectionVersion != 0
+		if m.Card != "" {
+			_, nativeCOT, err = cot.Parse(m.Card)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+		}
+		if nativeCOT {
 			// A transport interruption is not a native task failure. Preserve
 			// the CoT journal; never PATCH its post-compatible message as a card.
 			continue
 		}
-		if !m.Terminal || cardHasCallback(m.Card) {
+		if !m.Terminal || m.HasCallback {
 			selected = append(selected, m)
 		}
 	}
@@ -130,10 +135,10 @@ func (s *Store) StageDisconnectedCards(ctx context.Context, scope SubmissionScop
 				overlay = cards.QueueInputView(cards.QueueView{State: input.State, Token: input.ActionToken, Revision: input.Revision, LocalPending: true})
 			}
 		}
-		if m.Card == overlay {
+		if mirrorCardEqual(m, overlay) {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, overlay, scope.HostID, scope.ThreadID, m.Key); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,card_hash=?,projection_version=0,has_callback=?,callback_proofs=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, overlay, cardHash(overlay), cardHasCallback(overlay), cardControlProofs(overlay), scope.HostID, scope.ThreadID, m.Key); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, scope.HostID, scope.ThreadID, m.Key); err != nil {

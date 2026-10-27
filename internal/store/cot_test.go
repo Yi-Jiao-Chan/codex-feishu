@@ -155,6 +155,10 @@ func cotTestFinish(t *testing.T, s *Store, a MirrorAttempt) {
 	if err := s.FinishCOTAttempt(context.Background(), a.ID, "confirmed", cotTestRemoteID, cotTestNativeID); err != nil {
 		t.Fatal(err)
 	}
+	settled, err := s.MirrorAttempt(context.Background(), a.ID)
+	if err != nil || settled.State != "confirmed" || settled.Card != "" || settled.CardHash != a.CardHash || settled.COTEvents != "[]" || settled.COTState != "{}" || settled.COTPayloadHash != a.COTPayloadHash {
+		t.Fatalf("settled CoT attempt retained payload or lost hashes: %+v %v", settled, err)
+	}
 }
 
 func cotTestPrepareUnknownStage(t *testing.T, s *Store, target string) MirrorAttempt {
@@ -291,7 +295,7 @@ func TestCOTCreateAppendTerminalCompleteAndSnapshotIdempotence(t *testing.T) {
 		t.Fatalf("complete did not deliver terminal revision: %+v", m)
 	}
 	cotID, stateJSON, completed = cotTestDelivery(t, s)
-	if cotID != cotTestNativeID || stateJSON != complete.COTState || !completed {
+	if cotID != cotTestNativeID || stateJSON != "{}" || !completed {
 		t.Fatalf("complete receipt: id=%q state=%q completed=%v", cotID, stateJSON, completed)
 	}
 
@@ -300,7 +304,7 @@ func TestCOTCreateAppendTerminalCompleteAndSnapshotIdempotence(t *testing.T) {
 	corrected := cotTestDocument("failed", true)
 	cotTestStage(t, s, 103, corrected, true)
 	m = cotTestMirrorState(t, s)
-	if m.Card != cotTestCard(t, terminalDoc) || m.Revision != 2 || m.DeliveredRevision != 2 || m.State != "confirmed" {
+	if terminalCard := cotTestCard(t, terminalDoc); m.Card != "" || m.CardHash != cardHash(terminalCard) || m.Revision != 2 || m.DeliveredRevision != 2 || m.State != "confirmed" {
 		t.Fatalf("completed CoT reopened after correction: %+v", m)
 	}
 	if _, claimed, err := s.ClaimMirror(ctx, "host", "thread", cotTestKey, m.Revision, 17000); err != nil || claimed {
@@ -347,7 +351,7 @@ func TestCOTUnknownAtEveryStageSurvivesRestartWithoutReclaim(t *testing.T) {
 				t.Fatal(err)
 			}
 			frozen, err := s.MirrorAttempt(ctx, a.ID)
-			if err != nil || frozen.State != "unknown" {
+			if err != nil || frozen.State != "unknown" || frozen.Card != a.Card || frozen.COTEvents != a.COTEvents || frozen.COTState != a.COTState || frozen.CardHash != a.CardHash || frozen.COTPayloadHash != a.COTPayloadHash {
 				t.Fatalf("unknown attempt not frozen: %+v %v", frozen, err)
 			}
 			m := cotTestMirrorState(t, s)
@@ -377,7 +381,7 @@ func TestCOTUnknownAtEveryStageSurvivesRestartWithoutReclaim(t *testing.T) {
 				t.Fatalf("unknown CoT was reclaimed after restart: claimed=%v err=%v", claimed, err)
 			}
 			frozen, err = s.MirrorAttempt(ctx, a.ID)
-			if err != nil || frozen.State != "unknown" {
+			if err != nil || frozen.State != "unknown" || frozen.Card != a.Card || frozen.COTEvents != a.COTEvents || frozen.COTState != a.COTState || frozen.CardHash != a.CardHash || frozen.COTPayloadHash != a.COTPayloadHash {
 				t.Fatalf("restart changed attempt: %+v %v", frozen, err)
 			}
 		})
@@ -828,7 +832,7 @@ func TestCOTTerminalAckFreezesAttemptDocumentBeforeComplete(t *testing.T) {
 	}
 	cotTestFinish(t, s, complete)
 	m = cotTestMirrorState(t, s)
-	if m.Card != terminalCard || m.Revision != complete.Revision || m.DeliveredRevision != complete.Revision || m.State != "confirmed" {
+	if m.Card != "" || m.CardHash != cardHash(terminalCard) || m.Revision != complete.Revision || m.DeliveredRevision != complete.Revision || m.State != "confirmed" {
 		t.Fatalf("Complete did not freeze the acknowledged terminal document: %+v", m)
 	}
 	var completed int

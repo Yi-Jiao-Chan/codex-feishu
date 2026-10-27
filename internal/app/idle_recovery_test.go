@@ -122,6 +122,7 @@ func TestIdleColdTickReadbackConfirmsUnknownWithoutResendOrNativeRead(t *testing
 	reads := n.reads.Load()
 	gateway.mu.Lock()
 	writes := len(gateway.writes)
+	wireCard := gateway.writes[0].card
 	gateway.mu.Unlock()
 	var attemptID string
 	if err := db.DB.QueryRowContext(ctx, `SELECT attempt_id FROM outbound_attempts WHERE host_id=? AND thread_id=? ORDER BY created_at_ms,rowid LIMIT 1`, r.HostID, "thread").Scan(&attemptID); err != nil {
@@ -133,11 +134,11 @@ func TestIdleColdTickReadbackConfirmsUnknownWithoutResendOrNativeRead(t *testing
 	}
 	deleted := false
 	parent := attempt.ParentMessageID
-	reader.message = feishu.CardMessage{ID: "readback-recovered", ChatID: attempt.ChatID, Type: "interactive", SenderID: r.AppID, SenderIDType: "app_id", SenderType: "app", ParentID: nil, Deleted: &deleted, Content: attempt.Card}
+	reader.message = feishu.CardMessage{ID: "readback-recovered", ChatID: attempt.ChatID, Type: "interactive", SenderID: r.AppID, SenderIDType: "app_id", SenderType: "app", ParentID: nil, Deleted: &deleted, Content: wireCard}
 	if parent != "" {
 		reader.message.ParentID = &parent
 	}
-	if _, err := db.DB.ExecContext(ctx, `UPDATE outbound_attempts SET state='unknown',remote_id='' WHERE attempt_id=?`, attempt.ID); err != nil {
+	if _, err := db.DB.ExecContext(ctx, `UPDATE outbound_attempts SET state='unknown',remote_id='',card_json=? WHERE attempt_id=?`, wireCard, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.DB.ExecContext(ctx, `UPDATE outbound SET state='unknown' WHERE host_id=? AND thread_id=? AND mirror_key=?`, attempt.HostID, attempt.ThreadID, attempt.Key); err != nil {

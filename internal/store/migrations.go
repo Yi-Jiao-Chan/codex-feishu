@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const SchemaVersion = 35
+const SchemaVersion = 37
 
 const LegacyAdoptionSchema = `
 CREATE TABLE legacy_adoptions (
@@ -507,6 +507,51 @@ ALTER TABLE outbound_attempts ADD COLUMN platform_thread_id TEXT NOT NULL DEFAUL
 			}
 		}
 		if _, err = tx.Exec("PRAGMA user_version=35"); err != nil {
+			return err
+		}
+	}
+	if version < 36 {
+		for _, column := range []struct {
+			table, name, definition string
+		}{
+			{"mirrors", "card_hash", "TEXT NOT NULL DEFAULT ''"},
+			{"mirrors", "projection_version", "INTEGER NOT NULL DEFAULT 0"},
+			{"mirrors", "has_callback", "INTEGER NOT NULL DEFAULT 0"},
+			{"mirrors", "callback_proofs", "TEXT NOT NULL DEFAULT ''"},
+			{"outbound_attempts", "card_hash", "TEXT NOT NULL DEFAULT ''"},
+			{"outbound_attempts", "cot_payload_hash", "TEXT NOT NULL DEFAULT ''"},
+		} {
+			var present int
+			if err = tx.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&present); err != nil {
+				return err
+			}
+			if present == 0 {
+				if _, err = tx.Exec(`ALTER TABLE ` + column.table + ` ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err = tx.Exec("PRAGMA user_version=36"); err != nil {
+			return err
+		}
+	}
+	if version < 37 {
+		// Attempts and card claims refer to action IDs without foreign keys to
+		// this table. Rebuild only its kind constraint; preserve every journal.
+		if _, err = tx.Exec(`ALTER TABLE submission_actions RENAME TO submission_actions_v36`); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(SubmissionSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(`INSERT INTO submission_actions SELECT * FROM submission_actions_v36 ORDER BY rowid; DROP TABLE submission_actions_v36;`); err != nil {
+			return err
+		}
+		// The old table owned the named partial index until it was dropped.
+		if _, err = tx.Exec(SubmissionSchema); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("PRAGMA user_version=37"); err != nil {
 			return err
 		}
 	}

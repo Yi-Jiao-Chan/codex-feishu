@@ -26,8 +26,9 @@ func TestEmailRedactionIsFrozenForPublicDeliveryWithoutChangingHistory(t *testin
 			t.Fatalf("public delivery failed: %+v %v", result, err)
 		}
 		attempt, err := e.Store.MirrorAttempt(context.Background(), result.AttemptID)
-		if err != nil || attempt.Card != g.writes[n].Card || strings.Contains(attempt.Card, "@example.invalid") ||
-			!strings.Contains(attempt.Card, address) || strings.Contains(attempt.Card, `\u0026lt;A\u0026gt;`) {
+		wire := g.writes[n].Card
+		if err != nil || attempt.Card != "" || attempt.CardHash != testCardHash(wire) || strings.Contains(wire, "@example.invalid") ||
+			!strings.Contains(wire, address) || strings.Contains(wire, `\u0026lt;A\u0026gt;`) {
 			t.Fatal("delivery differed from the frozen, masked card", err)
 		}
 	}

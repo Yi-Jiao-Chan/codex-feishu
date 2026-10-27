@@ -85,7 +85,7 @@ func TestInterruptedTaskWithoutExistingProgressCreatesOnlySelectedControl(t *tes
 	for _, m := range list {
 		if m.Kind == "progress" {
 			progress++
-			if m.TurnID != "latest" || m.ParentKey != mirrorKey("human", "latest", "latest-user", "0") || m.RemoteID == "" || !strings.Contains(m.Card, `"action":"continue"`) {
+			if m.TurnID != "latest" || m.ParentKey != mirrorKey("human", "latest", "latest-user", "0") || m.RemoteID == "" || m.Card != "" || m.CardHash == "" || !m.HasCallback || !strings.Contains(g.cards[m.RemoteID], `"action":"continue"`) {
 				t.Fatal("minimal control did not reference the actual initiating input")
 			}
 		}

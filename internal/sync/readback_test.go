@@ -92,7 +92,7 @@ func TestMirrorReadbackFindsMarkedSendReplyAcrossPagesWithoutResendingOrRemindin
 				t.Fatal(r, err, g.calls, reader)
 			}
 			stored, err := o.Store.MirrorAttempt(ctx, a.ID)
-			if err != nil || stored.Card != a.Card || stored.State != "confirmed" {
+			if err != nil || stored.Card != "" || stored.CardHash != a.CardHash || stored.State != "confirmed" {
 				t.Fatal(stored, err)
 			}
 			if r, err := o.DispatchOne(ctx, "host", "thread", 90000); err != nil || r.AttemptID != "" || len(g.calls) != 1 {
