@@ -60,7 +60,7 @@ func createSessionSettingsFormTx(ctx context.Context, tx *sql.Tx, r SessionSetti
 	}
 	key := SessionSettingsCardKey(r.ID)
 	card := cards.Message("会话设置", "Codex", "正在读取当前会话设置…")
-	if _, err := tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,parent_message_id) VALUES(?,?,?,?,'progress',?,0,?)`, r.HostID, r.ThreadID, key, key, card, r.MessageID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,card_hash,terminal,parent_message_id) VALUES(?,?,?,?,'progress',?,?,0,?)`, r.HostID, r.ThreadID, key, key, card, cardHash(card), r.MessageID); err != nil {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, r.HostID, r.ThreadID, key)
@@ -126,10 +126,10 @@ func stageSessionSettingsCardTx(ctx context.Context, tx *sql.Tx, r SessionSettin
 	if old.Kind != "progress" || old.TurnID != key || old.ParentKey != "" || old.ParentMessageID != r.MessageID || old.Retired || old.Terminal && !terminal {
 		return ErrConflict
 	}
-	if old.Card == card && old.Terminal == terminal {
+	if mirrorCardEqual(old, card) && old.Terminal == terminal {
 		return nil
 	}
-	if err := commandWriteOne(ctx, tx, `UPDATE mirrors SET card_json=?,terminal=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, card, terminal, r.HostID, r.ThreadID, key); err != nil {
+	if err := commandWriteOne(ctx, tx, `UPDATE mirrors SET card_json=?,card_hash=?,projection_version=0,terminal=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, card, cardHash(card), terminal, r.HostID, r.ThreadID, key); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, r.HostID, r.ThreadID, key)
@@ -269,7 +269,7 @@ func (s *Store) FinishSessionSettingsForm(ctx context.Context, r SessionSettings
 	if actual != expected {
 		if actual == next && saved.State == nativeState {
 			m, readErr := readMirror(ctx, tx, r.HostID, r.ThreadID, SessionSettingsCardKey(r.ID))
-			if readErr == nil && m.Card == card {
+			if readErr == nil && mirrorCardEqual(m, card) {
 				return nil
 			}
 		}

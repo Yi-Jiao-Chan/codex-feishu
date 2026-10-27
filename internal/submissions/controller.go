@@ -29,6 +29,10 @@ type InputNative interface {
 	SteerInput(context.Context, string, string, json.RawMessage, string) error
 }
 
+type RetryNative interface {
+	Retry(context.Context, string, string) (codexclient.Turn, error)
+}
+
 var _ Native = (*codexclient.Client)(nil)
 var _ InputNative = (*codexclient.Client)(nil)
 
@@ -46,8 +50,11 @@ type Controller struct {
 	Store                   *store.Store
 	HostID, AppID, ThreadID string
 	BeginWrite              func(context.Context) (context.Context, func(), error)
+	RetryEvidence           func(context.Context, string, []string) (map[string]string, error)
 	mu                      sync.Mutex
 	recovered               bool
+	// Points to a call-local result only while TickWithHistory holds mu.
+	historyHandoff *[]codexclient.Turn
 }
 
 func (c *Controller) scope() store.SubmissionScope {
@@ -92,6 +99,19 @@ func (c *Controller) claimAndDispatch(ctx context.Context, n store.Submission, a
 	defer release()
 	if err := leaseCtx.Err(); err != nil {
 		return false, err
+	}
+	if stage == "retry" {
+		op, err := c.Store.SubmissionAction(leaseCtx, c.scope(), actionID)
+		if err != nil {
+			return false, err
+		}
+		snap, err := c.snapshot(leaseCtx)
+		if err != nil {
+			return false, err
+		}
+		if !snap.canRetry(op.ExpectedTurnID) {
+			return false, c.Store.ResolveSubmissionAction(leaseCtx, c.scope(), op.ID, "rejected", "changed")
+		}
 	}
 	a, claimed, err := c.Store.ClaimSubmissionAttempt(leaseCtx, c.scope(), n.ID, actionID, stage)
 	if err != nil || !claimed {
@@ -143,6 +163,13 @@ func (c *Controller) ContinueExpected(ctx context.Context, actionID, expectedTur
 	return c.claimControl(ctx, "continue", actionID, expectedTurnID)
 }
 
+func (c *Controller) RetryExpected(ctx context.Context, actionID, expectedTurnID string) (store.SubmissionAction, error) {
+	if expectedTurnID == "" {
+		return store.SubmissionAction{}, store.ErrSubmissionStale
+	}
+	return c.claimControl(ctx, "retry", actionID, expectedTurnID)
+}
+
 func (c *Controller) claimControl(ctx context.Context, kind, actionID, expectedTurnID string) (store.SubmissionAction, error) {
 	if err := c.valid(); err != nil {
 		return store.SubmissionAction{}, err
@@ -164,8 +191,27 @@ func safeClaimError(err error) error {
 // Tick runs once per actor wake/reconnect. Recovery precedes all native writes;
 // a lost success/local-save failure is reconciled, never blindly dispatched.
 func (c *Controller) Tick(ctx context.Context) error {
+	_, err := c.TickWithHistory(ctx)
+	return err
+}
+
+// TickWithHistory returns the last complete history read during this tick so
+// the actor can project it without a second native read. Every action still
+// takes fresh evidence as before; a native mutation invalidates the handoff
+// until a subsequent snapshot succeeds. No history survives the call.
+func (c *Controller) TickWithHistory(ctx context.Context) ([]codexclient.Turn, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	var history []codexclient.Turn
+	c.historyHandoff = &history
+	defer func() { c.historyHandoff = nil }()
+	if err := c.tick(ctx); err != nil {
+		return nil, err
+	}
+	return history, nil
+}
+
+func (c *Controller) tick(ctx context.Context) error {
 	if err := c.valid(); err != nil {
 		return err
 	}
@@ -331,6 +377,7 @@ type snapshot struct {
 	ordinal map[string]int
 	history map[string]historyInput
 	turns   map[string]codexclient.Turn
+	order   map[string]int
 	active  string
 	latest  string
 }
@@ -351,7 +398,7 @@ func (c *Controller) snapshot(ctx context.Context) (snapshot, error) {
 	if err != nil && !codexclient.BeforeFirstInput(err) {
 		return snapshot{}, err
 	}
-	s := snapshot{queue: queue, byQueue: map[string]codexclient.Queued{}, ordinal: map[string]int{}, history: map[string]historyInput{}, turns: map[string]codexclient.Turn{}}
+	s := snapshot{queue: queue, byQueue: map[string]codexclient.Queued{}, ordinal: map[string]int{}, history: map[string]historyInput{}, turns: map[string]codexclient.Turn{}, order: map[string]int{}}
 	queueIDs := map[string]bool{}
 	for i, q := range queue {
 		if q.ID == "" || queueIDs[q.ID] {
@@ -367,7 +414,7 @@ func (c *Controller) snapshot(ctx context.Context) (snapshot, error) {
 		}
 		s.byQueue[client], s.ordinal[client] = q, i+1
 	}
-	for _, t := range turns {
+	for index, t := range turns {
 		if t.ID == "" || s.turns[t.ID].ID != "" || t.ItemsView != "" && t.ItemsView != "full" {
 			return snapshot{}, store.ErrConflict
 		}
@@ -382,6 +429,7 @@ func (c *Controller) snapshot(ctx context.Context) (snapshot, error) {
 			return snapshot{}, store.ErrConflict
 		}
 		s.turns[t.ID] = t
+		s.order[t.ID] = index
 		s.latest = t.ID
 		itemIDs := map[string]bool{}
 		for _, item := range t.Items {
@@ -397,6 +445,9 @@ func (c *Controller) snapshot(ctx context.Context) (snapshot, error) {
 			}
 			s.history[*item.ClientID] = historyInput{t.ID, item.ID}
 		}
+	}
+	if c.historyHandoff != nil {
+		*c.historyHandoff = turns
 	}
 	return s, nil
 }
@@ -541,8 +592,33 @@ func (c *Controller) reconcile(ctx context.Context, snap snapshot) error {
 			return err
 		}
 	}
-	// queue/start returns no correlation identity. An active App turn alone
-	// cannot prove that this unknown start was accepted, so it remains unknown.
+	var retries []string
+	for _, op := range actions {
+		if a, ok := unknownActions[op.ID]; op.Kind == "retry" && op.State == "unknown" && ok {
+			retries = append(retries, a.ID)
+		}
+	}
+	if len(retries) > 0 && c.RetryEvidence != nil {
+		proof, err := c.RetryEvidence(ctx, c.ThreadID, retries)
+		if err != nil {
+			return err
+		}
+		for _, op := range actions {
+			a, ok := unknownActions[op.ID]
+			if !ok || op.Kind != "retry" || op.State != "unknown" {
+				continue
+			}
+			turn := proof[a.ID]
+			if turn == "" || turn == op.ExpectedTurnID || snap.turns[turn].ID == "" || snap.turns[op.ExpectedTurnID].ID == "" || snap.order[turn] <= snap.order[op.ExpectedTurnID] {
+				continue
+			}
+			if err = c.Store.FinishSubmissionAttempt(ctx, c.scope(), a.ID, "confirmed", turn, -1); err != nil {
+				return err
+			}
+		}
+	}
+	// An active App turn alone cannot prove an unknown queue start or retry.
+	// Only the retry's exact persisted nonce can settle its outcome above.
 	return nil
 }
 
@@ -671,6 +747,11 @@ func (c *Controller) processActionWithInitialQueue(ctx context.Context, actionID
 					client = *snap.queue[0].ClientUserMessageID
 				}
 				err = c.Store.PrepareSubmissionAction(ctx, c.scope(), op.ID, "start", op.ExpectedTurnID, snap.queue[0].ID, client)
+			case "retry":
+				if _, ok := c.Native.(RetryNative); !ok || !snap.canRetry(op.ExpectedTurnID) {
+					return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", "changed")
+				}
+				err = c.Store.PrepareSubmissionAction(ctx, c.scope(), op.ID, "retry", op.ExpectedTurnID, "", "")
 			}
 			if errors.Is(err, store.ErrSubmissionStale) {
 				return nil
@@ -681,6 +762,9 @@ func (c *Controller) processActionWithInitialQueue(ctx context.Context, actionID
 			continue
 		}
 		if op.Kind == "continue" && op.ExpectedTurnID != "" && !snap.canContinue(op.ExpectedTurnID) {
+			return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", "changed")
+		}
+		if op.Kind == "retry" && !snap.canRetry(op.ExpectedTurnID) {
 			return c.Store.ResolveSubmissionAction(ctx, c.scope(), op.ID, "rejected", "changed")
 		}
 		if op.Stage == "steer" || op.Stage == "restore" {
@@ -718,6 +802,10 @@ func (s snapshot) canContinue(turn string) bool {
 	return s.active == "" && s.latest == turn && s.turns[turn].Status == "interrupted"
 }
 
+func (s snapshot) canRetry(turn string) bool {
+	return turn != "" && s.active == "" && s.latest == turn && len(s.queue) == 0 && s.turns[turn].RetryableFailure()
+}
+
 func (c *Controller) observeHistory(ctx context.Context, n store.Submission, snap snapshot, actionID string) (bool, error) {
 	if _, found := snap.history[n.ClientID]; !found {
 		return false, nil
@@ -743,6 +831,9 @@ func (c *Controller) dispatch(ctx context.Context, a store.SubmissionAttempt, n 
 	stage := a.Stage
 	if store.IsQueueAddStage(stage) {
 		stage = "add"
+	}
+	if c.historyHandoff != nil {
+		*c.historyHandoff = nil
 	}
 	switch stage {
 	case "add", "restore":
@@ -783,6 +874,23 @@ func (c *Controller) dispatch(ctx context.Context, a store.SubmissionAttempt, n 
 		err = c.Native.Interrupt(ctx, c.ThreadID, a.ExpectedTurnID)
 	case "start":
 		err = c.Native.StartQueue(ctx, c.ThreadID)
+	case "retry":
+		retry, ok := c.Native.(RetryNative)
+		if !ok {
+			return store.ErrConflict
+		}
+		var turn codexclient.Turn
+		turn, err = retry.Retry(ctx, c.ThreadID, a.ID)
+		remoteID = turn.ID
+		if err == nil && (remoteID == "" || remoteID == a.ExpectedTurnID) {
+			err = &codexclient.UnknownError{Method: "turn/start"}
+		}
+		if err == nil && c.RetryEvidence != nil {
+			proof, proofErr := c.RetryEvidence(ctx, c.ThreadID, []string{a.ID})
+			if proofErr != nil || proof[a.ID] != remoteID {
+				err = &codexclient.UnknownError{Method: "turn/start", Cause: proofErr}
+			}
+		}
 	default:
 		return store.ErrConflict
 	}

@@ -22,6 +22,7 @@ type TaskControls struct {
 	HostID, AppID string
 	Waiting       func(thread, turn string) bool
 	InFeishu      bool
+	RetryEnabled  bool
 	Queue         func(context.Context, string) ([]codexclient.Queued, error)
 	Icons         cards.TaskIcons
 	cache         map[taskRenderKey]store.TaskControl
@@ -87,7 +88,7 @@ func (t *TaskControls) Prepare(ctx context.Context, thread string, turns []codex
 		}
 	}
 	queueCount := -1
-	if active == "" && latest != "" && turns[len(turns)-1].Status == "interrupted" && t.Queue != nil {
+	if active == "" && latest != "" && (turns[len(turns)-1].Status == "interrupted" || t.RetryEnabled && turns[len(turns)-1].RetryableFailure()) && t.Queue != nil {
 		queue, readErr := t.Queue(ctx, thread)
 		if readErr == nil && taskQueueComplete(queue) {
 			queueCount = len(queue)
@@ -104,7 +105,7 @@ func (t *TaskControls) Prepare(ctx context.Context, thread string, turns []codex
 	var views []store.TaskControl
 	for _, turn := range turns {
 		seen[turn.ID] = true
-		if turn.Status != "inProgress" && !(turn.Status == "interrupted" && turn.ID == latest && active == "") && !selected[turn.ID] {
+		if turn.Status != "inProgress" && !((turn.Status == "interrupted" || t.RetryEnabled && turn.RetryableFailure()) && turn.ID == latest && active == "") && !selected[turn.ID] {
 			continue
 		}
 		v := store.TaskControl{ThreadID: thread, TurnID: turn.ID, NativeStatus: turn.Status, State: "unavailable", QueueCount: -1, Fingerprint: taskFingerprint(turn)}
@@ -116,6 +117,11 @@ func (t *TaskControls) Prepare(ctx context.Context, thread string, turns []codex
 			if queueCount > 0 {
 				v.Kind, v.State = "continue", "available"
 			}
+		} else if t.RetryEnabled && turn.RetryableFailure() && turn.ID == latest && active == "" {
+			v.Kind, v.QueueCount, v.Reason = "retry", queueCount, turn.RetryReason()
+			if queueCount == 0 {
+				v.State = "available"
+			}
 		}
 		if c, ok := lastClaim[turn.ID]; ok {
 			if c.State == "ready" || c.State == "pending" {
@@ -124,6 +130,8 @@ func (t *TaskControls) Prepare(ctx context.Context, thread string, turns []codex
 				v.Kind, v.State, v.Reason = c.Kind, "unknown", "verifying"
 			} else if c.State == "confirmed" && (c.Kind == "stop" && turn.Status == "inProgress" || c.Kind == "continue" && v.Kind == "continue") {
 				v.Kind, v.State, v.Reason = c.Kind, "pending", "acknowledged"
+			} else if c.State == "confirmed" && c.Kind == "retry" {
+				v.Kind, v.State, v.Reason = "retry", "unavailable", "retried"
 			}
 		}
 		if blocked && v.State == "available" {
@@ -149,6 +157,18 @@ func (t *TaskControls) Prepare(ctx context.Context, thread string, turns []codex
 		t.cache[taskRenderKey{thread, v.TurnID}] = v
 	}
 	return nil
+}
+
+func (t *TaskControls) RenderFinal(thread, turn, status, card string) string {
+	v, ok := t.cache[taskRenderKey{thread, turn}]
+	if !ok || status != "failed" || v.NativeStatus != "failed" || v.Kind != "retry" {
+		return card
+	}
+	state := v.State
+	if v.Reason == "retried" {
+		state = "confirmed"
+	}
+	return cards.WithRetryControl(card, v.Token, state, v.Revision)
 }
 
 // Render is pure: it reads only the cache populated by this actor's Prepare.
@@ -196,8 +216,12 @@ func (t *TaskControls) ensureClaim(ctx context.Context, scope store.SubmissionSc
 		c := &submissions.Controller{Store: t.Store, HostID: scope.HostID, AppID: scope.AppID, ThreadID: scope.ThreadID}
 		if claim.Kind == "stop" {
 			a, err = c.StopExpected(ctx, claim.ExternalID, claim.TurnID)
-		} else {
+		} else if claim.Kind == "continue" {
 			a, err = c.ContinueExpected(ctx, claim.ExternalID, claim.TurnID)
+		} else if claim.Kind == "retry" {
+			a, err = c.RetryExpected(ctx, claim.ExternalID, claim.TurnID)
+		} else {
+			return store.ErrConflict
 		}
 	}
 	if err != nil {
@@ -261,6 +285,9 @@ func taskFingerprint(turn codexclient.Turn) string {
 			tool.Details = nil
 			public = append(public, tool)
 		}
+	}
+	if reason := turn.RetryReason(); turn.Status == "failed" && reason != "" {
+		public = append(public, reason)
 	}
 	encoded, _ := json.Marshal(public)
 	sum := sha256.Sum256(encoded)

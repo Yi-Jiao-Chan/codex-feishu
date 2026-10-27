@@ -37,11 +37,12 @@ func TestAsyncReplyMirrorsReadableAnswerOnceWithEitherQuestionCardSetting(t *tes
 			g := &cardGateway{}
 			drain(t, e, g, 201000)
 			m, err := e.Store.Mirror(ctx, "host", "thread", mirrorKey("human", "answer-turn", answer.ID, "0"))
-			if err != nil || m.RemoteID == "" || !strings.Contains(m.Card, "合成问题？") || !strings.Contains(m.Card, "合成回答") || !strings.Contains(m.Card, "人类发送") {
+			wire := g.cards[m.RemoteID]
+			if err != nil || m.RemoteID == "" || m.Card != "" || m.CardHash == "" || !strings.Contains(wire, "合成问题？") || !strings.Contains(wire, "合成回答") || !strings.Contains(wire, "人类发送") {
 				t.Fatal("async answer was not mirrored as readable human context", err)
 			}
 			for _, marker := range []string{"send_user_message_question_reply", "questionItemId", "request_user_input_async", "call-fixture"} {
-				if strings.Contains(m.Card, marker) {
+				if strings.Contains(wire, marker) {
 					t.Fatal("internal async answer envelope was exposed")
 				}
 			}

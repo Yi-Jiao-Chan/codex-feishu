@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "locally_generated_schema_versions": [
+    "0.162.1"
+  ],
+  "request_method": "turn/start",
+  "request_fields": [
+    "threadId",
+    "input",
+    "turnTrigger"
+  ],
+  "input": [],
+  "turn_trigger_template": "feishu_retry_manual:<32 lowercase hex attempt ID>",
+  "settings_overrides": false,
+  "native_idempotency_key": false,
+  "failure_source": "Turn.error.codexErrorInfo, with failed status and complete current history",
+  "unknown_recovery": "unique identity-checked native task_started/turn_started attribution matching the persisted attempt nonce",
+  "native_write_acceptance": "pass",
+  "app_ui_acceptance": "pending",
+  "feishu_ui_acceptance": "pending",
+  "evidence": "docs/records/feishu-manual-retry-2026-10-27.md",
+  "native_write_verified_versions": [
+    "0.162.1"
+  ],
+  "native_write_scope": "existing daemon; one isolated validation thread; loopback synthetic capacity failure; empty-input retry completed with exact persisted nonce; archived and read back"
+}

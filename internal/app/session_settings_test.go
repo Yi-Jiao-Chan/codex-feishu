@@ -367,7 +367,7 @@ func TestServiceSettingsTimeoutStillProcessesStopAndPersistsFailure(t *testing.T
 		t.Fatal(err)
 	}
 	runtime := service.generation(native)
-	if err := runtime.ActorTick(ctx, "thread"); err != nil {
+	if _, err := runtime.ActorTick(ctx, "thread"); err != nil {
 		t.Fatal(err)
 	}
 	if native.interrupts != 1 || ctx.Err() != nil {
@@ -381,7 +381,7 @@ func TestServiceSettingsTimeoutStillProcessesStopAndPersistsFailure(t *testing.T
 	if err != nil || !mirror.Terminal || !strings.Contains(mirror.Card, "读取失败") {
 		t.Fatal("timeout result not persisted on settings card", err)
 	}
-	if err := runtime.ActorTick(ctx, "thread"); err != nil {
+	if _, err := runtime.ActorTick(ctx, "thread"); err != nil {
 		t.Fatal(err)
 	}
 	if native.settingsReads != 1 {

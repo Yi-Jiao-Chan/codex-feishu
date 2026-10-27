@@ -135,7 +135,7 @@ func TestServiceVerificationBindingWiresNativeClaimsReadinessAndDelivery(t *test
 		t.Fatal(err)
 	}
 	joins := n.joins.Load()
-	if err := runtime.ActorTick(ctx, "thread"); err != nil {
+	if _, err := runtime.ActorTick(ctx, "thread"); err != nil {
 		t.Fatal(err)
 	}
 	if n.adds.Load() != 1 || n.joins.Load() <= joins {
@@ -156,7 +156,7 @@ func TestServiceVerificationBindingWiresNativeClaimsReadinessAndDelivery(t *test
 	if _, _, err := s.Store.Claim(ctx, store.Receipt{AppID: s.Config.Feishu.AppID, ThreadID: "thread", ChatID: "chat", MessageID: "pending-fixture", Body: "fixture input"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.ActorTick(ctx, "thread"); err == nil {
+	if _, err := runtime.ActorTick(ctx, "thread"); err == nil {
 		t.Fatal("expired write authority accepted a native claim")
 	}
 	if n.adds.Load() != 1 {
@@ -247,7 +247,7 @@ func TestServiceVerificationActorRejectsFirstWriteWithoutClaimingAttempt(t *test
 	}
 	runtime := s.generation(n)
 	g.setRoster("owner", "ou_bot", "foreign")
-	if err := runtime.ActorTick(ctx, "thread"); err == nil {
+	if _, err := runtime.ActorTick(ctx, "thread"); err == nil {
 		t.Fatal("invalid actor write was accepted")
 	}
 	scope := store.SubmissionScope{HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, ThreadID: "thread"}
@@ -372,7 +372,7 @@ func TestServiceVerificationRejectsManagerForAnotherStore(t *testing.T) {
 	if _, _, err := s.Store.Claim(ctx, store.Receipt{AppID: s.Config.Feishu.AppID, ThreadID: "thread", ChatID: "chat", MessageID: "wrong-manager-pending", Body: "fixture input"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.ActorTick(ctx, "thread"); err == nil || n.adds.Load() != 0 {
+	if _, err := runtime.ActorTick(ctx, "thread"); err == nil || n.adds.Load() != 0 {
 		t.Fatal("wrong manager allowed native write")
 	}
 	attempts, err := s.Store.SubmissionAttempts(ctx, store.SubmissionScope{HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, ThreadID: "thread"})

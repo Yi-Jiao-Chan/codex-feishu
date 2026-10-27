@@ -107,6 +107,10 @@ queue/add 参数是 threadId、input、clientUserMessageId；返回 queuedSubmis
 
 ### Goal 自动续跑的来源证明
 
-0.162.1 的完整历史允许没有 `userMessage` 的 goal 自动续跑，但 v2 Turn 没有导出 `turn_trigger`；`rootTurnId` 自指或当前存在 goal 都不能单独证明来源。`GoalTurnReader` 从 daemon 返回的原生路径读取 `session_meta.id` 和唯一 `event_msg.task_started` / `turn_started` 的 `turn_attribution.turn_trigger=goal`，并要求启动记录与归因中的 `turn_id` 同时匹配目标轮次。不从模型文本、工具参数、压缩摘要或前一轮用户输入推断。
+0.162.1 的完整历史允许没有 `userMessage` 的 goal 自动续跑，但 v2 Turn 没有导出 `turn_trigger`；`rootTurnId` 自指或当前存在 goal 都不能单独证明来源。`UnanchoredTurnReader` 从 daemon 返回的原生路径读取 `session_meta.id` 和唯一 `event_msg.task_started` / `turn_started` 的 `turn_attribution.turn_trigger=goal`，并要求启动记录与归因中的 `turn_id` 同时匹配目标轮次。不从模型文本、工具参数、压缩摘要或前一轮用户输入推断。
+
+同一读取器也识别精确的 `capacity_retry_manual` 来源：App 遇到模型容量错误后，手动重试可能创建没有新 `userMessage` 的独立轮次。经相同身份校验后，这类轮次可以直接同步到原绑定，不补造人类输入或借用失败轮次的回复锚点。仅凭前一轮失败、缺少输入、根轮次自指或其他未知 trigger 均不放行；不代替用户重试模型请求。
+
+显式点击飞书失败卡的“重试”时，0.162.1 适配器使用 `turn/start`、空 `input` 及 `turnTrigger=feishu_retry_manual:<attempt_id>`，不发送模型、思考强度、服务档位、目录或权限覆盖。suffix 只接受 32 位小写十六进制 attempt ID。读取器同时核验这类无新输入轮次，并可按准确 nonce 返回唯一的新 turn 身份；重复归因、缺失记录和其他 App 轮次不能结算 unknown。`TurnError` 只保留原生分类，不保留 provider 错误正文或额外详情。[重试协议清单](../../compat/codex-turn-retry.json)
 
 可信根仅取同一连接 initialize 返回的 `codexHome/sessions` 和 `archived_sessions`，复用问答读取的普通文件、所属用户、逐级无 symlink 和无外部写权限校验。读取上限为 256 MiB、单行 32 MiB；只保留来源元数据，不保存或输出原始记录。重复 JSON key、重复启动身份、缺失或不匹配的 session 均不能证明目标轮次。缓存核对文件身份、大小、时间及内容摘要；活跃文件追加时复核已读取前缀没有变化，截断或重写须重新核验。成功结果交给消息同步器决定投递方式，不修改原生历史、goal 或会话策略。[兼容清单](../../compat/codex-goal-turns.json)

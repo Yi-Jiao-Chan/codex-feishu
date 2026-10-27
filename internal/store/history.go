@@ -69,8 +69,9 @@ func (s *Store) ReceiptsForDeployment(ctx context.Context, host, thread string) 
 	return result, rows.Err()
 }
 
-// Mirrors returns complete public delivery state, including frozen/retired
-// segments. A reconnect can therefore update old cards instead of reposting.
+// Mirrors returns the durable public delivery ledger, including frozen/retired
+// segments. Settled Card bodies may be empty; their hash, projection version,
+// route and remote identity still prevent reposts and allow later corrections.
 func (s *Store) Mirrors(ctx context.Context, host, thread string) ([]Mirror, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT `+mirrorColumns+` FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? ORDER BY o.rowid`, host, thread)
 	if err != nil {

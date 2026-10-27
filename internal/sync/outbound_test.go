@@ -2,6 +2,8 @@ package sync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,11 @@ import (
 	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/store"
 )
+
+func testCardHash(card string) string {
+	sum := sha256.Sum256([]byte(card))
+	return hex.EncodeToString(sum[:])
+}
 
 type outboundGateway struct {
 	s                  *store.Store

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -11,12 +13,14 @@ import (
 	"codex-feishu/internal/cot"
 )
 
-// Mirror is a public card document. Key includes the turn and stable segment
-// index; native item IDs alone may be reused by legacy history readers.
+// Mirror is a public delivery ledger entry. Card is present only while the
+// payload is needed for delivery or readback. Key includes the turn and stable
+// segment index; legacy readers may reuse native item IDs.
 type Mirror struct {
-	HostID, ThreadID, Key, TurnID, Kind, Card string
-	Revision, DeliveredRevision               int64
-	Terminal, Retired, Replay                 bool
+	HostID, ThreadID, Key, TurnID, Kind, Card, CardHash, CallbackProofs string
+	Revision, DeliveredRevision                                         int64
+	ProjectionVersion                                                   int
+	HasCallback, Terminal, Retired, Replay                              bool
 	// Direct sends a progress/final card to the binding itself. The durable
 	// encoding is an empty pair of parent fields, previously forbidden for AI.
 	Direct                               bool
@@ -35,15 +39,15 @@ type Watermark struct {
 }
 
 type MirrorAttempt struct {
-	COTStep, COTID, COTEvents, COTState, COTStateBefore   string
-	COTCaughtUp                                           bool
-	FollowMode, RootMessageID, PlatformThreadID           string
-	RetryOfAttemptID, RejectionRequestID                  string
-	ID, HostID, ThreadID, Key, Operation                  string
-	ChatID, ParentMessageID, TargetMessageID, Card, State string
-	RemoteID                                              string
-	Revision, CreatedAtMS                                 int64
-	RejectionCode, RejectionHTTPStatus                    int
+	COTStep, COTID, COTEvents, COTState, COTStateBefore, COTPayloadHash string
+	COTCaughtUp                                                         bool
+	FollowMode, RootMessageID, PlatformThreadID                         string
+	RetryOfAttemptID, RejectionRequestID                                string
+	ID, HostID, ThreadID, Key, Operation                                string
+	ChatID, ParentMessageID, TargetMessageID, Card, CardHash, State     string
+	RemoteID                                                            string
+	Revision, CreatedAtMS                                               int64
+	RejectionCode, RejectionHTTPStatus                                  int
 }
 
 type MirrorRejection struct {
@@ -51,15 +55,58 @@ type MirrorRejection struct {
 	RequestID        string
 }
 
-const mirrorColumns = `m.host_id,m.thread_id,m.mirror_key,m.turn_id,m.kind,m.card_json,m.revision,m.delivered_revision,m.terminal,m.retired,m.replay,m.parent_key,m.parent_message_id,m.remote_id,o.state,m.event_type,m.event_at,m.progress_observed_at_json`
+const mirrorColumns = `m.host_id,m.thread_id,m.mirror_key,m.turn_id,m.kind,m.card_json,m.card_hash,m.projection_version,m.has_callback,m.callback_proofs,m.revision,m.delivered_revision,m.terminal,m.retired,m.replay,m.parent_key,m.parent_message_id,m.remote_id,o.state,m.event_type,m.event_at,m.progress_observed_at_json`
+
+func cardHash(card string) string {
+	sum := sha256.Sum256([]byte(card))
+	return hex.EncodeToString(sum[:])
+}
+
+func cotPayloadHash(events, state string) string {
+	return cardHash(events + "\x00" + state)
+}
+
+func cardMetadata(card string) (hash string, projectionVersion int, err error) {
+	hash = cardHash(card)
+	doc, nativeCOT, err := cot.Parse(card)
+	if err != nil {
+		return "", 0, err
+	}
+	if nativeCOT {
+		projectionVersion = doc.Version
+	}
+	return hash, projectionVersion, nil
+}
+
+func mirrorCardEqual(m Mirror, card string) bool {
+	if m.Card != "" {
+		return m.Card == card
+	}
+	return m.CardHash != "" && m.CardHash == cardHash(card)
+}
 
 type rowScanner interface{ Scan(...any) error }
 
 func scanMirror(row rowScanner) (m Mirror, err error) {
 	var clocks string
-	err = row.Scan(&m.HostID, &m.ThreadID, &m.Key, &m.TurnID, &m.Kind, &m.Card, &m.Revision, &m.DeliveredRevision, &m.Terminal, &m.Retired, &m.Replay, &m.ParentKey, &m.ParentMessageID, &m.RemoteID, &m.State, &m.EventType, &m.EventAt, &clocks)
+	err = row.Scan(&m.HostID, &m.ThreadID, &m.Key, &m.TurnID, &m.Kind, &m.Card, &m.CardHash, &m.ProjectionVersion, &m.HasCallback, &m.CallbackProofs, &m.Revision, &m.DeliveredRevision, &m.Terminal, &m.Retired, &m.Replay, &m.ParentKey, &m.ParentMessageID, &m.RemoteID, &m.State, &m.EventType, &m.EventAt, &clocks)
 	if err == nil {
 		err = json.Unmarshal([]byte(clocks), &m.ProgressObservedAt)
+		if err == nil && m.Card != "" {
+			var hash string
+			var version int
+			hash, version, err = cardMetadata(m.Card)
+			if err == nil {
+				m.CardHash = hash
+				m.ProjectionVersion = version
+				m.HasCallback = (m.Kind == "progress" || m.Kind == "final") && cardHasCallback(m.Card)
+				if m.Kind == "progress" || m.Kind == "final" {
+					m.CallbackProofs = cardControlProofs(m.Card)
+				} else {
+					m.CallbackProofs = ""
+				}
+			}
+		}
 		m.Direct = (m.Kind == "progress" || m.Kind == "final") && m.ParentKey == "" && m.ParentMessageID == ""
 	}
 	return
@@ -126,6 +173,17 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			return parseErr
 		} else if nativeCOT && (m.Kind != "progress" || doc.ThreadID != thread || doc.TurnID != m.TurnID || m.Terminal != (doc.Status != "inProgress")) {
 			return ErrConflict
+		} else {
+			m.CardHash = cardHash(m.Card)
+			m.HasCallback = (m.Kind == "progress" || m.Kind == "final") && cardHasCallback(m.Card)
+			if m.Kind == "progress" || m.Kind == "final" {
+				m.CallbackProofs = cardControlProofs(m.Card)
+			} else {
+				m.CallbackProofs = ""
+			}
+			if nativeCOT {
+				m.ProjectionVersion = doc.Version
+			}
 		}
 		seen[m.Key] = true
 		for id, at := range m.ProgressObservedAt {
@@ -163,7 +221,7 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			if marshalErr != nil {
 				return marshalErr
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,replay,parent_key,parent_message_id,event_type,event_at,progress_observed_at_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, host, thread, m.Key, m.TurnID, m.Kind, m.Card, m.Terminal, m.Replay, m.ParentKey, m.ParentMessageID, m.EventType, m.EventAt, string(clocks))
+			_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,card_hash,projection_version,has_callback,callback_proofs,terminal,replay,parent_key,parent_message_id,event_type,event_at,progress_observed_at_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, host, thread, m.Key, m.TurnID, m.Kind, m.Card, m.CardHash, m.ProjectionVersion, m.HasCallback, m.CallbackProofs, m.Terminal, m.Replay, m.ParentKey, m.ParentMessageID, m.EventType, m.EventAt, string(clocks))
 			if err == nil {
 				_, err = tx.ExecContext(ctx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, host, thread, m.Key)
 			}
@@ -173,15 +231,19 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 			if old.Kind != m.Kind || old.TurnID != m.TurnID || old.Direct != m.Direct || old.ParentKey != m.ParentKey || old.ParentMessageID != m.ParentMessageID {
 				return ErrConflict
 			}
-			oldDocument, oldCOT, parseErr := cot.Parse(old.Card)
-			if parseErr != nil {
-				return parseErr
+			oldVersion, oldCOT := old.ProjectionVersion, old.ProjectionVersion != 0
+			if old.Card != "" {
+				oldDocument, nativeCOT, parseErr := cot.Parse(old.Card)
+				if parseErr != nil {
+					return parseErr
+				}
+				oldCOT = nativeCOT
+				if nativeCOT {
+					oldVersion = oldDocument.Version
+				}
 			}
-			newDocument, newCOT, parseErr := cot.Parse(m.Card)
-			if parseErr != nil {
-				return parseErr
-			}
-			if oldCOT != newCOT || oldCOT && oldDocument.Version != newDocument.Version {
+			newCOT := m.ProjectionVersion != 0
+			if oldCOT != newCOT || oldCOT && oldVersion != m.ProjectionVersion {
 				return ErrConflict
 			}
 			if oldCOT {
@@ -216,12 +278,12 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 					return err
 				}
 			}
-			if old.Card == m.Card && old.Terminal == m.Terminal && old.Retired == m.Retired {
+			if mirrorCardEqual(old, m.Card) && old.Terminal == m.Terminal && old.Retired == m.Retired {
 				continue
 			}
 			// Replay provenance belongs to the first observation. Reconnect
 			// must not replace a live event's decision, or create a new one.
-			_, err = tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,terminal=?,retired=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, m.Card, m.Terminal, m.Retired, host, thread, m.Key)
+			_, err = tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,card_hash=?,projection_version=?,has_callback=?,callback_proofs=?,terminal=?,retired=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, m.Card, m.CardHash, m.ProjectionVersion, m.HasCallback, m.CallbackProofs, m.Terminal, m.Retired, host, thread, m.Key)
 			if err == nil {
 				if old.State == "confirmed" {
 					_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='ready',retry_of_attempt_id='' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, host, thread, m.Key)
@@ -235,6 +297,9 @@ func (s *Store) StageSnapshot(ctx context.Context, host, thread string, docs []M
 		}
 		if m.Retired {
 			if err = retireUnacceptedMirror(ctx, tx, host, thread, m.Key); err != nil {
+				return err
+			}
+			if err = compactMirrorPayloadTx(ctx, tx, host, thread, m.Key); err != nil {
 				return err
 			}
 		}
@@ -370,6 +435,9 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	if m.State != "ready" || m.Revision != revision {
 		return a, false, nil
 	}
+	if m.Card == "" {
+		return a, false, ErrConflict
+	}
 	if err = tx.QueryRowContext(ctx, `SELECT retry_of_attempt_id FROM outbound WHERE host_id=? AND thread_id=? AND mirror_key=?`, host, thread, key).Scan(&a.RetryOfAttemptID); err != nil {
 		return a, false, err
 	}
@@ -480,10 +548,12 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 		err = freezeMirrorRequestMarker(ctx, tx, &a)
 	}
 	if err == nil && isCOT {
-		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET cot_step=?,cot_id=?,cot_events_json=?,cot_state_json=?,cot_state_before=?,cot_caught_up=? WHERE attempt_id=?`, a.COTStep, a.COTID, a.COTEvents, a.COTState, a.COTStateBefore, a.COTCaughtUp, a.ID)
+		a.COTPayloadHash = cotPayloadHash(a.COTEvents, a.COTState)
+		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET cot_step=?,cot_id=?,cot_events_json=?,cot_state_json=?,cot_state_before=?,cot_caught_up=?,cot_payload_hash=? WHERE attempt_id=?`, a.COTStep, a.COTID, a.COTEvents, a.COTState, a.COTStateBefore, a.COTCaughtUp, a.COTPayloadHash, a.ID)
 	}
 	if err == nil {
-		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET card_json=? WHERE attempt_id=?`, a.Card, a.ID)
+		a.CardHash = cardHash(a.Card)
+		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET card_json=?,card_hash=? WHERE attempt_id=?`, a.Card, a.CardHash, a.ID)
 	}
 	if err == nil {
 		err = linkMirrorMentions(ctx, tx, a, mentionIDs)
@@ -498,10 +568,16 @@ func (s *Store) ClaimMirrorWithMentions(ctx context.Context, host, thread, key s
 	return a, err == nil, err
 }
 
-const attemptColumns = `attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,created_at_ms,state,remote_id,follow_mode,root_message_id,platform_thread_id,cot_step,cot_id,cot_events_json,cot_state_json,cot_state_before,cot_caught_up,retry_of_attempt_id,rejection_code,rejection_http_status,rejection_request_id`
+const attemptColumns = `attempt_id,host_id,thread_id,mirror_key,revision,operation,chat_id,parent_message_id,target_message_id,card_json,card_hash,created_at_ms,state,remote_id,follow_mode,root_message_id,platform_thread_id,cot_step,cot_id,cot_events_json,cot_state_json,cot_state_before,cot_caught_up,cot_payload_hash,retry_of_attempt_id,rejection_code,rejection_http_status,rejection_request_id`
 
 func scanAttempt(row rowScanner) (a MirrorAttempt, err error) {
-	err = row.Scan(&a.ID, &a.HostID, &a.ThreadID, &a.Key, &a.Revision, &a.Operation, &a.ChatID, &a.ParentMessageID, &a.TargetMessageID, &a.Card, &a.CreatedAtMS, &a.State, &a.RemoteID, &a.FollowMode, &a.RootMessageID, &a.PlatformThreadID, &a.COTStep, &a.COTID, &a.COTEvents, &a.COTState, &a.COTStateBefore, &a.COTCaughtUp, &a.RetryOfAttemptID, &a.RejectionCode, &a.RejectionHTTPStatus, &a.RejectionRequestID)
+	err = row.Scan(&a.ID, &a.HostID, &a.ThreadID, &a.Key, &a.Revision, &a.Operation, &a.ChatID, &a.ParentMessageID, &a.TargetMessageID, &a.Card, &a.CardHash, &a.CreatedAtMS, &a.State, &a.RemoteID, &a.FollowMode, &a.RootMessageID, &a.PlatformThreadID, &a.COTStep, &a.COTID, &a.COTEvents, &a.COTState, &a.COTStateBefore, &a.COTCaughtUp, &a.COTPayloadHash, &a.RetryOfAttemptID, &a.RejectionCode, &a.RejectionHTTPStatus, &a.RejectionRequestID)
+	if err == nil && a.Card != "" && a.CardHash == "" {
+		a.CardHash = cardHash(a.Card)
+	}
+	if err == nil && a.COTStep != "" && a.COTPayloadHash == "" {
+		a.COTPayloadHash = cotPayloadHash(a.COTEvents, a.COTState)
+	}
 	if a.COTStep == "" {
 		a.COTEvents, a.COTState = "", ""
 	}
@@ -513,10 +589,11 @@ func (s *Store) MirrorAttempt(ctx context.Context, id string) (MirrorAttempt, er
 }
 
 // FinishMirrorAttempt persists the remote evidence and scheduling transition
-// atomically. Unknown attempts always stay frozen. A definitely rejected final
-// can be superseded only when StageSnapshot observes a different safe payload;
-// the rejected request itself remains immutable. Confirmation after response
-// loss is allowed, but only with an actual ID.
+// atomically. Unknown attempts always retain their frozen payload. Settled
+// attempts keep their hash and delivery evidence but release the full card body.
+// A definitely rejected final can be superseded only when StageSnapshot
+// observes a different safe payload. Confirmation after response loss is
+// allowed, but only with an actual ID.
 func (s *Store) FinishMirrorAttempt(ctx context.Context, id, outcome, remoteID string) error {
 	return s.finishMirrorAttempt(ctx, id, outcome, remoteID, "", false, MirrorRejection{})
 }
@@ -578,7 +655,19 @@ func (s *Store) finishMirrorAttempt(ctx context.Context, id, outcome, remoteID, 
 		}
 	}
 	if err == nil {
-		err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET state=?,remote_id=?,rejection_code=?,rejection_http_status=?,rejection_request_id=? WHERE attempt_id=?`, outcome, remoteID, rejection.Code, rejection.HTTPStatus, rejection.RequestID, id)
+		hash := a.CardHash
+		if hash == "" && a.Card != "" {
+			hash = cardHash(a.Card)
+		}
+		cotHash := a.COTPayloadHash
+		if cotHash == "" && a.COTStep != "" {
+			cotHash = cotPayloadHash(a.COTEvents, a.COTState)
+		}
+		if outcome == "unknown" {
+			err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET state=?,remote_id=?,rejection_code=?,rejection_http_status=?,rejection_request_id=?,card_hash=?,cot_payload_hash=? WHERE attempt_id=?`, outcome, remoteID, rejection.Code, rejection.HTTPStatus, rejection.RequestID, hash, cotHash, id)
+		} else {
+			err = mirrorWriteOne(ctx, tx, `UPDATE outbound_attempts SET state=?,remote_id=?,rejection_code=?,rejection_http_status=?,rejection_request_id=?,card_hash=?,cot_payload_hash=?,card_json='',cot_events_json='[]',cot_state_json='{}' WHERE attempt_id=?`, outcome, remoteID, rejection.Code, rejection.HTTPStatus, rejection.RequestID, hash, cotHash, id)
+		}
 	}
 	if err == nil {
 		err = mirrorWriteOne(ctx, tx, `UPDATE outbound SET state=?,retry_of_attempt_id='' WHERE host_id=? AND thread_id=? AND mirror_key=?`, state, a.HostID, a.ThreadID, a.Key)
@@ -595,6 +684,9 @@ func (s *Store) finishMirrorAttempt(ctx context.Context, id, outcome, remoteID, 
 	}
 	if err == nil && !nativeCOT && outcome == "rejected" && a.RetryOfAttemptID != "" && m.Kind == "final" && !m.Retired {
 		err = stageFinalDeliveryFailure(ctx, tx, a, m, rejection)
+	}
+	if err == nil {
+		err = compactMirrorPayloadTx(ctx, tx, a.HostID, a.ThreadID, a.Key)
 	}
 	if err != nil {
 		return err
@@ -618,7 +710,7 @@ func safeMirrorDiagnosticID(value string) string {
 func stageFinalDeliveryFailure(ctx context.Context, tx *sql.Tx, a MirrorAttempt, m Mirror, rejection MirrorRejection) error {
 	key := "ui:delivery-failure:" + a.ID
 	card := cards.DeliveryFailure(rejection.Code, rejection.HTTPStatus, rejection.RequestID, a.ID)
-	if err := mirrorWriteOne(ctx, tx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,replay,parent_key,parent_message_id) VALUES(?,?,?,?,'progress',?,1,?,?,?)`, a.HostID, a.ThreadID, key, key, card, m.Replay, m.ParentKey, m.ParentMessageID); err != nil {
+	if err := mirrorWriteOne(ctx, tx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,card_hash,terminal,replay,parent_key,parent_message_id) VALUES(?,?,?,?,'progress',?,?,1,?,?,?)`, a.HostID, a.ThreadID, key, key, card, cardHash(card), m.Replay, m.ParentKey, m.ParentMessageID); err != nil {
 		return err
 	}
 	return mirrorWriteOne(ctx, tx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, a.HostID, a.ThreadID, key)

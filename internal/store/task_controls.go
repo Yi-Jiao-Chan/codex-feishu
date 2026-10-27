@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -103,7 +106,7 @@ func (s *Store) StageTaskControls(ctx context.Context, scope SubmissionScope, vi
 	}
 	seen := map[string]bool{}
 	for _, v := range views {
-		if v.TurnID == "" || seen[v.TurnID] || v.ThreadID != "" && v.ThreadID != scope.ThreadID || v.QueueCount < -1 || v.Kind != "" && v.Kind != "stop" && v.Kind != "continue" || v.State != "available" && v.State != "unavailable" && v.State != "pending" && v.State != "unknown" || v.NativeStatus != "inProgress" && v.NativeStatus != "completed" && v.NativeStatus != "failed" && v.NativeStatus != "interrupted" || v.State == "available" && !(v.Kind == "stop" && v.NativeStatus == "inProgress" || v.Kind == "continue" && v.NativeStatus == "interrupted" && v.QueueCount > 0) {
+		if v.TurnID == "" || seen[v.TurnID] || v.ThreadID != "" && v.ThreadID != scope.ThreadID || v.QueueCount < -1 || v.Kind != "" && v.Kind != "stop" && v.Kind != "continue" && v.Kind != "retry" || v.State != "available" && v.State != "unavailable" && v.State != "pending" && v.State != "unknown" || v.NativeStatus != "inProgress" && v.NativeStatus != "completed" && v.NativeStatus != "failed" && v.NativeStatus != "interrupted" || v.State == "available" && !(v.Kind == "stop" && v.NativeStatus == "inProgress" || v.Kind == "continue" && v.NativeStatus == "interrupted" && v.QueueCount > 0 || v.Kind == "retry" && v.NativeStatus == "failed" && v.QueueCount == 0) {
 			return ErrConflict
 		}
 		seen[v.TurnID] = true
@@ -162,7 +165,7 @@ func (s *Store) TaskControlClaims(ctx context.Context, scope SubmissionScope) ([
 // ClaimTaskControl validates the server-side token, binding and actual progress
 // card identity. Caller has already authenticated the callback's operator.
 func (s *Store) ClaimTaskControl(ctx context.Context, host, app, chat, message, kind, token string, revision int64) (TaskControlClaim, error) {
-	if host == "" || app == "" || chat == "" || message == "" || token == "" || revision <= 0 || kind != "stop" && kind != "continue" {
+	if host == "" || app == "" || chat == "" || message == "" || token == "" || revision <= 0 || kind != "stop" && kind != "continue" && kind != "retry" {
 		return TaskControlClaim{}, ErrSubmissionStale
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -180,18 +183,27 @@ func (s *Store) ClaimTaskControl(ctx context.Context, host, app, chat, message, 
 		return TaskControlClaim{}, ErrSubmissionStale
 	}
 	var count int
-	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mirrors WHERE host_id=? AND thread_id=? AND turn_id=? AND kind='progress' AND retired=0`, host, v.ThreadID, v.TurnID).Scan(&count)
+	mirrorKind := "progress"
+	if kind == "retry" {
+		mirrorKind = "final"
+	}
+	// A retry belongs to the actual first result segment carrying its button.
+	// Stop/continue retain the unique per-turn progress-card requirement.
+	err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM mirrors WHERE host_id=? AND thread_id=? AND turn_id=? AND kind=? AND retired=0 AND (?<>'final' OR remote_id=?)`, host, v.ThreadID, v.TurnID, mirrorKind, mirrorKind, message).Scan(&count)
 	if err != nil {
 		return TaskControlClaim{}, err
 	}
 	if count != 1 {
 		return TaskControlClaim{}, ErrSubmissionStale
 	}
-	var card, remoteID, deliveryState string
+	var card, callbackProofs, remoteID, deliveryState string
 	var mirrorRevision, deliveredRevision int64
-	err = tx.QueryRowContext(ctx, `SELECT m.card_json,m.remote_id,m.revision,m.delivered_revision,o.state FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? AND m.turn_id=? AND m.kind='progress' AND m.retired=0`, host, v.ThreadID, v.TurnID).Scan(&card, &remoteID, &mirrorRevision, &deliveredRevision, &deliveryState)
+	err = tx.QueryRowContext(ctx, `SELECT m.card_json,m.callback_proofs,m.remote_id,m.revision,m.delivered_revision,o.state FROM mirrors m JOIN outbound o USING(host_id,thread_id,mirror_key) WHERE m.host_id=? AND m.thread_id=? AND m.turn_id=? AND m.kind=? AND m.retired=0 AND (?<>'final' OR m.remote_id=?)`, host, v.ThreadID, v.TurnID, mirrorKind, mirrorKind, message).Scan(&card, &callbackProofs, &remoteID, &mirrorRevision, &deliveredRevision, &deliveryState)
 	if err != nil {
 		return TaskControlClaim{}, err
+	}
+	if callbackProofs == "" && card != "" {
+		callbackProofs = cardControlProofs(card)
 	}
 	if remoteID != message {
 		return TaskControlClaim{}, ErrSubmissionStale
@@ -206,7 +218,7 @@ func (s *Store) ClaimTaskControl(ctx context.Context, host, app, chat, message, 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return TaskControlClaim{}, err
 	}
-	if v.Revision != revision || v.Kind != kind || v.State != "available" || mirrorRevision != deliveredRevision || deliveryState != "confirmed" || !taskCardHasControl(card, kind, token, revision) {
+	if v.Revision != revision || v.Kind != kind || v.State != "available" || mirrorRevision != deliveredRevision || deliveryState != "confirmed" || !cardControlProofsContain(callbackProofs, kind, token, revision) {
 		return TaskControlClaim{}, ErrSubmissionStale
 	}
 	if blocked, blockErr := submissionBlocked(ctx, tx, scope); blockErr != nil {
@@ -231,36 +243,41 @@ func (s *Store) ClaimTaskControl(ctx context.Context, host, app, chat, message, 
 	return c, tx.Commit()
 }
 
-func taskCardHasControl(card, kind, token string, revision int64) bool {
-	type cardElement struct {
-		Tag       string
-		Elements  []cardElement
-		Columns   []cardElement
-		Behaviors []struct {
-			Type  string
-			Value struct {
-				Action, Token string
-				Revision      int64
-			}
+type taskCardElement struct {
+	Tag       string
+	Elements  []taskCardElement
+	Columns   []taskCardElement
+	Behaviors []struct {
+		Type  string
+		Value struct {
+			Action, Token string
+			Revision      int64
 		}
 	}
+}
+
+func cardControlProof(kind, token string, revision int64) string {
+	return cardHash(kind + "\x00" + token + "\x00" + strconv.FormatInt(revision, 10))
+}
+
+func cardControlProofs(card string) string {
 	var doc struct {
 		Body struct {
-			Elements []cardElement
+			Elements []taskCardElement
 		}
 	}
 	if json.Unmarshal([]byte(card), &doc) != nil {
-		return false
+		return ""
 	}
-	count := 0
-	var visit func([]cardElement)
-	visit = func(elements []cardElement) {
+	var proofs []string
+	var visit func([]taskCardElement)
+	visit = func(elements []taskCardElement) {
 		for _, e := range elements {
 			switch e.Tag {
 			case "button":
 				for _, b := range e.Behaviors {
-					if b.Type == "callback" && b.Value.Action == kind && b.Value.Token == token && b.Value.Revision == revision {
-						count++
+					if b.Type == "callback" && b.Value.Action != "" && b.Value.Token != "" && b.Value.Revision > 0 {
+						proofs = append(proofs, cardControlProof(b.Value.Action, b.Value.Token, b.Value.Revision))
 					}
 				}
 			case "column_set":
@@ -276,7 +293,22 @@ func taskCardHasControl(card, kind, token string, revision int64) bool {
 		}
 	}
 	visit(doc.Body.Elements)
+	sort.Strings(proofs)
+	return strings.Join(proofs, ",")
+}
+
+func cardControlProofsContain(proofs, kind, token string, revision int64) bool {
+	target, count := cardControlProof(kind, token, revision), 0
+	for _, proof := range strings.Split(proofs, ",") {
+		if proof == target {
+			count++
+		}
+	}
 	return count == 1
+}
+
+func taskCardHasControl(card, kind, token string, revision int64) bool {
+	return cardControlProofsContain(cardControlProofs(card), kind, token, revision)
 }
 
 func (s *Store) FinishTaskControlClaim(ctx context.Context, scope SubmissionScope, claim TaskControlClaim, action SubmissionAction) error {

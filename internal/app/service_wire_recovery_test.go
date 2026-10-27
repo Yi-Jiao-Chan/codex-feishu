@@ -296,7 +296,7 @@ func TestServiceWireDisconnectRehydratesOfflinePublicHistoryOnce(t *testing.T) {
 			}
 		}
 	}
-	if newHuman.RemoteID == "" || newFinal.RemoteID == "" || newFinal.ParentKey != newHuman.Key || !strings.Contains(newHuman.Card, "owned offline public input") || !strings.Contains(newFinal.Card, "owned offline final reply") {
+	if newHuman.RemoteID == "" || newFinal.RemoteID == "" || newFinal.ParentKey != newHuman.Key || newHuman.Card != "" || newFinal.Card != "" || newHuman.CardHash == "" || newFinal.CardHash == "" {
 		t.Fatal("offline turn content or reply anchor was not restored")
 	}
 	newReplies := 0

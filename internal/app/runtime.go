@@ -59,7 +59,7 @@ type Runtime struct {
 	ProgressTimeZone           string
 	PrepareHuman               func(context.Context, string, []codexclient.AttachmentReference) ([]cards.AttachmentView, error)
 	PreparePublic              func(context.Context, string, string) (string, error)
-	ReadGoalTurns              func(context.Context, string, []string) (map[string]bool, error)
+	ReadUnanchoredTurns        func(context.Context, string, []string) (map[string]bool, error)
 	SyncGroupName              func(context.Context, store.Binding, string) error
 	Ready                      func() bool
 	CanDeliver                 func(context.Context, store.Binding) error
@@ -70,7 +70,7 @@ type Runtime struct {
 	PrepareWorkspace           func(context.Context, string) error
 	RememberWorkspace          func(context.Context, codexclient.Thread) error
 	WorkspaceAuthorize         func(context.Context, codexclient.Thread) error
-	ActorTick                  func(context.Context, string) error
+	ActorTick                  func(context.Context, string) ([]codexclient.Turn, error)
 	HistoryPreparing           func(context.Context, string, []codexclient.Turn) error
 	HistoryStaged              func(context.Context, string, []codexclient.Turn) error
 	HistoryHydrated            func(context.Context, string, []codexclient.Turn) error
@@ -83,6 +83,7 @@ type Runtime struct {
 	ActorRetrying  func(string)
 	ActorReleased  func(string)
 	RenderProgress func(string, string, string, cards.ProgressView) string
+	RenderFinal    func(string, string, string, string) string
 	NativeCOT      bool
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
 	Notice         func(string)
@@ -101,6 +102,11 @@ type Runtime struct {
 	pinSupported   bool
 	pinKnown       bool
 	pinSectionID   string
+	// One bounded cache serves every actor in this native generation. Dormant
+	// actor eviction therefore does not make the next user action reproject all
+	// completed tool results from scratch.
+	cotProjectionCache *messages.COTProjectionCache
+	timings            syncTimings
 }
 
 type threadActor struct {
@@ -281,6 +287,8 @@ func (r *Runtime) Run(parent context.Context) error {
 	r.carryover = nil
 	r.checks = make(chan string, 256)
 	r.activations = make(chan struct{}, 1)
+	r.cotProjectionCache = messages.NewCOTProjectionCache()
+	r.timings.reset()
 	r.running = true
 	r.lifecycleReady = false
 	r.pinSupported, r.pinKnown, r.pinSectionID = false, false, ""
@@ -301,6 +309,7 @@ func (r *Runtime) Run(parent context.Context) error {
 		r.bindings = nil
 		r.checks = nil
 		r.activations = nil
+		r.cotProjectionCache = nil
 		r.mu.Unlock()
 	}()
 	e := &discovery.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, AppID: r.AppID, AllowedRoots: r.AllowedRoots, DirectoryRules: r.DirectoryRules, BoundObserved: r.observeBoundActivity, Now: r.Now}
@@ -529,6 +538,14 @@ func (r *Runtime) Run(parent context.Context) error {
 					return errors.New("native request journal requires reconciliation")
 				}
 			}
+			switch event.Method {
+			case "item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded", "item/reasoning/textDelta":
+				// Hidden reasoning is absent from every public projection. A
+				// token delta cannot change queue/control state or a public card;
+				// keep real turn, item and request lifecycle events as wakeups.
+				r.timings.ignoredReasoning()
+				continue
+			}
 			if event.Method == "thread/started" && r.DiscoveryEnabled {
 				var params struct {
 					Thread codexclient.Thread `json:"thread"`
@@ -650,10 +667,12 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) actorExit {
 		}
 	}
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
+	engine.COTProjectionCache = r.cotProjectionCache
 	engine.PrepareHuman = r.PrepareHuman
 	engine.PreparePublic = r.PreparePublic
-	engine.ReadGoalTurns = r.ReadGoalTurns
+	engine.ReadUnanchoredTurns = r.ReadUnanchoredTurns
 	engine.ProgressRender = r.RenderProgress
+	engine.FinalRender = r.RenderFinal
 	engine.NativeCOT = r.NativeCOT
 	engine.SuppressAsyncQuestions = r.SuppressAsyncQuestions
 	engine.AsyncQuestionsSinceMS = r.AsyncQuestionsSinceMS
@@ -666,6 +685,8 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) actorExit {
 	}
 	deliveryPending := false
 	deliver := func(b store.Binding, turns []codexclient.Turn, historyOK bool) {
+		started := time.Now()
+		defer func() { r.timings.observe("delivery", time.Since(started)) }()
 		deliveryPending = false
 		if r.ready() && (r.CanDeliver == nil || r.CanDeliver(ctx, b) == nil) {
 			// Bounded batch prevents one long answer from monopolizing
@@ -811,6 +832,7 @@ actorLoop:
 				tickPending := false
 				deliveryAuthorized = false
 				readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				started := time.Now()
 				meta, err := r.Native.Metadata(readCtx, a.thread)
 				verificationHandled := false
 				if err == nil && meta.ID == a.thread {
@@ -823,6 +845,7 @@ actorLoop:
 					r.notice("thread.authorization_pending")
 					return actorRetryLater
 				}
+				r.timings.observe("metadata", time.Since(started))
 				deliveryAuthorized = true
 				if r.RememberWorkspace != nil {
 					if err := r.RememberWorkspace(readCtx, meta); err != nil {
@@ -832,17 +855,29 @@ actorLoop:
 				// Name is the App's user-facing title. Refresh it from every
 				// authorized metadata read, including name-update wakeups.
 				title, nameStateKnown = r.groupTitle(meta, latestTurns)
+				var turns []codexclient.Turn
 				if r.ActorTick != nil {
+					started = time.Now()
 					if _, err := r.Store.Binding(readCtx, r.HostID, a.thread); err == nil {
-						if err := r.ActorTick(readCtx, a.thread); err != nil {
+						var tickErr error
+						turns, tickErr = r.ActorTick(readCtx, a.thread)
+						if tickErr != nil {
+							turns = nil
 							tickPending = true
 							r.notice("input.reconcile_pending")
 						}
 					}
+					r.timings.observe("inputs", time.Since(started))
 				}
 				// Read and persist first, regardless of group network latency. A
 				// failed or unknown creation never discards the first/final items.
-				turns, err := r.Native.Turns(readCtx, a.thread)
+				if turns == nil {
+					started = time.Now()
+					turns, err = r.Native.Turns(readCtx, a.thread)
+					r.timings.observe("history_read", time.Since(started))
+				} else {
+					r.timings.reusedHistory()
+				}
 				if verificationHandled && codexclient.BeforeFirstInput(err) {
 					// Native verification drafts can be authorized before their
 					// first input; never invent a user item to unlock hydration.
@@ -851,11 +886,16 @@ actorLoop:
 				if err == nil {
 					title, nameStateKnown = r.groupTitle(meta, turns)
 					if r.HistoryPreparing != nil {
+						started = time.Now()
 						err = r.HistoryPreparing(readCtx, a.thread, turns)
+						r.timings.observe("history_prepare", time.Since(started))
 					}
 					if err == nil {
+						started = time.Now()
 						err = engine.Apply(readCtx, a.thread, turns, a.replay, r.now().UnixMilli())
+						r.timings.observe("projection", time.Since(started))
 					}
+					started = time.Now()
 					if err == nil {
 						// Freeze first-observation reminder decisions even before
 						// a slow group creation returns. Disabled configuration
@@ -868,6 +908,7 @@ actorLoop:
 					if err == nil && r.HistoryHydrated != nil {
 						err = r.HistoryHydrated(readCtx, a.thread, turns)
 					}
+					r.timings.observe("history_stage", time.Since(started))
 				}
 				cancel()
 				if err != nil {

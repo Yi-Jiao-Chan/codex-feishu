@@ -214,7 +214,7 @@ func TestVisualizationCorrectsDeliveredCardWithoutResendingOrMentioning(t *testi
 	corrected, err := e.Store.Mirror(ctx, "host", "thread", key)
 	if err != nil || corrected.RemoteID != old.RemoteID || corrected.Revision != old.Revision+1 ||
 		len(gateway.writes) != before+1 || gateway.writes[before].Operation != "update" ||
-		gateway.writes[before].ID != old.RemoteID || !strings.Contains(corrected.Card, codexclient.VisualizationFallback) ||
+		gateway.writes[before].ID != old.RemoteID || corrected.Card != "" || corrected.CardHash == "" || !strings.Contains(gateway.writes[before].Card, codexclient.VisualizationFallback) ||
 		strings.Contains(gateway.writes[before].Card, `\u003cat id=`) {
 		t.Fatal("visualization correction did not update the original card without a reminder")
 	}

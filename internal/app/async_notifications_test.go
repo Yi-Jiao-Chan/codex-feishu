@@ -87,7 +87,7 @@ func TestAsyncNotificationWithoutFeishuAnsweringMentionsOnceAndUpdatesReceipt(t 
 		t.Fatal(err)
 	}
 	after, err := c.Store.Mirror(ctx, "host", "thread", key)
-	if err != nil || after.Revision != updated.Revision || !strings.Contains(after.Card, "合成回答") {
+	if err != nil || after.Revision != updated.Revision || after.Card != "" || after.CardHash != updated.CardHash {
 		t.Fatal("offline projection lost the recorded async answer", err)
 	}
 	decisions, err = c.Store.MentionDecisions(ctx, "host", "thread", key)

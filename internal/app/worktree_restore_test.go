@@ -209,7 +209,9 @@ func (f *workspaceRuntimeFixture) wire() {
 	controller.BeginWrite = func(ctx context.Context) (context.Context, func(), error) {
 		return f.s.beginSubmissionWrite(ctx, f.n, f.n.thread)
 	}
-	f.r.ActorTick = func(ctx context.Context, _ string) error { return controller.Tick(ctx) }
+	f.r.ActorTick = func(ctx context.Context, _ string) ([]codexclient.Turn, error) {
+		return controller.TickWithHistory(ctx)
+	}
 	f.r.AfterDelivery = func(ctx context.Context, thread string, turns []codexclient.Turn) error {
 		return f.s.publishRestoredWorkspace(ctx, f.n, thread, turns)
 	}

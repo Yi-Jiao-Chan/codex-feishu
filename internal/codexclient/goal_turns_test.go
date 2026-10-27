@@ -19,12 +19,18 @@ func goalRecords() []map[string]any {
 }
 
 func TestGoalOriginRequiresNativeStartIdentity(t *testing.T) {
-	for _, scenario := range []string{"goal", "turn-started", "compaction", "user-trigger", "missing-attribution", "missing-attributed-turn", "mismatched-attributed-turn", "root-only", "other-turn", "duplicate-start", "conflicting-start", "wrong-record-kind", "wrong-session", "missing-meta", "duplicate-meta", "duplicate-json-key", "truncated-tail", "cancelled"} {
+	for _, scenario := range []string{"goal", "capacity-retry-manual", "capacity-retry-auto", "unknown-trigger", "turn-started", "compaction", "user-trigger", "missing-attribution", "missing-attributed-turn", "mismatched-attributed-turn", "root-only", "other-turn", "duplicate-start", "conflicting-start", "wrong-record-kind", "wrong-session", "missing-meta", "duplicate-meta", "duplicate-json-key", "truncated-tail", "cancelled"} {
 		t.Run(scenario, func(t *testing.T) {
 			records := goalRecords()
 			start := records[1]["payload"].(map[string]any)
 			bad := false
 			switch scenario {
+			case "capacity-retry-manual":
+				start["turn_attribution"].(map[string]any)["turn_trigger"] = "capacity_retry_manual"
+			case "capacity-retry-auto":
+				start["turn_attribution"].(map[string]any)["turn_trigger"] = "capacity_retry_auto"
+			case "unknown-trigger":
+				start["turn_attribution"].(map[string]any)["turn_trigger"] = "unknown"
 			case "turn-started":
 				start["type"] = "turn_started"
 			case "compaction":
@@ -71,14 +77,14 @@ func TestGoalOriginRequiresNativeStartIdentity(t *testing.T) {
 			if scenario == "cancelled" {
 				cancel()
 			}
-			goals, err := readGoalRollout(ctx, strings.NewReader(text), "thread")
+			goals, err := readUnanchoredRollout(ctx, strings.NewReader(text), "thread")
 			if bad {
-				if !errors.Is(err, ErrGoalTurnUnavailable) || goals != nil {
+				if !errors.Is(err, ErrUnanchoredTurnUnavailable) || goals != nil {
 					t.Fatal("invalid origin record was accepted", err)
 				}
 				return
 			}
-			want := scenario == "goal" || scenario == "turn-started" || scenario == "compaction"
+			want := scenario == "goal" || scenario == "capacity-retry-manual" || scenario == "turn-started" || scenario == "compaction"
 			if err != nil || goals["goal-turn"] != want {
 				t.Fatal("wrong automatic goal classification", err)
 			}
@@ -105,7 +111,7 @@ func TestGoalReaderUsesDaemonHomeAndRevalidatesChangedRollout(t *testing.T) {
 		return Thread{ID: "thread", Path: &current}, nil
 	}
 	t.Setenv("CODEX_HOME", t.TempDir())
-	r := NewGoalTurnReader(metadata, root)
+	r := NewUnanchoredTurnReader(metadata, root)
 	read := func(want bool) {
 		t.Helper()
 		got, err := r.Read(context.Background(), "thread", []string{"goal-turn"})
@@ -137,7 +143,7 @@ func TestGoalReaderUsesDaemonHomeAndRevalidatesChangedRollout(t *testing.T) {
 	if _, err := r.Read(context.Background(), "different-thread", []string{"goal-turn"}); err == nil {
 		t.Fatal("cross-thread metadata accepted")
 	}
-	if _, err := NewGoalTurnReader(metadata, "").Read(context.Background(), "thread", []string{"goal-turn"}); err == nil {
+	if _, err := NewUnanchoredTurnReader(metadata, "").Read(context.Background(), "thread", []string{"goal-turn"}); err == nil {
 		t.Fatal("bridge environment substituted for daemon home")
 	}
 	var wg sync.WaitGroup
@@ -155,7 +161,7 @@ func TestGoalOriginSurvivesLargeUnrelatedToolOutput(t *testing.T) {
 		"output": strings.Repeat("x", 6<<20) + `{"type":"task_started","turn_id":"fake-goal","turn_attribution":{"turn_trigger":"goal"}}`,
 	}}
 	records = append(records[:1], append([]map[string]any{output}, records[1:]...)...)
-	goals, err := readGoalRollout(context.Background(), strings.NewReader(receiptLines(t, records)), "thread")
+	goals, err := readUnanchoredRollout(context.Background(), strings.NewReader(receiptLines(t, records)), "thread")
 	if err != nil || !goals["goal-turn"] || goals["fake-goal"] {
 		t.Fatal("tool output size or embedded text changed goal attribution", err)
 	}
@@ -191,16 +197,16 @@ func TestGoalReaderRejectsUnsafeFilesAndOversizedRecords(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "oversized-file":
-				if err := os.Truncate(path, goalRolloutMaxBytes+1); err != nil {
+				if err := os.Truncate(path, turnOriginMaxBytes+1); err != nil {
 					t.Fatal(err)
 				}
 			case "oversized-line":
-				if err := os.WriteFile(path, []byte(strings.Repeat(" ", goalRolloutMaxLine+1)), 0600); err != nil {
+				if err := os.WriteFile(path, []byte(strings.Repeat(" ", turnOriginMaxLine+1)), 0600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			r := NewGoalTurnReader(func(context.Context, string) (Thread, error) { return Thread{ID: "thread", Path: &path}, nil }, root)
-			if _, err := r.Read(context.Background(), "thread", []string{"goal-turn"}); !errors.Is(err, ErrGoalTurnUnavailable) {
+			r := NewUnanchoredTurnReader(func(context.Context, string) (Thread, error) { return Thread{ID: "thread", Path: &path}, nil }, root)
+			if _, err := r.Read(context.Background(), "thread", []string{"goal-turn"}); !errors.Is(err, ErrUnanchoredTurnUnavailable) {
 				t.Fatal("unsafe origin source accepted", err)
 			}
 		})

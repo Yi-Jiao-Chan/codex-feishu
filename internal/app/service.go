@@ -309,6 +309,11 @@ func (s *Service) Run(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	var workers sync.WaitGroup
 	defer func() { cancel(); workers.Wait(); s.nativeConnected.Store(false) }()
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		s.compactDeliveryPayloads(ctx)
+	}()
 	collectingAttachments, err := s.Store.HasCollectingAttachments(ctx, s.Config.Host.ID, s.Config.Feishu.AppID)
 	if err != nil {
 		return err
@@ -578,6 +583,10 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		Operators: s.Config.Access.OperatorOpenIDs, BeginWrite: s.beginThreadDelivery, Now: s.now}
 	controllers := map[string]*submissions.Controller{}
 	tasks := map[string]*TaskControls{}
+	var retryEvidence func(context.Context, string, []string) (map[string]string, error)
+	_, retrySupported := native.(submissions.RetryNative)
+	versionedRetry, retryVersionKnown := native.(interface{ AppServerVersion() string })
+	retrySupported = retrySupported && retryVersionKnown && versionedRetry.AppServerVersion() == codexclient.ManualRetrySchemaVersion
 	var actorStateMu sync.Mutex
 	s.mu.Lock()
 	s.actionsReady = map[string]bool{}
@@ -591,7 +600,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		defer actorStateMu.Unlock()
 		t := tasks[thread]
 		if t == nil {
-			t = &TaskControls{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, InFeishu: interactive != nil, Queue: readQueue, Icons: s.taskIcons}
+			t = &TaskControls{Store: s.Store, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, Waiting: tracker.Waiting, InFeishu: interactive != nil, Queue: readQueue, Icons: s.taskIcons, RetryEnabled: retrySupported && retryEvidence != nil}
 			tasks[thread] = t
 		}
 		return t
@@ -651,8 +660,9 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		Metadata(context.Context, string) (codexclient.Thread, error)
 		CodexHome() string
 	}); ok {
-		goals := codexclient.NewGoalTurnReader(source.Metadata, source.CodexHome())
-		r.ReadGoalTurns = goals.Read
+		origins := codexclient.NewUnanchoredTurnReader(source.Metadata, source.CodexHome())
+		r.ReadUnanchoredTurns = origins.Read
+		retryEvidence = origins.RetryTurns
 	}
 	if gateway, ok := s.Gateway.(bindings.GroupNameGateway); ok {
 		names := &bindings.GroupNames{Store: s.Store, Gateway: gateway, AppID: s.Config.Feishu.AppID,
@@ -685,11 +695,12 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		s.clearActionsReady(t.ID)
 		return true, verification.ErrNotReady
 	}
-	r.ActorTick = func(ctx context.Context, thread string) error {
+	r.ActorTick = func(ctx context.Context, thread string) ([]codexclient.Turn, error) {
 		actorStateMu.Lock()
 		c := controllers[thread]
 		if c == nil {
 			c = &submissions.Controller{Store: s.Store, Native: native, HostID: s.Config.Host.ID, AppID: s.Config.Feishu.AppID, ThreadID: thread}
+			c.RetryEvidence = retryEvidence
 			c.BeginWrite = func(ctx context.Context) (context.Context, func(), error) {
 				return s.beginSubmissionWrite(ctx, native, thread)
 			}
@@ -698,13 +709,14 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		actorStateMu.Unlock()
 		if interactive != nil {
 			if err := interactive.Tick(ctx, thread); err != nil {
-				return err
+				return nil, err
 			}
 		}
 		settingsErr := settings.Tick(ctx, thread)
 		// An unresolved settings write must not disable stop, queue recovery,
 		// or ordinary messages. Only further settings mutations are blocked.
-		return errors.Join(settingsErr, c.Tick(ctx))
+		turns, inputErr := c.TickWithHistory(ctx)
+		return turns, errors.Join(settingsErr, inputErr)
 	}
 	r.ActorReleased = func(thread string) {
 		actorStateMu.Lock()
@@ -732,6 +744,9 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	}
 	r.RenderProgress = func(thread, turn, status string, progress cards.ProgressView) string {
 		return task(thread).Render(thread, turn, status, progress)
+	}
+	r.RenderFinal = func(thread, turn, status, card string) string {
+		return task(thread).RenderFinal(thread, turn, status, card)
 	}
 	_, r.NativeCOT = s.Gateway.(messages.COTGateway)
 	r.HistoryStaged = func(ctx context.Context, thread string, turns []codexclient.Turn) error {

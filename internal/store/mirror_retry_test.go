@@ -131,7 +131,11 @@ func TestRetiredMirrorTailAfterDeferralDoesNotCreateObsoleteCard(t *testing.T) {
 				t.Fatalf("obsolete or unresolved tail dispatched: %+v %t %v", a, claimed, err)
 			}
 			frozen, err := s.MirrorAttempt(ctx, first.ID)
-			if err != nil || frozen.Card != first.Card || frozen.Revision != first.Revision {
+			wantCard := ""
+			if outcome == "unknown" || outcome == "dispatching" {
+				wantCard = first.Card
+			}
+			if err != nil || frozen.Card != wantCard || frozen.CardHash != first.CardHash || frozen.Revision != first.Revision {
 				t.Fatalf("retirement modified immutable old tail: %+v %v", frozen, err)
 			}
 			if outcome == "deferred" {
@@ -184,7 +188,7 @@ func TestRetiredInFlightMirrorTailRateRejectionCompletesLocally(t *testing.T) {
 		t.Fatalf("retired inflight tail remained selected: %+v %v", ready, err)
 	}
 	frozen, err := s.MirrorAttempt(ctx, first.ID)
-	if err != nil || frozen.State != "rejected" || frozen.RemoteID != "" || frozen.Card != first.Card || frozen.Revision != first.Revision {
+	if err != nil || frozen.State != "rejected" || frozen.RemoteID != "" || frozen.Card != "" || frozen.CardHash != first.CardHash || frozen.Revision != first.Revision {
 		t.Fatalf("rejection changed immutable retired-tail payload: %+v %v", frozen, err)
 	}
 }
@@ -228,7 +232,7 @@ func TestMirrorDeferralPersistsAndCoalescesFreshAttempt(t *testing.T) {
 		t.Fatal("inflight replay changed deadline/count")
 	}
 	frozen, err := s.MirrorAttempt(ctx, first.ID)
-	if err != nil || frozen.State != "rejected" || frozen.RemoteID != "" || frozen.Card != first.Card || frozen.Revision != 1 {
+	if err != nil || frozen.State != "rejected" || frozen.RemoteID != "" || frozen.Card != "" || frozen.CardHash != first.CardHash || frozen.Revision != 1 {
 		t.Fatalf("rejected journal changed: %+v %v", frozen, err)
 	}
 	if err := s.FinishMirrorAttempt(ctx, second.ID, "confirmed", "message"); err != nil {
@@ -455,7 +459,7 @@ func TestMirrorDeferralReevaluatesOnlyRejectedDispatchMentions(t *testing.T) {
 				}
 			}
 			frozen, err := s.MirrorAttempt(ctx, first.ID)
-			if err != nil || frozen.Card != first.Card {
+			if err != nil || frozen.Card != "" || frozen.CardHash != first.CardHash {
 				t.Fatal("retry changed immutable mention payload", err)
 			}
 		})

@@ -27,7 +27,13 @@ func (s *Store) BaselineFence(ctx context.Context, host string) (int64, bool, er
 }
 
 func (s *Store) PendingObservations(ctx context.Context, host string) ([]Observation, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT thread_id,origin,proof,state,cwd,created_at,first_user_item_id,project_root,exclusion_reason FROM thread_observations WHERE host_id=? AND state IN ('pending','eligible') ORDER BY created_at,thread_id", host)
+	// Bound routes are activated by native activity or durable work, not by
+	// their old discovery eligibility. Including them here re-created dormant
+	// actors after every discovery scan.
+	rows, err := s.DB.QueryContext(ctx, `SELECT thread_id,origin,proof,state,cwd,created_at,first_user_item_id,project_root,exclusion_reason
+		FROM thread_observations o WHERE host_id=? AND state IN ('pending','eligible')
+		AND NOT EXISTS (SELECT 1 FROM bindings b WHERE b.host_id=o.host_id AND b.thread_id=o.thread_id)
+		ORDER BY created_at,thread_id`, host)
 	if err != nil {
 		return nil, err
 	}

@@ -138,7 +138,7 @@ func TestDisconnectedQueueKeepsOnlySafeLocalCancellation(t *testing.T) {
 		t.Fatal(e)
 	}
 	m, e := s.Mirror(ctx, scope.HostID, scope.ThreadID, QueueCardKey(r.ID))
-	if e != nil || !strings.Contains(m.Card, "cancel_pending") {
+	if e != nil || m.Card != "" || !m.HasCallback || !cardControlProofsContain(m.CallbackProofs, "cancel_pending", n.ActionToken, n.Revision) {
 		t.Fatal("offline erased local cancel", e)
 	}
 	if _, e := s.DB.Exec(`INSERT INTO submission_attempts(attempt_id,host_id,app_id,thread_id,receipt_id,stage,state,client_id,created_at_ms) VALUES('late','host','app','thread',?,'add','unknown',?,1)`, r.ID, r.ClientID); e != nil {

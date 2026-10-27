@@ -49,7 +49,7 @@ func TestRateLimitedFinalWaitsAcrossRestartThenDeliversLatestBody(t *testing.T) 
 		t.Fatal("final did not resume", r, err)
 	}
 	latest, err := reopened.MirrorAttempt(ctx, r.AttemptID)
-	if err != nil || latest.Card != m.Card || latest.ParentMessageID != "original-input" || latest.Operation != "reply" {
+	if err != nil || latest.Card != "" || latest.CardHash != testCardHash(g.cards[1]) || latest.ParentMessageID != "original-input" || latest.Operation != "reply" {
 		t.Fatal("retry body or relation incorrect", latest, err)
 	}
 	if r, err = o.DispatchOne(ctx, "host", "thread", 4501); err != nil || r.AttemptID != "" || len(g.calls) != 2 {

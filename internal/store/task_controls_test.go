@@ -187,6 +187,24 @@ func TestTaskControlClaimRequiresCurrentDeliveredProgressPayload(t *testing.T) {
 	}
 }
 
+func TestTaskControlClaimAcceptsLegacyDeliveredCardBeforeCompaction(t *testing.T) {
+	s, _, scope := taskControlStore(t, true)
+	ctx := context.Background()
+	v := TaskControl{TurnID: "original-turn", NativeStatus: "inProgress", Kind: "stop", State: "available", QueueCount: -1, Fingerprint: "legacy"}
+	if err := s.StageTaskControls(ctx, scope, []TaskControl{v}); err != nil {
+		t.Fatal(err)
+	}
+	shown := taskControlView(t, s, scope)
+	stageTaskCard(t, s, scope, shown, true, 1)
+	card := cards.Task(cards.TaskView{Status: shown.NativeStatus, Token: shown.Token, Revision: shown.Revision, Kind: shown.Kind, State: shown.State, QueueCount: shown.QueueCount})
+	if _, err := s.DB.ExecContext(ctx, `UPDATE mirrors SET card_json=?,callback_proofs='' WHERE host_id=? AND thread_id=? AND mirror_key='task-progress'`, card, scope.HostID, scope.ThreadID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimTaskControl(ctx, scope.HostID, scope.AppID, "chat", "actual-progress", shown.Kind, shown.Token, shown.Revision); err != nil {
+		t.Fatal("legacy delivered task control was rejected before background compaction", err)
+	}
+}
+
 func TestTaskControlConcurrentReplayAndLatePreparationCannotUndoClaim(t *testing.T) {
 	s, path, scope := taskControlStore(t, true)
 	ctx := context.Background()

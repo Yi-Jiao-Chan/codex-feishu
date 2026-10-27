@@ -231,7 +231,7 @@ func stageQueueCardTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, re
 	}
 	terminal := n.State == "consumed" || n.State == "steered" || n.State == "removed" || n.State == "failed"
 	if mirrorMissing {
-		_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,terminal,parent_message_id) VALUES(?,?,?,?,'progress',?,?,?)`, scope.HostID, scope.ThreadID, key, key, card, terminal, identity.parent)
+		_, err = tx.ExecContext(ctx, `INSERT INTO mirrors(host_id,thread_id,mirror_key,turn_id,kind,card_json,card_hash,terminal,parent_message_id) VALUES(?,?,?,?,'progress',?,?,?,?)`, scope.HostID, scope.ThreadID, key, key, card, cardHash(card), terminal, identity.parent)
 		if err == nil {
 			_, err = tx.ExecContext(ctx, `INSERT INTO outbound(host_id,thread_id,mirror_key,state) VALUES(?,?,?,'ready')`, scope.HostID, scope.ThreadID, key)
 		}
@@ -242,8 +242,8 @@ func stageQueueCardTx(ctx context.Context, tx *sql.Tx, scope SubmissionScope, re
 		if old.Terminal && !terminal {
 			return ErrConflict
 		}
-		if old.Card != card || old.Terminal != terminal {
-			_, err = tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,terminal=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, card, terminal, scope.HostID, scope.ThreadID, key)
+		if !mirrorCardEqual(old, card) || old.Terminal != terminal {
+			_, err = tx.ExecContext(ctx, `UPDATE mirrors SET card_json=?,card_hash=?,projection_version=0,terminal=?,revision=revision+1 WHERE host_id=? AND thread_id=? AND mirror_key=?`, card, cardHash(card), terminal, scope.HostID, scope.ThreadID, key)
 			if err == nil {
 				_, err = tx.ExecContext(ctx, `UPDATE outbound SET state='ready' WHERE host_id=? AND thread_id=? AND mirror_key=? AND state='confirmed'`, scope.HostID, scope.ThreadID, key)
 			}
