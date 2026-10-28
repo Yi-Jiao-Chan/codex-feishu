@@ -24,17 +24,6 @@ func (s *Store) BindingActivationThreads(ctx context.Context, host, app string) 
 	JOIN bindings b ON b.host_id=o.host_id AND b.thread_id=o.thread_id
 	WHERE o.host_id=? AND o.state IN ('ready','dispatching','unknown')
 	UNION
-	SELECT json_extract(o.remote_id,'$.scope.binding.ThreadID') FROM m0_operations o
-	JOIN bindings b ON b.host_id=? AND b.thread_id=json_extract(o.remote_id,'$.scope.binding.ThreadID')
-	WHERE o.kind='feishu.chat.name_sync' AND json_valid(o.remote_id)
-	AND json_extract(o.remote_id,'$.scope.app_id')=? AND json_extract(o.remote_id,'$.scope.binding.HostID')=?
-	AND (o.state IN ('dispatching','unknown') OR (o.state='rejected' AND json_extract(o.remote_id,'$.retry_at_ms')>0 AND NOT EXISTS(
-	 SELECT 1 FROM m0_operations n WHERE n.kind=o.kind AND n.rowid>o.rowid AND json_valid(n.remote_id)
-	 AND json_extract(n.remote_id,'$.scope.app_id')=json_extract(o.remote_id,'$.scope.app_id')
-	 AND json_extract(n.remote_id,'$.scope.binding.HostID')=json_extract(o.remote_id,'$.scope.binding.HostID')
-	 AND json_extract(n.remote_id,'$.scope.binding.ThreadID')=json_extract(o.remote_id,'$.scope.binding.ThreadID')
-	)))
-	UNION
 	SELECT c.thread_id FROM task_control_claims c
 	JOIN bindings b ON b.host_id=c.host_id AND b.thread_id=c.thread_id
 	WHERE c.host_id=? AND c.app_id=? AND c.state IN ('ready','pending','unknown')
@@ -68,7 +57,7 @@ func (s *Store) BindingActivationThreads(ctx context.Context, host, app string) 
 	WHERE r.app_id=? AND x.state IN ('changing','unknown')
 )
 SELECT DISTINCT thread_id FROM candidates ORDER BY thread_id`,
-		host, app, host, app, host, app, host, host, app, host, host, app,
+		host, app, host, app, host, app, host, host, app,
 		host, app, host, app, host, app, host, app, host, app, host, app)
 	if err != nil {
 		return nil, err

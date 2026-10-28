@@ -19,6 +19,7 @@ type pinNativeFixture struct {
 	sections    []codexclient.ThreadSection
 	catalogErr  error
 	archiveErr  error
+	archived    map[string]bool
 	sectionRead atomic.Int32
 }
 
@@ -31,16 +32,16 @@ func (n *pinNativeFixture) Sections(context.Context) ([]codexclient.ThreadSectio
 func (n *pinNativeFixture) ListSection(_ context.Context, section string, archived bool) ([]codexclient.Thread, error) {
 	n.sectionRead.Add(1)
 	n.pinMu.Lock()
+	defer n.pinMu.Unlock()
 	err := n.archiveErr
-	n.pinMu.Unlock()
-	if archived {
+	if archived && err != nil {
 		return nil, err
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	var threads []codexclient.Thread
 	for _, thread := range n.threads {
-		if thread.Section != nil && thread.Section.ID == section {
+		if thread.Section != nil && thread.Section.ID == section && n.archived[thread.ID] == archived {
 			threads = append(threads, thread)
 		}
 	}
@@ -88,6 +89,124 @@ func TestPinnedSectionIdentityAndChanges(t *testing.T) {
 	meta := codexclient.Thread{Name: &name}
 	if threadGroupTitleWithPin(meta, nil, true) != "📌 🤖 📌 literal title" || threadGroupTitleWithPin(meta, nil, false) != "🤖 📌 literal title" {
 		t.Fatal("bridge marker modified the original title")
+	}
+}
+
+func TestRuntimePinnedBoundThreadStaysResidentUntilUnpinnedOrArchived(t *testing.T) {
+	db, base, gateway, r := runtimeFixture(t)
+	n := &pinNativeFixture{
+		runtimeNative: base,
+		sections:      []codexclient.ThreadSection{{ID: "pin", Name: "Pinned"}},
+		archived:      map[string]bool{"archived": true},
+	}
+	r.Native, r.DiscoveryEnabled = n, false
+	r.ScanInterval, r.ActivationSweepInterval = time.Hour, time.Hour
+	r.PinScanInterval = 10 * time.Millisecond
+	r.IdlePollInterval = 10 * time.Millisecond
+	r.ActorIdleTimeout = 30 * time.Millisecond
+	r.IdleHistoryInterval = time.Hour
+	settledRuntimeBinding(t, db, base, r, time.Now().Add(-48*time.Hour).Unix())
+	pinMeta(base, "thread", "pin", "Task")
+	for _, id := range []string{"archived", "unbound"} {
+		base.set(id, r.AllowedRoots[0], "completed")
+		pinMeta(base, id, "pin", "Task")
+	}
+	runtimeBind(t, db, r, "archived", "archived-chat")
+	if err := db.StageMirrors(context.Background(), r.HostID, "archived", nil, store.Watermark{ObservedAtMS: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	// An unchanged persisted pin set must still activate the current generation.
+	if err := db.SavePinnedSnapshot(context.Background(), r.HostID, r.AppID, store.PinnedSnapshot{
+		SectionID: "pin", ThreadIDs: []string{"thread", "archived", "unbound"}, ObservedAtMS: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var hydrated, released, failures atomic.Int32
+	r.HistoryHydrated = func(_ context.Context, id string, _ []codexclient.Turn) error {
+		if id == "thread" {
+			hydrated.Add(1)
+		}
+		return nil
+	}
+	r.ActorReleased = func(id string) {
+		if id == "thread" {
+			released.Add(1)
+		}
+	}
+	r.Notice = func(code string) {
+		if code == "pins.scan_pending" {
+			failures.Add(1)
+		}
+	}
+	// Residency does not depend on group renaming being enabled.
+	runAdaptiveRuntime(t, r, base)
+	runtimeWait(t, func() bool { return hydrated.Load() > 0 && r.ActorStarted("thread") })
+	reads, scans := hydrated.Load(), n.sectionRead.Load()
+	runtimeWait(t, func() bool { return n.sectionRead.Load() >= scans+24 })
+	if !r.ActorStarted("thread") || released.Load() != 0 || hydrated.Load() != reads {
+		t.Fatal("idle pin was evicted or unchanged pin scans repeatedly read history")
+	}
+	if r.ActorStarted("archived") || r.ActorStarted("unbound") {
+		t.Fatal("pin polling activated an archived or unbound thread")
+	}
+	// A partial scan cannot drop the previously confirmed resident set.
+	n.pinMu.Lock()
+	n.archiveErr = errors.New("fixture incomplete archived page")
+	n.pinMu.Unlock()
+	pinMeta(base, "thread", "", "Task")
+	runtimeWait(t, func() bool { return failures.Load() >= 12 })
+	if !r.pinnedKeepAlive("thread") || !r.ActorStarted("thread") || released.Load() != 0 {
+		t.Fatal("incomplete pin scan evicted a resident thread")
+	}
+	// Archiving changes residency even though the persisted union stays equal.
+	pinMeta(base, "thread", "pin", "Task")
+	n.pinMu.Lock()
+	n.archived["thread"], n.archiveErr = true, nil
+	n.pinMu.Unlock()
+	runtimeWait(t, func() bool { return !r.pinnedKeepAlive("thread") && !r.ActorStarted("thread") })
+	previous, err := db.PinnedSnapshot(context.Background(), r.HostID, r.AppID)
+	if err != nil || !reflect.DeepEqual(previous.ThreadIDs, []string{"archived", "thread", "unbound"}) {
+		t.Fatal("archiving changed the complete pin checkpoint", err)
+	}
+	n.pinMu.Lock()
+	n.archived["thread"] = false
+	n.pinMu.Unlock()
+	runtimeWait(t, func() bool { return hydrated.Load() > reads && r.ActorStarted("thread") })
+	pinMeta(base, "thread", "", "Task")
+	runtimeWait(t, func() bool { return !r.pinnedKeepAlive("thread") && !r.ActorStarted("thread") })
+	if released.Load() != 2 {
+		t.Fatalf("archive and unpin did not release their actors: %d", released.Load())
+	}
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	if gateway.groups != 0 {
+		t.Fatal("pin polling created a group")
+	}
+}
+
+func TestRuntimePinnedActivationFailureKeepsCentralBackoff(t *testing.T) {
+	db, base, _, r := runtimeFixture(t)
+	n := &pinNativeFixture{runtimeNative: base, sections: []codexclient.ThreadSection{{ID: "pin", Name: "Pinned"}}}
+	r.Native, r.DiscoveryEnabled = n, false
+	r.PinScanInterval = 10 * time.Millisecond
+	r.ScanInterval, r.ActivationSweepInterval = time.Hour, time.Hour
+	r.ActivationRetryInitial, r.ActivationRetryMax = time.Hour, time.Hour
+	settledRuntimeBinding(t, db, base, r, time.Now().Add(-48*time.Hour).Unix())
+	pinMeta(base, "thread", "pin", "Task")
+	var attempts atomic.Int32
+	r.CanAttach = func(context.Context, string) error {
+		attempts.Add(1)
+		return errors.New("fixture authorization unavailable")
+	}
+	runAdaptiveRuntime(t, r, base)
+	runtimeWait(t, func() bool {
+		active, retrying, _ := r.bindingLifecycle()
+		return attempts.Load() > 0 && !active["thread"] && retrying["thread"]
+	})
+	scans := n.sectionRead.Load()
+	runtimeWait(t, func() bool { return n.sectionRead.Load() >= scans+12 })
+	if attempts.Load() != 1 || r.ActorStarted("thread") {
+		t.Fatal("unchanged pin scans bypassed activation backoff")
 	}
 }
 

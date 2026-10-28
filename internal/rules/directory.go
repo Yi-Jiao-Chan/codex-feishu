@@ -8,7 +8,20 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
+
+// ErrDirectoryMissing identifies a cwd that no longer names a directory.
+// ResolveScope returns it only for the actual cwd, never a configured root.
+// Permission and transient I/O failures remain ordinary retryable errors.
+var ErrDirectoryMissing = errors.New("directory missing")
+
+func directoryError(err error) error {
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		return ErrDirectoryMissing
+	}
+	return errors.New("directory unavailable")
+}
 
 type Scope struct {
 	CWD, ProjectRoot, ProjectCWD, GitCommonDir string
@@ -26,11 +39,14 @@ func CanonicalDirectory(path string) (string, error) {
 	}
 	real, err := filepath.EvalSymlinks(filepath.Clean(path))
 	if err != nil {
-		return "", errors.New("directory unavailable")
+		return "", directoryError(err)
 	}
 	info, err := os.Stat(real)
-	if err != nil || !info.IsDir() {
-		return "", errors.New("directory unavailable")
+	if err != nil {
+		return "", directoryError(err)
+	}
+	if !info.IsDir() {
+		return "", ErrDirectoryMissing
 	}
 	return real, nil
 }
@@ -53,7 +69,7 @@ func ResolveScope(ctx context.Context, cwd string, allowedRoots []string) (Scope
 	for _, configured := range allowedRoots {
 		allowed, err := CanonicalDirectory(configured)
 		if err != nil {
-			return scope, err
+			return scope, errors.New("directory unavailable")
 		}
 		if Inside(allowed, actual) {
 			scope.Allowed, scope.Reason = true, ""

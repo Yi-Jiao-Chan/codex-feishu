@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/latency"
 	"codex-feishu/internal/rules"
 	"codex-feishu/internal/store"
 )
@@ -30,6 +31,7 @@ type Engine struct {
 	// existing route. It never creates or mutates the route itself.
 	BoundObserved func(context.Context, codexclient.Thread, bool) error
 	Now           func() time.Time
+	Latency       latency.Observer
 }
 
 // CandidateError isolates a temporarily unavailable thread from other scans.
@@ -107,7 +109,7 @@ func (e *Engine) Snapshot(ctx context.Context) error {
 			return ctx.Err()
 		}
 		o, err := e.Store.Observation(ctx, e.HostID, id)
-		if err == nil && o.Origin == "new" {
+		if err == nil && (o.Origin == "new" || o.Suspended()) {
 			continue
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -156,7 +158,12 @@ func (e *Engine) Snapshot(ctx context.Context) error {
 			if err = e.Store.ObserveCandidate(ctx, e.HostID, id, t.CWD, t.CreatedAt, "ambiguous"); err != nil {
 				return err
 			}
-			if err = e.Store.NotePending(ctx, e.HostID, id, "cwd_unavailable"); err != nil {
+			if errors.Is(scopeErr, rules.ErrDirectoryMissing) {
+				err = e.Store.SuspendCandidate(ctx, e.HostID, id)
+			} else {
+				err = e.Store.NotePending(ctx, e.HostID, id, "cwd_unavailable")
+			}
+			if err != nil {
 				return err
 			}
 			continue
@@ -362,7 +369,7 @@ func (e *Engine) ScanSince(ctx context.Context, since int64) error {
 		if t, ok := activeMetadata[id]; ok {
 			metadata = &t
 		}
-		if err = e.check(ctx, id, fence, activeIDs[id], metadata); err != nil {
+		if err = e.check(ctx, id, fence, activeIDs[id], metadata, false); err != nil {
 			var candidate *CandidateError
 			if errors.As(err, &candidate) {
 				if err = e.Store.NotePending(ctx, e.HostID, id, candidate.Stage+"_unavailable"); err != nil {
@@ -378,7 +385,7 @@ func (e *Engine) ScanSince(ctx context.Context, since int64) error {
 }
 
 func (e *Engine) Check(ctx context.Context, id string, fence int64) error {
-	return e.check(ctx, id, fence, false, nil)
+	return e.check(ctx, id, fence, false, nil, true)
 }
 
 func (e *Engine) observeBound(ctx context.Context, id string, metadata codexclient.Thread, archived bool) (bool, error) {
@@ -395,7 +402,7 @@ func (e *Engine) observeBound(ctx context.Context, id string, metadata codexclie
 	return false, nil
 }
 
-func (e *Engine) check(ctx context.Context, id string, fence int64, observedActive bool, metadata *codexclient.Thread) error {
+func (e *Engine) check(ctx context.Context, id string, fence int64, observedActive bool, metadata *codexclient.Thread, retrySuspended bool) (resultErr error) {
 	listed := codexclient.Thread{}
 	if metadata != nil {
 		listed = *metadata
@@ -407,10 +414,18 @@ func (e *Engine) check(ctx context.Context, id string, fence int64, observedActi
 	if err == nil && (o.State == "ignored" || o.State == "excluded") {
 		return nil
 	}
+	if err == nil && o.Suspended() && !retrySuspended {
+		return nil
+	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if o.ExclusionReason == "archived" {
+	started := time.Now()
+	e.Latency.Record("discovery.candidate.started", e.HostID, id, "", "", 0, "observed")
+	defer func() {
+		e.Latency.Record("discovery.candidate", e.HostID, id, "", "", time.Since(started), latency.Result(resultErr))
+	}()
+	if o.Archived() {
 		// An absent window row is not proof of unarchive. Metadata has no
 		// archive flag, so pending/draft/event checks must preserve the hold.
 		if !observedActive {
@@ -431,7 +446,9 @@ func (e *Engine) check(ctx context.Context, id string, fence int64, observedActi
 			return err
 		}
 	}
+	readStarted := time.Now()
 	t, err := e.Native.Metadata(ctx, id)
+	e.Latency.Record("discovery.metadata", e.HostID, id, "", "", time.Since(readStarted), latency.Result(err))
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -460,8 +477,13 @@ func (e *Engine) check(ctx context.Context, id string, fence int64, observedActi
 	if !t.InteractiveMain() {
 		return e.Store.Exclude(ctx, e.HostID, id, "not_interactive_main")
 	}
+	readStarted = time.Now()
 	scope, err := rules.ResolveScope(ctx, t.CWD, e.AllowedRoots)
+	e.Latency.Record("discovery.scope", e.HostID, id, "", "", time.Since(readStarted), latency.Result(err))
 	if err != nil {
+		if errors.Is(err, rules.ErrDirectoryMissing) {
+			return e.Store.SuspendCandidate(ctx, e.HostID, id)
+		}
 		return &CandidateError{ThreadID: id, Stage: "cwd", Cause: err}
 	}
 	if !scope.Allowed {
@@ -476,7 +498,21 @@ func (e *Engine) check(ctx context.Context, id string, fence int64, observedActi
 			return e.Store.Exclude(ctx, e.HostID, id, "directory_muted")
 		}
 	}
+	if o.Suspended() {
+		if err := e.Store.ResumeCandidate(ctx, e.HostID, id); err != nil {
+			return err
+		}
+		reason := ""
+		if !observedActive {
+			reason = "active_unconfirmed"
+		}
+		if err := e.Store.NotePending(ctx, e.HostID, id, reason); err != nil {
+			return err
+		}
+	}
+	readStarted = time.Now()
 	turns, err := e.Native.Turns(ctx, id)
+	e.Latency.Record("discovery.history", e.HostID, id, "", "", time.Since(readStarted), latency.Result(err))
 	if codexclient.BeforeFirstInput(err) {
 		return e.Store.ObserveCandidate(ctx, e.HostID, id, t.CWD, t.CreatedAt, "draft")
 	}
@@ -490,7 +526,9 @@ func (e *Engine) check(ctx context.Context, id string, fence int64, observedActi
 	if o.Origin != "new" || !observedActive {
 		return nil
 	}
-	return e.Store.MarkEligible(ctx, e.HostID, id, input, scope.CWD, scope.ProjectRoot)
+	err = e.Store.MarkEligible(ctx, e.HostID, id, input, scope.CWD, scope.ProjectRoot)
+	e.Latency.Record("discovery.eligible", e.HostID, id, "", "", time.Since(started), latency.Result(err))
+	return err
 }
 
 func firstInput(turns []codexclient.Turn) string {

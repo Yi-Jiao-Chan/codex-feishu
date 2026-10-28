@@ -72,7 +72,7 @@ func newServeVersionSocket(t *testing.T, cwd string) *serveVersionSocket {
 				result = map[string]any{"userAgent": "local-version-fixture"}
 			case "thread/resume", "thread/read":
 				result = map[string]any{"thread": map[string]any{"id": "local-owned-thread", "cwd": f.cwd, "source": "cli", "status": map[string]string{"type": "idle"}}}
-			case "thread/turns/list", "thread/queue/list", "thread/list", "thread/loaded/list":
+			case "thread/turns/list", "thread/queue/list", "thread/list", "thread/loaded/list", "threadSection/list":
 				result = map[string]any{"data": []any{}, "nextCursor": nil}
 			default:
 				t.Errorf("unexpected native fixture method %s", in.Method)

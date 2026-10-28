@@ -16,6 +16,7 @@ import (
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/creation"
 	"codex-feishu/internal/interactions"
+	"codex-feishu/internal/latency"
 	"codex-feishu/internal/pairing"
 	"codex-feishu/internal/rules"
 	"codex-feishu/internal/store"
@@ -54,6 +55,7 @@ type Service struct {
 	Connect              func(context.Context) (ServiceNative, error)
 	PreparePublic        func(context.Context, string, string) (string, error)
 	Notice               func(string)
+	Latency              latency.Observer
 	Now                  func() time.Time
 	RetryInterval        time.Duration    // Tests may shorten; production starts at 1s.
 	Pairing              *pairing.Manager // Ephemeral local management; never persisted as a task.
@@ -615,7 +617,7 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 		ProgressTimeZone:      s.Config.Notifications.Timezone,
 		PreparePublic:         s.PreparePublic,
 		Mentions:              store.MentionOptions{Enabled: true, Targets: s.Config.Notifications.TargetOpenIDs, MentionOn: s.Config.Notifications.MentionOn},
-		Ready:                 s.Gateway.Ready, Notice: s.Notice, Now: s.Now, EventObservedContext: tracker.ObserveContext,
+		Ready:                 s.Gateway.Ready, Notice: s.Notice, Latency: s.Latency, Now: s.Now, EventObservedContext: tracker.ObserveContext,
 		HistoryHydrated: tracker.Hydrated, WaitingReminder: tracker.DispatchOne,
 		DirectoryRules: func(ctx context.Context) ([]rules.DirectoryRule, error) {
 			return s.Store.DirectoryRules(ctx, s.Config.Host.ID, s.Config.Feishu.AppID)

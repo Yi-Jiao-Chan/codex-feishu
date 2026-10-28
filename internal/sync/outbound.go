@@ -10,6 +10,7 @@ import (
 
 	"codex-feishu/internal/cot"
 	"codex-feishu/internal/feishu"
+	"codex-feishu/internal/latency"
 	"codex-feishu/internal/store"
 )
 
@@ -47,6 +48,7 @@ type Outbound struct {
 	Mentions              *store.MentionOptions
 	Membership            MembershipGateway
 	Readback              MessageReadbackGateway
+	Latency               latency.Observer
 	MinProgressIntervalMS int64
 	Now                   func() time.Time // Clock at response receipt, not request start.
 }
@@ -85,7 +87,9 @@ func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS in
 					return DeliveryResult{}, err
 				}
 				if err == nil {
+					started := time.Now()
 					members, err := o.Membership.MemberIDs(ctx, binding.ChatID)
+					o.Latency.Record("delivery.membership", host, thread, m.TurnID, m.Key, time.Since(started), latency.Result(err))
 					if err == nil {
 						options.ChatID, options.MemberIDs = binding.ChatID, members
 					}
@@ -115,7 +119,22 @@ func (o Outbound) DispatchOne(ctx context.Context, host, thread string, nowMS in
 // through the single gateway operation and its local result save. A lease is
 // intentionally acquired per candidate so a later candidate cannot reuse a
 // grant that covered an earlier write.
-func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m store.Mirror, claimAt int64, options store.MentionOptions) (DeliveryResult, bool, error) {
+func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m store.Mirror, claimAt int64, options store.MentionOptions) (result DeliveryResult, claimed bool, err error) {
+	started := time.Now()
+	var stage string
+	defer func() {
+		if stage == "" {
+			return
+		}
+		outcome := "unknown"
+		if err == nil {
+			switch result.State {
+			case "confirmed", "rejected", "deferred", "unknown":
+				outcome = result.State
+			}
+		}
+		o.Latency.Record(stage+".finished", host, thread, m.TurnID, m.Key, time.Since(started), outcome)
+	}()
 	binding, err := o.Store.Binding(ctx, host, thread)
 	if err != nil {
 		return DeliveryResult{}, false, err
@@ -186,7 +205,9 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 	if err != nil || !claimed {
 		return DeliveryResult{}, claimed, err
 	}
-	result := DeliveryResult{AttemptID: a.ID, Key: m.Key, Kind: m.Kind, TurnID: m.TurnID}
+	stage = deliveryLatencyStage(m.Kind, a.Operation, a.COTStep)
+	o.Latency.Record(stage+".claimed", host, thread, m.TurnID, m.Key, time.Since(started), "ok")
+	result = DeliveryResult{AttemptID: a.ID, Key: m.Key, Kind: m.Kind, TurnID: m.TurnID}
 	// A lease may be revoked after the durable claim. Keep the attempt
 	// dispatching for conservative recovery, but never issue the gateway call.
 	if err := leaseCtx.Err(); err != nil {
@@ -195,7 +216,9 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 	}
 	var remoteID string
 	var sendErr error
+	var topicThreadID string
 	cotID := a.COTID
+	rpcStarted := time.Now()
 	if a.COTStep != "" {
 		gateway := o.Gateway.(COTGateway)
 		switch a.COTStep {
@@ -238,15 +261,7 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 					response, err := gateway.ReplyTopicCardResult(leaseCtx, a.ParentMessageID, a.Card, a.ID)
 					remoteID, sendErr = response.MessageID, err
 					if err == nil && response.MessageID != "" && response.ThreadID != "" {
-						if persistErr := o.Store.RecordBindingPlatformThread(leaseCtx, host, thread, response.ThreadID); persistErr != nil {
-							if errors.Is(persistErr, store.ErrConflict) {
-								if markErr := o.Store.MarkBindingRepair(leaseCtx, host, thread, "topic_identity_conflict"); markErr != nil {
-									return result, true, markErr
-								}
-							}
-							result.State = "unknown"
-							return result, true, persistErr
-						}
+						topicThreadID = response.ThreadID
 					}
 				} else {
 					remoteID, sendErr = o.Gateway.(TopicMessageGateway).ReplyTopicCard(leaseCtx, a.ParentMessageID, a.Card, a.ID)
@@ -260,6 +275,18 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 		default:
 			// Schema constraints and ClaimMirror make this unreachable.
 			sendErr = errors.New("unsupported persisted outbound operation")
+		}
+	}
+	o.Latency.Record(stage+".rpc", host, thread, m.TurnID, m.Key, time.Since(rpcStarted), latency.Result(sendErr))
+	if topicThreadID != "" {
+		if persistErr := o.Store.RecordBindingPlatformThread(leaseCtx, host, thread, topicThreadID); persistErr != nil {
+			if errors.Is(persistErr, store.ErrConflict) {
+				if markErr := o.Store.MarkBindingRepair(leaseCtx, host, thread, "topic_identity_conflict"); markErr != nil {
+					return result, true, markErr
+				}
+			}
+			result.State = "unknown"
+			return result, true, persistErr
 		}
 	}
 	var limited *feishu.RateLimited
@@ -312,4 +339,32 @@ func (o Outbound) claimAndDispatch(ctx context.Context, host, thread string, m s
 	}
 	result.MessageID = remoteID
 	return result, true, nil
+}
+
+// Labels come only from the persisted operation enums, never document content.
+func deliveryLatencyStage(kind, operation, cotStep string) string {
+	switch kind {
+	case "human", "progress", "final":
+	default:
+		kind = "unknown"
+	}
+	if cotStep != "" {
+		switch cotStep {
+		case "create":
+			operation = "cot_create"
+		case "append":
+			operation = "cot_append"
+		case "complete":
+			operation = "cot_complete"
+		default:
+			operation = "unknown"
+		}
+	} else {
+		switch operation {
+		case "send", "reply", "update":
+		default:
+			operation = "unknown"
+		}
+	}
+	return "delivery." + kind + "." + operation
 }

@@ -10,6 +10,7 @@ import (
 
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/feishu"
+	"codex-feishu/internal/latency"
 	"codex-feishu/internal/store"
 )
 
@@ -48,12 +49,29 @@ type Manager struct {
 	HostID, OwnerID string
 	Members         []string
 	Now             func() time.Time
+	Latency         latency.Observer
 	// Re-read policy immediately before dispatch, using actual attached metadata.
 	// This prevents a stale candidate or changed cwd from widening authorization.
 	Authorize func(context.Context, codexclient.Thread) error
 }
 
-func (m *Manager) Ensure(ctx context.Context, thread, name string) (store.Binding, error) {
+func (m *Manager) Ensure(ctx context.Context, thread, name string) (binding store.Binding, resultErr error) {
+	started := time.Now()
+	m.Latency.Record("group.ensure.started", m.HostID, thread, "", "", 0, "observed")
+	defer func() {
+		outcome := latency.Result(resultErr)
+		switch {
+		case errors.Is(resultErr, ErrGroupUnknown):
+			outcome = "unknown"
+		case errors.Is(resultErr, ErrGroupRejected):
+			outcome = "rejected"
+		case errors.Is(resultErr, ErrGroupDeferred):
+			outcome = "deferred"
+		case errors.Is(resultErr, ErrGroupBusy):
+			outcome = "busy"
+		}
+		m.Latency.Record("group.ensure", m.HostID, thread, "", "", time.Since(started), outcome)
+	}()
 	if b, err := m.Store.Binding(ctx, m.HostID, thread); err == nil {
 		return b, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -66,7 +84,9 @@ func (m *Manager) Ensure(ctx context.Context, thread, name string) (store.Bindin
 	if !complete {
 		return store.Binding{}, store.ErrIneligible
 	}
+	stepStarted := time.Now()
 	i, err := m.Store.PrepareGroup(ctx, m.HostID, thread, m.OwnerID, name, m.Members)
+	m.Latency.Record("group.intent", m.HostID, thread, "", "", time.Since(stepStarted), latency.Result(err))
 	if err != nil {
 		return store.Binding{}, err
 	}
@@ -127,14 +147,19 @@ func (m *Manager) Ensure(ctx context.Context, thread, name string) (store.Bindin
 	if m.Authorize == nil {
 		return store.Binding{}, store.ErrIneligible
 	}
+	stepStarted = time.Now()
 	attached, err := m.Native.Attach(ctx, thread)
+	m.Latency.Record("group.attach", m.HostID, thread, "", "", time.Since(stepStarted), latency.Result(err))
 	if err != nil {
 		return store.Binding{}, err
 	}
 	if attached.ID != thread {
 		return store.Binding{}, store.ErrConflict
 	}
-	if err = m.Authorize(ctx, attached); err != nil {
+	stepStarted = time.Now()
+	err = m.Authorize(ctx, attached)
+	m.Latency.Record("group.authorize", m.HostID, thread, "", "", time.Since(stepStarted), latency.Result(err))
+	if err != nil {
 		return store.Binding{}, err
 	}
 	if !filepath.IsAbs(attached.CWD) {
@@ -151,7 +176,21 @@ func (m *Manager) Ensure(ctx context.Context, thread, name string) (store.Bindin
 	if !claimed {
 		return store.Binding{}, ErrGroupBusy
 	}
+	m.Latency.Record("group.create.started", m.HostID, thread, "", "", 0, "observed")
+	stepStarted = time.Now()
 	chat, remoteErr := m.Groups.CreateGroupWithDescription(ctx, i.Name, i.OwnerID, i.Members, i.ID, description)
+	outcome := "confirmed"
+	if remoteErr != nil || chat == "" {
+		outcome = "unknown"
+		var rejected *feishu.Rejected
+		var limited *feishu.RateLimited
+		if errors.As(remoteErr, &rejected) {
+			outcome = "rejected"
+		} else if errors.As(remoteErr, &limited) {
+			outcome = "deferred"
+		}
+	}
+	m.Latency.Record("group.create", m.HostID, thread, "", "", time.Since(stepStarted), outcome)
 	var limited *feishu.RateLimited
 	if errors.As(remoteErr, &limited) {
 		at := clock().UnixMilli()
@@ -188,7 +227,11 @@ func (m *Manager) Ensure(ctx context.Context, thread, name string) (store.Bindin
 	return m.bind(ctx, i)
 }
 
-func (m *Manager) bind(ctx context.Context, i store.GroupIntent) (store.Binding, error) {
+func (m *Manager) bind(ctx context.Context, i store.GroupIntent) (binding store.Binding, resultErr error) {
+	started := time.Now()
+	defer func() {
+		m.Latency.Record("group.bound", m.HostID, i.ThreadID, "", "", time.Since(started), latency.Result(resultErr))
+	}()
 	if err := m.Store.BindConfirmedGroup(ctx, i.ID); err != nil {
 		return store.Binding{}, err
 	}

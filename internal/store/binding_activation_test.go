@@ -96,7 +96,7 @@ func TestBindingActivationThreadsSelectsOnlyUnhydratedOrActionableRoutes(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ids) != 3 || ids[0] != "dormant" || ids[1] != "outbound" || ids[2] != "unhydrated" {
-		t.Fatalf("unresolved group name route missing: %v", ids)
+	if len(ids) != 2 || ids[0] != "outbound" || ids[1] != "unhydrated" {
+		t.Fatalf("group name maintenance retained a native actor: %v", ids)
 	}
 }
