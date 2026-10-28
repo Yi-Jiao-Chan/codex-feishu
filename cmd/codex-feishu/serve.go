@@ -15,6 +15,7 @@ import (
 	"codex-feishu/internal/config"
 	"codex-feishu/internal/control"
 	"codex-feishu/internal/feishu"
+	"codex-feishu/internal/latency"
 	"codex-feishu/internal/pairing"
 	"codex-feishu/internal/setup"
 	"codex-feishu/internal/store"
@@ -135,6 +136,20 @@ func runServe(ctx context.Context, args []string) int {
 		}
 		last[code] = now
 		emit(output{Command: "serve", State: code})
+	}
+	var latencySampler latency.Sampler
+	service.Latency = func(event latency.Event) {
+		// Keep each JSON line intact across discovery and concurrent actors.
+		noticeMu.Lock()
+		defer noticeMu.Unlock()
+		allow, omitted := latencySampler.Allow(event, time.Now())
+		if omitted > 0 {
+			emit(output{Command: "serve", State: "latency-coalesced", Data: map[string]any{"at_ms": event.AtMS, "suppressed": omitted, "window_ms": 5000}})
+		}
+		if !allow {
+			return
+		}
+		emit(output{Command: "serve", State: "latency", Data: event})
 	}
 	identity, err := control.Identity(*path, cfg)
 	if err != nil {

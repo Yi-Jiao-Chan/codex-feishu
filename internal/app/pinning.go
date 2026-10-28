@@ -19,7 +19,7 @@ type pinnedNative interface {
 
 func (r *Runtime) preparePinning(ctx context.Context) (pinnedNative, store.PinnedSnapshot, bool) {
 	native, supported := r.Native.(pinnedNative)
-	if !supported || r.SyncGroupName == nil {
+	if !supported {
 		return nil, store.PinnedSnapshot{}, false
 	}
 	previous, err := r.Store.PinnedSnapshot(ctx, r.HostID, r.AppID)
@@ -63,37 +63,41 @@ func pinnedSectionID(sections []codexclient.ThreadSection, previous string) (str
 	return "", nil
 }
 
-func readPinnedSnapshot(ctx context.Context, native pinnedNative, previous string, at int64) (store.PinnedSnapshot, error) {
+func readPinnedSnapshot(ctx context.Context, native pinnedNative, previous string, at int64) (store.PinnedSnapshot, map[string]bool, error) {
 	sections, err := native.Sections(ctx)
 	if err != nil {
-		return store.PinnedSnapshot{}, err
+		return store.PinnedSnapshot{}, nil, err
 	}
 	id, err := pinnedSectionID(sections, previous)
 	if err != nil {
-		return store.PinnedSnapshot{}, err
+		return store.PinnedSnapshot{}, nil, err
 	}
 	p := store.PinnedSnapshot{SectionID: id, ObservedAtMS: at}
+	active := map[string]bool{}
 	if id == "" {
-		return p, nil
+		return p, active, nil
 	}
 	seen := map[string]bool{}
 	for _, archived := range []bool{false, true} {
 		threads, err := native.ListSection(ctx, id, archived)
 		if err != nil {
-			return store.PinnedSnapshot{}, err
+			return store.PinnedSnapshot{}, nil, err
 		}
 		for _, thread := range threads {
 			if thread.ID == "" || thread.Section == nil || thread.Section.ID != id {
-				return store.PinnedSnapshot{}, errors.New("invalid pinned section page")
+				return store.PinnedSnapshot{}, nil, errors.New("invalid pinned section page")
 			}
 			seen[thread.ID] = true
+			if !archived {
+				active[thread.ID] = true
+			}
 		}
 	}
 	for thread := range seen {
 		p.ThreadIDs = append(p.ThreadIDs, thread)
 	}
 	sort.Strings(p.ThreadIDs)
-	return p, nil
+	return p, active, nil
 }
 
 func pinChanges(before, after []string) map[string]bool {
@@ -122,7 +126,7 @@ func (r *Runtime) runPins(ctx context.Context, native pinnedNative, previous sto
 	defer timer.Stop()
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		current, err := readPinnedSnapshot(readCtx, native, previous.SectionID, r.now().UnixMilli())
+		current, active, err := readPinnedSnapshot(readCtx, native, previous.SectionID, r.now().UnixMilli())
 		if err == nil {
 			err = r.Store.SavePinnedSnapshot(readCtx, r.HostID, r.AppID, current)
 		}
@@ -139,6 +143,19 @@ func (r *Runtime) runPins(ctx context.Context, native pinnedNative, previous sto
 			r.mu.Lock()
 			first := !r.pinKnown
 			r.pinKnown, r.pinSectionID = true, current.SectionID
+			// Reconfirm residency in each native generation. The persisted name
+			// snapshot also includes archived pins and cannot prove active status.
+			for id := range r.keepAlivePins {
+				if !active[id] {
+					changed[id] = true
+				}
+			}
+			for id := range active {
+				if !r.keepAlivePins[id] {
+					changed[id] = true
+				}
+			}
+			r.keepAlivePins = active
 			if first {
 				for id := range r.actors {
 					changed[id] = true
@@ -146,12 +163,14 @@ func (r *Runtime) runPins(ctx context.Context, native pinnedNative, previous sto
 			}
 			for id := range changed {
 				if actor := r.actors[id]; actor != nil {
+					actor.activity++
 					select {
 					case actor.wake <- struct{}{}:
 					default:
 					}
 				} else if r.bindings[id] {
 					delete(r.retries, id)
+					delete(r.suspended, id)
 					r.queueActivationLocked(id, false)
 				}
 			}
@@ -164,6 +183,12 @@ func (r *Runtime) runPins(ctx context.Context, native pinnedNative, previous sto
 		case <-timer.C:
 		}
 	}
+}
+
+func (r *Runtime) pinnedKeepAlive(thread string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.keepAlivePins[thread]
 }
 
 func (r *Runtime) groupTitle(meta codexclient.Thread, turns []codexclient.Turn) (string, bool) {

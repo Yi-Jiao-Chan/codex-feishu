@@ -105,7 +105,7 @@ func newServiceRecoveryWire(t *testing.T, cwd string, turns []codexclient.Turn) 
 					return
 				}
 				result = map[string]any{"data": []any{}, "nextCursor": nil}
-			case "thread/list", "thread/loaded/list":
+			case "thread/list", "thread/loaded/list", "threadSection/list":
 				result = map[string]any{"data": []any{}, "nextCursor": nil}
 			default:
 				t.Errorf("unexpected native fixture method %s", in.Method)

@@ -12,11 +12,190 @@ import (
 )
 
 const GroupNameOperationKind = "feishu.chat.name_sync"
+const GroupNameRequestKind = "feishu.chat.name_sync.request"
 
 type GroupNameScope struct {
 	AppID   string  `json:"app_id"`
 	OwnerID string  `json:"owner_id"`
 	Binding Binding `json:"binding"`
+}
+
+// GroupNameRequest is private queue data, never diagnostic/log output.
+type GroupNameRequest struct {
+	Scope   GroupNameScope `json:"scope"`
+	Desired string         `json:"desired"`
+	encoded string
+}
+
+func validGroupNameRequest(r GroupNameRequest) bool {
+	return validGroupNameScope(r.Scope) && (r.Scope.Binding.FollowMode == "" || r.Scope.Binding.FollowMode == "group") && strings.TrimSpace(r.Desired) != "" && utf8.ValidString(r.Desired)
+}
+
+// StageGroupNameRequest coalesces desired titles without dispatching a remote
+// write. Restaging a completed title requests a fresh authoritative readback.
+func (s *Store) StageGroupNameRequest(ctx context.Context, scope GroupNameScope, desired string, nowMS int64) (GroupNameRequest, error) {
+	if scope.Binding.FollowMode == "group" {
+		scope.Binding.FollowMode = ""
+	}
+	r := GroupNameRequest{Scope: scope, Desired: desired}
+	if !validGroupNameRequest(r) || nowMS <= 0 {
+		return GroupNameRequest{}, ErrConflict
+	}
+	encoded, err := json.Marshal(r)
+	if err != nil {
+		return GroupNameRequest{}, err
+	}
+	r.encoded = string(encoded)
+	b := scope.Binding
+	result, err := s.DB.ExecContext(ctx, `INSERT INTO m0_operations(key,kind,state,remote_id,created_at)
+	SELECT ?,?,'ready',?,? FROM bindings b JOIN deployment d USING(host_id)
+	WHERE b.host_id=? AND b.thread_id=? AND b.chat_id=? AND b.intent_id=? AND d.app_id=?
+	AND b.follow_mode='group' AND b.root_message_id=? AND b.platform_thread_id=? AND b.repair_required=? AND b.repair_reason=?
+	ON CONFLICT(key) DO UPDATE SET state='ready',remote_id=excluded.remote_id,created_at=excluded.created_at
+	WHERE m0_operations.kind=excluded.kind`, groupNamePrefix(scope)+"request", GroupNameRequestKind, r.encoded, nowMS,
+		b.HostID, b.ThreadID, b.ChatID, b.IntentID, scope.AppID, b.RootMessageID, b.PlatformThreadID, b.RepairRequired, b.RepairReason)
+	if err != nil {
+		return GroupNameRequest{}, err
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n != 1 {
+		err = ErrConflict
+	}
+	return r, err
+}
+
+// PendingGroupNameRequests includes legacy unresolved/deferred writes so an
+// upgrade can recover them without first reading native thread metadata.
+func (s *Store) PendingGroupNameRequests(ctx context.Context, host, app, owner string) ([]GroupNameRequest, error) {
+	if host == "" || app == "" || owner == "" {
+		return nil, ErrConflict
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT `+bindingColumns+` FROM bindings WHERE host_id=? AND follow_mode='group'
+	AND EXISTS(SELECT 1 FROM deployment d WHERE d.host_id=bindings.host_id AND d.app_id=?) ORDER BY thread_id`, host, app)
+	if err != nil {
+		return nil, err
+	}
+	var order []string
+	scopes := map[string]GroupNameScope{}
+	for rows.Next() {
+		var b Binding
+		if err := scanBinding(rows, &b); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		scope := GroupNameScope{AppID: app, OwnerID: owner, Binding: b}
+		prefix := groupNamePrefix(scope)
+		scopes[prefix] = scope
+		order = append(order, prefix)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(scopes) == 0 {
+		return nil, nil
+	}
+	rows, err = tx.QueryContext(ctx, `SELECT key,kind,state,remote_id FROM m0_operations WHERE kind IN (?,?) ORDER BY rowid DESC`, GroupNameRequestKind, GroupNameOperationKind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ready := map[string]GroupNameRequest{}
+	legacy := map[string]GroupNameRequest{}
+	latest, unresolved := map[string]bool{}, map[string]bool{}
+	for rows.Next() {
+		var key, kind, state, encoded string
+		if err := rows.Scan(&key, &kind, &state, &encoded); err != nil {
+			return nil, err
+		}
+		end := strings.LastIndex(key, ":")
+		if end < 0 {
+			continue
+		}
+		prefix := key[:end+1]
+		scope, relevant := scopes[prefix]
+		if !relevant {
+			continue
+		}
+		if !utf8.ValidString(encoded) {
+			return nil, ErrConflict
+		}
+		var r GroupNameRequest
+		if json.Unmarshal([]byte(encoded), &r) != nil || !validGroupNameScope(r.Scope) {
+			return nil, ErrConflict
+		}
+		if r.Scope != scope {
+			// Changed bindings and another owner's journal cannot authorize
+			// this worker, even when they share the deterministic key prefix.
+			continue
+		}
+		if !validGroupNameRequest(r) {
+			return nil, ErrConflict
+		}
+		if kind == GroupNameRequestKind {
+			if state == "ready" {
+				if key != prefix+"request" {
+					return nil, ErrConflict
+				}
+				r.encoded = encoded
+				ready[prefix] = r
+			}
+			continue
+		}
+		var plan GroupNamePlan
+		if json.Unmarshal([]byte(encoded), &plan) != nil || plan.RetryAtMS < 0 || plan.RejectionCount < 0 {
+			return nil, ErrConflict
+		}
+		switch state {
+		case "dispatching", "unknown":
+			if !unresolved[prefix] {
+				legacy[prefix], unresolved[prefix] = r, true
+			}
+		case "rejected":
+			if !latest[prefix] && plan.RetryAtMS > 0 {
+				legacy[prefix] = r
+			}
+		case "confirmed":
+		default:
+			return nil, ErrConflict
+		}
+		latest[prefix] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var requests []GroupNameRequest
+	for _, prefix := range order {
+		if r, ok := ready[prefix]; ok {
+			requests = append(requests, r)
+		} else if r, ok := legacy[prefix]; ok {
+			requests = append(requests, r)
+		}
+	}
+	return requests, nil
+}
+
+// CompleteGroupNameRequest cannot remove a newer desired title. A recovered
+// legacy attempt has no queue row, so completing it is intentionally a no-op.
+func (s *Store) CompleteGroupNameRequest(ctx context.Context, r GroupNameRequest) error {
+	if !validGroupNameRequest(r) {
+		return ErrConflict
+	}
+	if r.encoded == "" {
+		return nil
+	}
+	var frozen GroupNameRequest
+	if json.Unmarshal([]byte(r.encoded), &frozen) != nil || frozen.Scope != r.Scope || frozen.Desired != r.Desired {
+		return ErrConflict
+	}
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM m0_operations WHERE key=? AND kind=? AND state='ready' AND remote_id=?`, groupNamePrefix(r.Scope)+"request", GroupNameRequestKind, r.encoded)
+	return err
 }
 
 // GroupNamePlan is private journal data, never diagnostic/log output.

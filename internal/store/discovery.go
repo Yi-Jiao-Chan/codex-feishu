@@ -15,6 +15,17 @@ type Observation struct {
 	HostID, ThreadID, Origin, Proof, State, CWD, FirstUserItemID, ProjectRoot, ExclusionReason string
 	CreatedAt                                                                                  int64
 }
+
+// Suspended candidates retain their pending row and all eligibility evidence,
+// but require native activity or an explicit check before retrying their cwd.
+func (o Observation) Suspended() bool {
+	return o.ExclusionReason == "cwd_missing" || o.ExclusionReason == "archived_cwd_missing"
+}
+
+func (o Observation) Archived() bool {
+	return o.ExclusionReason == "archived" || o.ExclusionReason == "archived_cwd_missing"
+}
+
 type GroupIntent struct {
 	ID, HostID, ThreadID, OwnerID, Name, State, ChatID, Description string
 	Members                                                         []string
@@ -32,6 +43,7 @@ func (s *Store) PendingObservations(ctx context.Context, host string) ([]Observa
 	// actors after every discovery scan.
 	rows, err := s.DB.QueryContext(ctx, `SELECT thread_id,origin,proof,state,cwd,created_at,first_user_item_id,project_root,exclusion_reason
 		FROM thread_observations o WHERE host_id=? AND state IN ('pending','eligible')
+		AND exclusion_reason NOT IN ('cwd_missing','archived_cwd_missing')
 		AND NOT EXISTS (SELECT 1 FROM bindings b WHERE b.host_id=o.host_id AND b.thread_id=o.thread_id)
 		ORDER BY created_at,thread_id`, host)
 	if err != nil {
@@ -152,12 +164,33 @@ func (s *Store) ObserveCandidate(ctx context.Context, host, thread, cwd string, 
 }
 
 func (s *Store) NotePending(ctx context.Context, host, thread, reason string) error {
-	_, err := s.DB.ExecContext(ctx, "UPDATE thread_observations SET exclusion_reason=? WHERE host_id=? AND thread_id=? AND state IN ('pending','eligible')", reason, host, thread)
+	_, err := s.DB.ExecContext(ctx, "UPDATE thread_observations SET exclusion_reason=? WHERE host_id=? AND thread_id=? AND state IN ('pending','eligible') AND exclusion_reason NOT IN ('cwd_missing','archived_cwd_missing')", reason, host, thread)
 	return err
 }
 
 func (s *Store) HoldCandidate(ctx context.Context, host, thread, reason string) error {
-	_, err := s.DB.ExecContext(ctx, "UPDATE thread_observations SET state='pending',exclusion_reason=? WHERE host_id=? AND thread_id=? AND state IN ('pending','eligible') AND NOT EXISTS (SELECT 1 FROM bindings WHERE host_id=? AND thread_id=?)", reason, host, thread, host, thread)
+	_, err := s.DB.ExecContext(ctx, `UPDATE thread_observations SET state='pending',exclusion_reason=CASE
+		WHEN exclusion_reason IN ('cwd_missing','archived_cwd_missing') THEN
+			CASE WHEN ?='archived' OR exclusion_reason='archived_cwd_missing' THEN 'archived_cwd_missing' ELSE 'cwd_missing' END
+		ELSE ? END
+		WHERE host_id=? AND thread_id=? AND state IN ('pending','eligible') AND NOT EXISTS (SELECT 1 FROM bindings WHERE host_id=? AND thread_id=?)`, reason, reason, host, thread, host, thread)
+	return err
+}
+
+func (s *Store) SuspendCandidate(ctx context.Context, host, thread string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE thread_observations SET state='pending',exclusion_reason=CASE
+		WHEN exclusion_reason IN ('archived','archived_cwd_missing') THEN 'archived_cwd_missing' ELSE 'cwd_missing' END
+		WHERE host_id=? AND thread_id=? AND state IN ('pending','eligible')
+		AND NOT EXISTS (SELECT 1 FROM bindings WHERE host_id=? AND thread_id=?)`, host, thread, host, thread)
+	return err
+}
+
+// ResumeCandidate only removes the missing-cwd hold. The caller must still
+// prove current active status, classification, directory policy and input.
+func (s *Store) ResumeCandidate(ctx context.Context, host, thread string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE thread_observations SET exclusion_reason=CASE
+		WHEN exclusion_reason='archived_cwd_missing' THEN 'archived' ELSE '' END
+		WHERE host_id=? AND thread_id=? AND state='pending' AND exclusion_reason IN ('cwd_missing','archived_cwd_missing')`, host, thread)
 	return err
 }
 

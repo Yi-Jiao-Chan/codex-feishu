@@ -72,6 +72,10 @@ goal 自动续跑复用 schema 31：`Mirror.Direct` 明确表示进度或最终�
 
 2026-10-16 的发现覆盖检查点和置顶快照复用 `m0_operations` 的独立 kind（`codex.discovery_checkpoint`、`codex.pinned_snapshot`），不新增 schema 迁移。键按 host/app 分开，保存前核验 deployment；发现的 last scan/full 时间不改变 baseline 出生 fence。置顶仅在完整读取成功后原子保存分区 ID、完整会话 ID 集合和观察时间，失败不覆盖旧集合。ID 集合是私有恢复数据，不进入普通日志或 status 诊断。服务重连恢复断开时仍 active/retrying 的路由及持久待办，最后确认分区另行更新；其余已同步绑定保持 dormant，由 active/archive 元数据变化或新事件按需激活，不能将首次未知分区身份当成未置顶。自适应调度复用现有绑定、水位和操作日志，不新增 schema，也不把进程内 actor 状态写成新的授权事实。
 
+缺失 cwd 候选的逻辑挂起复用 `thread_observations.state='pending'` 与 `exclusion_reason='cwd_missing'`；同时有归档证据时为 `archived_cwd_missing`。不新增 SQL state，不清除出生、输入和项目字段。常规 pending 查询及列表扫描跳过挂起，事件或显式重检成功后只解除目录缺失原因，随后仍按原资格规则判定。
+
+异步群名期望队列使用 `m0_operations.kind='feishu.chat.name_sync.request'`，按完整部署和绑定身份合并最新标题；实际网络请求继续使用 `feishu.chat.name_sync` 的不可变计划。期望值在入队前持久保存，完成时比较原 JSON 删除，旧任务不能清除新标题；重启恢复 ready 期望值及旧版本 unknown / dispatching / 最新限流等待计划。群名待办由独立 worker 恢复，不再作为原生 actor 的激活条件。队列和标题均为私有数据，不进入普通日志。
+
 schema 29 为创建草稿保存 `workspace_mode` / `base_branch`，为创建 workflow 冻结基准 commit、Git 根/common-dir 与工作树路径。旧草稿和 workflow 保持 local，既有正文、远程 ID、收据和 attempt 不变。工作树同样使用 prepared / dispatching / unknown / rejected / confirmed 日志，只有明确 rejected 才能显式 retry；unknown 只核验既有完整检出。Materialize 必须有匹配目标路径的 confirmed 工作树收据，cwd 使用最终执行路径。详见 [09 新建工作树](09-feishu-task-creation.md#新建工作树)。
 
 托管工作树归属修复复用 schema 31：新的命名 bucket 路径在 intent 中冻结，`worktree` result 与外部私有 identity 收据记录物理代际，`worktree-owner` 冻结真实 thread ID 和身份摘要，`worktree-publish` 记录进入桌面扫描的标记发布。两个步骤均在文件操作前持久 dispatch；unknown 只核验，不补造缺失结果。新路径的 Materialize 必须有同 native ID 的 confirmed owner；Complete 必须再有 confirmed publish 和首条输入结果。旧已完成 workflow 不被重写，存量补登记使用独立 `worktree-owner-repair:<identity>` 日志且不改变其完成状态。旧二进制不了解新发布协议，未完成的托管创建不能交给旧版本续跑。

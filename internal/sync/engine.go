@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/cot"
+	"codex-feishu/internal/latency"
 	"codex-feishu/internal/store"
 )
 
@@ -29,6 +31,7 @@ type Engine struct {
 	Store                  *store.Store
 	Native                 NativeHistory
 	HostID                 string
+	Latency                latency.Observer
 	SuppressAsyncQuestions bool
 	AsyncQuestionsSinceMS  int64
 	asyncItems             map[string]bool
@@ -200,7 +203,35 @@ func (e *Engine) Apply(ctx context.Context, thread string, turns []codexclient.T
 			return err
 		}
 	}
-	return e.Store.StageSnapshot(ctx, e.HostID, thread, plan.Docs, plan.Links, plan.Mark)
+	started := time.Now()
+	err = e.Store.StageSnapshot(ctx, e.HostID, thread, plan.Docs, plan.Links, plan.Mark)
+	e.Latency.Record("mirror.commit", e.HostID, thread, "", "", time.Since(started), latency.Result(err))
+	if err == nil && e.Latency != nil {
+		previous := make(map[string]store.Mirror, len(old))
+		for _, doc := range old {
+			previous[doc.Key] = doc
+		}
+		for _, doc := range plan.Docs {
+			before, exists := previous[doc.Key]
+			hash := sha256.Sum256([]byte(doc.Card))
+			if exists && before.CardHash == hex.EncodeToString(hash[:]) && before.Terminal == doc.Terminal && before.Retired == doc.Retired {
+				continue
+			}
+			stage := ""
+			switch doc.Kind {
+			case "human":
+				stage = "mirror.human.staged"
+			case "progress":
+				stage = "mirror.progress.staged"
+			case "final":
+				stage = "mirror.final.staged"
+			}
+			if stage != "" {
+				e.Latency.Record(stage, e.HostID, thread, doc.TurnID, doc.Key, 0, "ok")
+			}
+		}
+	}
+	return err
 }
 
 type snapshotPlan struct {

@@ -214,6 +214,15 @@ func (r *Runtime) observeBoundActivity(ctx context.Context, t codexclient.Thread
 	if archived {
 		return nil
 	}
+	r.mu.Lock()
+	hold, suspended := r.suspended[t.ID]
+	r.mu.Unlock()
+	if suspended {
+		if t.CWD != hold.cwd || t.UpdatedAt != hold.updatedAt || t.Status.Type != hold.status {
+			r.Wake(t.ID)
+		}
+		return nil
+	}
 	mark, err := r.Store.Watermark(ctx, r.HostID, t.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -229,7 +238,7 @@ func (r *Runtime) observeBoundActivity(ctx context.Context, t codexclient.Thread
 		changed = t.UpdatedAt >= (mark.ObservedAtMS-1000)/1000
 	}
 	if changed {
-		r.Wake(t.ID)
+		r.wake(t.ID, false)
 	}
 	return nil
 }

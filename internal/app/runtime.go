@@ -13,6 +13,7 @@ import (
 	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/discovery"
+	"codex-feishu/internal/latency"
 	"codex-feishu/internal/rules"
 	"codex-feishu/internal/store"
 	messages "codex-feishu/internal/sync"
@@ -87,6 +88,7 @@ type Runtime struct {
 	NativeCOT      bool
 	// Notice contains only a fixed diagnostic code, not RPC error text/bodies.
 	Notice         func(string)
+	Latency        latency.Observer
 	Now            func() time.Time
 	mu             sync.Mutex
 	actors         map[string]*threadActor
@@ -94,6 +96,8 @@ type Runtime struct {
 	pending        map[string]bool
 	activating     map[string]bool
 	bindings       map[string]bool
+	suspended      map[string]workspaceSuspension
+	groupNames     *groupNameSync
 	carryover      []string
 	running        bool
 	lifecycleReady bool
@@ -102,6 +106,7 @@ type Runtime struct {
 	pinSupported   bool
 	pinKnown       bool
 	pinSectionID   string
+	keepAlivePins  map[string]bool
 	// One bounded cache serves every actor in this native generation. Dormant
 	// actor eviction therefore does not make the next user action reproject all
 	// completed tool results from scratch.
@@ -114,6 +119,7 @@ type threadActor struct {
 	wake      chan struct{}
 	replay    bool
 	boundOnly bool
+	activity  uint64 // Explicit wake generation, protected by Runtime.mu.
 }
 
 type actorExit uint8
@@ -122,6 +128,7 @@ const (
 	actorStopped actorExit = iota
 	actorDormant
 	actorRetryLater
+	actorSuspended
 )
 
 type actorRetry struct {
@@ -148,6 +155,10 @@ func (r *Runtime) ready() bool { return r.Ready == nil || r.Ready() }
 // A dormant route is activated on demand; an unknown thread still has to pass
 // discovery before it can acquire a route.
 func (r *Runtime) Wake(thread string) {
+	r.wake(thread, true)
+}
+
+func (r *Runtime) wake(thread string, explicit bool) {
 	if thread == "" {
 		return
 	}
@@ -156,13 +167,20 @@ func (r *Runtime) Wake(thread string) {
 	if !r.running || !r.lifecycleReady {
 		return
 	}
+	if _, held := r.suspended[thread]; held && !explicit {
+		return // A scan started before suspension cannot reactivate stale metadata.
+	}
 	if a := r.actors[thread]; a != nil {
+		if explicit {
+			a.activity++
+		}
 		select {
 		case a.wake <- struct{}{}:
 		default:
 		}
 	} else if r.bindings[thread] {
 		delete(r.retries, thread) // Explicit activity bypasses background backoff.
+		delete(r.suspended, thread)
 		r.queueActivationLocked(thread, false)
 	} else if r.DiscoveryEnabled {
 		select {
@@ -183,6 +201,7 @@ func (r *Runtime) Activate(thread string) bool {
 	if !r.running {
 		return false
 	}
+	delete(r.suspended, thread)
 	r.queueActivationLocked(thread, true)
 	return true
 }
@@ -210,6 +229,9 @@ func (r *Runtime) bindingLifecycle() (active, retrying map[string]bool, managed 
 		}
 	}
 	for id := range r.retries {
+		markPending(id)
+	}
+	for id := range r.suspended {
 		markPending(id)
 	}
 	for id := range r.pending {
@@ -284,6 +306,8 @@ func (r *Runtime) Run(parent context.Context) error {
 	r.pending = map[string]bool{}
 	r.activating = map[string]bool{}
 	r.bindings = map[string]bool{}
+	r.suspended = map[string]workspaceSuspension{}
+	r.groupNames = nil
 	r.carryover = nil
 	r.checks = make(chan string, 256)
 	r.activations = make(chan struct{}, 1)
@@ -292,6 +316,7 @@ func (r *Runtime) Run(parent context.Context) error {
 	r.running = true
 	r.lifecycleReady = false
 	r.pinSupported, r.pinKnown, r.pinSectionID = false, false, ""
+	r.keepAlivePins = nil
 	r.mu.Unlock()
 	ctx, cancel := context.WithCancel(parent)
 	var workers sync.WaitGroup
@@ -307,12 +332,15 @@ func (r *Runtime) Run(parent context.Context) error {
 		r.pending = nil
 		r.activating = nil
 		r.bindings = nil
+		r.suspended = nil
+		r.groupNames = nil
 		r.checks = nil
 		r.activations = nil
 		r.cotProjectionCache = nil
+		r.keepAlivePins = nil
 		r.mu.Unlock()
 	}()
-	e := &discovery.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, AppID: r.AppID, AllowedRoots: r.AllowedRoots, DirectoryRules: r.DirectoryRules, BoundObserved: r.observeBoundActivity, Now: r.Now}
+	e := &discovery.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, AppID: r.AppID, AllowedRoots: r.AllowedRoots, DirectoryRules: r.DirectoryRules, BoundObserved: r.observeBoundActivity, Now: r.Now, Latency: r.Latency}
 	if _, err := e.Begin(ctx); err != nil {
 		return err
 	}
@@ -321,6 +349,20 @@ func (r *Runtime) Run(parent context.Context) error {
 	}
 	if err := r.Store.RecoverMirrorDispatches(ctx, r.HostID); err != nil {
 		return err
+	}
+	if r.SyncGroupName != nil {
+		requests, err := r.Store.PendingGroupNameRequests(ctx, r.HostID, r.AppID, r.OwnerID)
+		if err != nil {
+			return err
+		}
+		r.groupNames = newGroupNameSync(r)
+		for _, request := range requests {
+			r.groupNames.enqueue(request)
+		}
+		for i := 0; i < groupNameConcurrency; i++ {
+			workers.Add(1)
+			go func() { defer workers.Done(); r.groupNames.run(ctx) }()
+		}
 	}
 	if r.WaitingReminder != nil {
 		if err := r.Store.RecoverRequestReminders(ctx, r.HostID); err != nil {
@@ -339,8 +381,20 @@ func (r *Runtime) Run(parent context.Context) error {
 	pinNative, previousPins, pinsSupported := r.preparePinning(ctx)
 	startActor := func(id string, replay, boundOnly, force bool) bool {
 		r.mu.Lock()
+		if hold, suspended := r.suspended[id]; suspended && !force {
+			r.mu.Unlock()
+			// Local receipt admission is still a wakeup if the process-local
+			// notification was lost. Never re-read a missing cwd for old work.
+			sequence, err := r.Store.SubmissionInputSequence(ctx, store.SubmissionScope{HostID: r.HostID, AppID: r.AppID, ThreadID: id})
+			if err != nil || sequence <= hold.inputSequence {
+				return false
+			}
+			r.mu.Lock()
+			delete(r.suspended, id)
+		}
 		if a := r.actors[id]; a != nil {
 			if force {
+				a.activity++
 				select {
 				case a.wake <- struct{}{}:
 				default:
@@ -355,6 +409,7 @@ func (r *Runtime) Run(parent context.Context) error {
 		}
 		if force {
 			delete(r.retries, id)
+			delete(r.suspended, id)
 		}
 		if boundOnly {
 			r.bindings[id] = true
@@ -366,25 +421,43 @@ func (r *Runtime) Run(parent context.Context) error {
 		go func() {
 			defer workers.Done()
 			for {
+				r.mu.Lock()
+				activity := a.activity
+				r.mu.Unlock()
 				reason := r.runActor(ctx, a)
 				r.mu.Lock()
 				if ctx.Err() == nil && reason != actorStopped {
 					select {
 					case <-a.wake:
-						delete(r.retries, id)
-						r.mu.Unlock()
-						continue
+						if reason != actorSuspended || a.activity != activity {
+							if reason == actorSuspended && !r.bindings[id] {
+								// Re-enter discovery: a native event cannot promote a
+								// suspended candidate without current eligibility proof.
+								select {
+								case r.checks <- id:
+								default:
+								}
+							} else {
+								delete(r.retries, id)
+								delete(r.suspended, id)
+								r.mu.Unlock()
+								continue
+							}
+						}
 					default:
 					}
 				}
 				if r.actors[id] == a {
 					delete(r.actors, id)
-					if reason == actorRetryLater && r.ActorRetrying != nil {
+					if (reason == actorRetryLater || reason == actorSuspended) && r.ActorRetrying != nil {
 						r.ActorRetrying(id)
 					}
 					if r.ActorReleased != nil {
 						r.ActorReleased(id)
 					}
+				}
+				if reason == actorSuspended {
+					delete(r.retries, id)
 				}
 				if ctx.Err() == nil && reason == actorRetryLater {
 					r.scheduleRetryLocked(id, false, a.boundOnly)
@@ -437,6 +510,7 @@ func (r *Runtime) Run(parent context.Context) error {
 	}
 	activate := func(id string, force bool) {
 		activationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		var meta codexclient.Thread
 		_, err := r.Store.Binding(activationCtx, r.HostID, id)
 		if errors.Is(err, sql.ErrNoRows) {
 			cancel()
@@ -450,7 +524,6 @@ func (r *Runtime) Run(parent context.Context) error {
 			return
 		}
 		if err == nil {
-			var meta codexclient.Thread
 			meta, err = r.Native.Metadata(activationCtx, id)
 			if err == nil && meta.ID == id {
 				err = r.activationAuthorize(activationCtx, meta)
@@ -460,6 +533,18 @@ func (r *Runtime) Run(parent context.Context) error {
 		}
 		cancel()
 		if err != nil {
+			if errors.Is(err, rules.ErrDirectoryMissing) {
+				sequence, sequenceErr := r.Store.SubmissionInputSequence(ctx, store.SubmissionScope{HostID: r.HostID, AppID: r.AppID, ThreadID: id})
+				if sequenceErr == nil && r.suspendMissingWorkspace(ctx, &threadActor{thread: id}, meta, sequence) {
+					r.mu.Lock()
+					delete(r.retries, id)
+					if r.ActorRetrying != nil {
+						r.ActorRetrying(id)
+					}
+					r.mu.Unlock()
+					return
+				}
+			}
 			r.mu.Lock()
 			if r.ActorRetrying != nil {
 				r.ActorRetrying(id)
@@ -528,6 +613,7 @@ func (r *Runtime) Run(parent context.Context) error {
 				}
 				return errors.New("native event generation ended; reconnect and reconcile required")
 			}
+			r.observeNativeLatency(event)
 			if r.EventObserved != nil {
 				r.EventObserved(event)
 			}
@@ -572,6 +658,8 @@ func (r *Runtime) Run(parent context.Context) error {
 	}
 }
 
+const discoveryEventCheckInterval = 250 * time.Millisecond
+
 func (r *Runtime) runDiscovery(ctx context.Context, e *discovery.Engine, done chan<- struct{}) {
 	interval := r.ScanInterval
 	if interval <= 0 {
@@ -579,6 +667,12 @@ func (r *Runtime) runDiscovery(ctx context.Context, e *discovery.Engine, done ch
 	}
 	timer := time.NewTicker(interval)
 	defer timer.Stop()
+	checkTimer := time.NewTimer(time.Hour)
+	checkTimer.Stop()
+	defer checkTimer.Stop()
+	var checkTick <-chan time.Time
+	var nextCheck time.Time
+	pending := map[string]bool{}
 	notify := func() {
 		select {
 		case done <- struct{}{}:
@@ -586,10 +680,16 @@ func (r *Runtime) runDiscovery(ctx context.Context, e *discovery.Engine, done ch
 		}
 	}
 	scan := func() {
+		started := time.Now()
 		if err := e.Snapshot(ctx); err != nil {
+			r.observeLatency("discovery.baseline", "", started, err)
 			r.notice("discovery.baseline_pending")
 		} else {
-			if err := r.scanDiscovery(ctx, e); err != nil {
+			r.observeLatency("discovery.baseline", "", started, nil)
+			started = time.Now()
+			err := r.scanDiscovery(ctx, e)
+			r.observeLatency("discovery.scan", "", started, err)
+			if err != nil {
 				r.notice("discovery.scan_pending")
 			}
 			notify()
@@ -597,15 +697,45 @@ func (r *Runtime) runDiscovery(ctx context.Context, e *discovery.Engine, done ch
 	}
 	scan()
 	for {
+		checks := r.checks
+		if len(pending) >= cap(checks) {
+			checks = nil
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case id := <-r.checks:
-			fence, complete, err := r.Store.BaselineFence(ctx, r.HostID)
-			if err == nil && complete {
-				if err := e.Check(ctx, id, fence); err != nil {
+		case id := <-checks:
+			pending[id] = true
+			if checkTick == nil {
+				// The first event runs immediately. Later events share a bounded
+				// batch and cannot keep postponing its timer during a token burst.
+				checkTimer.Reset(max(0, time.Until(nextCheck)))
+				checkTick = checkTimer.C
+			}
+		case <-checkTick:
+			checkTick = nil
+			for remaining := len(r.checks); remaining > 0 && len(pending) < cap(r.checks); remaining-- {
+				pending[<-r.checks] = true
+			}
+			ids := make([]string, 0, len(pending))
+			r.mu.Lock()
+			for id := range pending {
+				if r.actors[id] == nil && !r.bindings[id] {
+					ids = append(ids, id)
+				}
+			}
+			r.mu.Unlock()
+			clear(pending)
+			if len(ids) > 0 {
+				checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				started := time.Now()
+				err := e.CheckEvents(checkCtx, ids, r.now().Add(-recentActivityWindow).Unix())
+				r.observeLatency("discovery.event_batch", "", started, err)
+				cancel()
+				if err != nil {
 					r.notice("discovery.candidate_pending")
 				}
+				nextCheck = time.Now().Add(discoveryEventCheckInterval)
 				notify()
 			}
 		case <-timer.C:
@@ -637,6 +767,12 @@ func (r *Runtime) runBoundObservation(ctx context.Context, e *discovery.Engine) 
 }
 
 func (r *Runtime) runActor(ctx context.Context, a *threadActor) actorExit {
+	r.Latency.Record("actor.started", r.HostID, a.thread, "", "", 0, "ok")
+	inputSequence, err := r.Store.SubmissionInputSequence(ctx, store.SubmissionScope{HostID: r.HostID, AppID: r.AppID, ThreadID: a.thread})
+	if err != nil {
+		r.notice("input.reconcile_pending")
+		return actorRetryLater
+	}
 	interval := r.PollInterval
 	if interval <= 0 {
 		interval = time.Second
@@ -667,6 +803,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) actorExit {
 		}
 	}
 	engine := &messages.Engine{Store: r.Store, Native: r.Native, HostID: r.HostID, TimeZone: r.ProgressTimeZone}
+	engine.Latency = r.Latency
 	engine.COTProjectionCache = r.cotProjectionCache
 	engine.PrepareHuman = r.PrepareHuman
 	engine.PreparePublic = r.PreparePublic
@@ -679,14 +816,21 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) actorExit {
 	if r.Mentions.Enabled {
 		engine.MentionTargets = r.Mentions.Targets
 	}
-	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership, MinProgressIntervalMS: r.MinProgressIntervalMS, Now: r.now, BeginWrite: r.BeginDelivery}
+	outbound := messages.Outbound{Store: r.Store, Gateway: r.Messages, Mentions: &r.Mentions, Membership: r.Membership, MinProgressIntervalMS: r.MinProgressIntervalMS, Now: r.now, BeginWrite: r.BeginDelivery, Latency: r.Latency}
 	if reader, ok := r.Messages.(messages.MessageReadbackGateway); ok {
 		outbound.Readback = reader
 	}
 	deliveryPending := false
 	deliver := func(b store.Binding, turns []codexclient.Turn, historyOK bool) {
 		started := time.Now()
-		defer func() { r.timings.observe("delivery", time.Since(started)) }()
+		defer func() {
+			r.timings.observe("delivery", time.Since(started))
+			outcome := "ok"
+			if deliveryPending {
+				outcome = "pending"
+			}
+			r.Latency.Record("actor.delivery_batch", r.HostID, a.thread, "", "", time.Since(started), outcome)
+		}()
 		deliveryPending = false
 		if r.ready() && (r.CanDeliver == nil || r.CanDeliver(ctx, b) == nil) {
 			// Bounded batch prevents one long answer from monopolizing
@@ -713,7 +857,10 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) actorExit {
 				}
 			}
 			if r.AfterDelivery != nil {
-				if err := r.AfterDelivery(ctx, a.thread, turns); err != nil {
+				feedbackStarted := time.Now()
+				err := r.AfterDelivery(ctx, a.thread, turns)
+				r.observeLatency("actor.feedback", a.thread, feedbackStarted, err)
+				if err != nil {
 					deliveryPending = true
 					r.notice("feedback.reconcile_pending")
 				}
@@ -736,7 +883,7 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) actorExit {
 			seenMembers[id] = true
 		}
 	}
-	manager := &bindings.Manager{Store: r.Store, Native: r.Native, Groups: r.Groups, HostID: r.HostID, OwnerID: r.OwnerID, Members: members, Now: r.now, Authorize: func(ctx context.Context, t codexclient.Thread) error { return r.Authorize(ctx, t, true) }}
+	manager := &bindings.Manager{Store: r.Store, Native: r.Native, Groups: r.Groups, HostID: r.HostID, OwnerID: r.OwnerID, Members: members, Now: r.now, Latency: r.Latency, Authorize: func(ctx context.Context, t codexclient.Thread) error { return r.Authorize(ctx, t, true) }}
 	groupDone := make(chan error, 1)
 	var groupWG sync.WaitGroup
 	defer groupWG.Wait()
@@ -750,34 +897,26 @@ func (r *Runtime) runActor(ctx context.Context, a *threadActor) actorExit {
 	latestHistoryOK := false
 	title := "Codex"
 	nameStateKnown := false
-	syncedTitle := ""
-	var nextNameSyncAtMS int64
-	syncName := func(b store.Binding) {
-		if !nameStateKnown || b.FollowMode == "topic" || r.SyncGroupName == nil || syncedTitle == title || r.now().UnixMilli() < nextNameSyncAtMS || !r.ready() ||
-			(r.CanDeliver != nil && r.CanDeliver(ctx, b) != nil) {
-			return
+	queuedTitle := ""
+	queueName := func(b store.Binding) bool {
+		if !nameStateKnown || b.FollowMode == "topic" || r.groupNames == nil || queuedTitle == title {
+			return true
 		}
-		nameCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
-		err := r.SyncGroupName(nameCtx, b, title)
-		cancel()
-		if err == nil {
-			syncedTitle, nextNameSyncAtMS = title, 0
-			return
+		request, err := r.Store.StageGroupNameRequest(ctx, store.GroupNameScope{AppID: r.AppID, OwnerID: r.OwnerID, Binding: b}, title, r.now().UnixMilli())
+		if err != nil {
+			r.notice("group.name_sync_pending")
+			return false
 		}
-		syncedTitle = "" // A pending rename may have changed the previous name.
-		nextNameSyncAtMS = r.now().Add(15 * time.Second).UnixMilli()
-		var deferred *bindings.GroupNameDeferredError
-		if errors.As(err, &deferred) && deferred.RetryAtMS > nextNameSyncAtMS {
-			nextNameSyncAtMS = deferred.RetryAtMS
-		}
-		r.notice("group.name_sync_pending")
+		r.groupNames.enqueue(request)
+		queuedTitle = title
+		return true
 	}
 actorLoop:
 	for {
 		if ctx.Err() != nil {
 			return actorStopped
 		}
-		if cold && !dormantAt.IsZero() && !r.now().Before(dormantAt) {
+		if cold && !dormantAt.IsZero() && !r.now().Before(dormantAt) && !r.pinnedKeepAlive(a.thread) {
 			return actorDormant
 		}
 		if groupRetryAtMS > 0 && r.now().UnixMilli() >= groupRetryAtMS {
@@ -795,26 +934,51 @@ actorLoop:
 			lastRead = r.now()
 			if r.PrepareWorkspace != nil {
 				prepareCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+				started := time.Now()
 				err := r.PrepareWorkspace(prepareCtx, a.thread)
+				r.observeLatency("actor.workspace", a.thread, started, err)
 				cancel()
 				if err != nil {
 					deliveryAuthorized = false
 					r.notice("worktree.restore_pending")
+					if r.suspendMissingWorkspace(ctx, a, codexclient.Thread{}, inputSequence) {
+						return actorSuspended
+					}
 					return actorRetryLater
 				}
 			}
 			if !attached {
 				attachCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				started := time.Now()
 				var t codexclient.Thread
 				var err error
 				if r.CanAttach != nil {
+					stepStarted := time.Now()
 					err = r.CanAttach(attachCtx, a.thread)
+					r.observeLatency("actor.attach_gate", a.thread, stepStarted, err)
 				}
 				if err == nil {
+					// A resume may emit thread/started itself. Check the current
+					// cwd first so that event cannot keep a missing route awake.
+					stepStarted := time.Now()
+					t, err = r.Native.Metadata(attachCtx, a.thread)
+					if err == nil && t.ID != a.thread {
+						err = store.ErrConflict
+					}
+					if err == nil {
+						_, err = rules.CanonicalDirectory(t.CWD)
+					}
+					r.observeLatency("actor.attach_metadata", a.thread, stepStarted, err)
+				}
+				if err == nil {
+					stepStarted := time.Now()
 					t, err = r.Native.Attach(attachCtx, a.thread)
+					r.observeLatency("actor.attach_rpc", a.thread, stepStarted, err)
 				}
 				if err == nil && t.ID == a.thread {
+					stepStarted := time.Now()
 					err = r.Authorize(attachCtx, t, false)
+					r.observeLatency("actor.attach_authorize", a.thread, stepStarted, err)
 				} else if err == nil {
 					err = store.ErrConflict
 				}
@@ -823,8 +987,12 @@ actorLoop:
 				} else {
 					attached = true
 				}
+				r.observeLatency("actor.attach", a.thread, started, err)
 				cancel()
 				if err != nil {
+					if r.suspendMissingWorkspace(ctx, a, t, inputSequence) {
+						return actorSuspended
+					}
 					return actorRetryLater
 				}
 			}
@@ -840,9 +1008,13 @@ actorLoop:
 				} else if err == nil {
 					err = store.ErrConflict
 				}
+				r.observeLatency("actor.metadata", a.thread, started, err)
 				if err != nil {
 					cancel()
 					r.notice("thread.authorization_pending")
+					if r.suspendMissingWorkspace(ctx, a, meta, inputSequence) {
+						return actorSuspended
+					}
 					return actorRetryLater
 				}
 				r.timings.observe("metadata", time.Since(started))
@@ -861,6 +1033,7 @@ actorLoop:
 					if _, err := r.Store.Binding(readCtx, r.HostID, a.thread); err == nil {
 						var tickErr error
 						turns, tickErr = r.ActorTick(readCtx, a.thread)
+						r.observeLatency("actor.inputs", a.thread, started, tickErr)
 						if tickErr != nil {
 							turns = nil
 							tickPending = true
@@ -875,6 +1048,7 @@ actorLoop:
 					started = time.Now()
 					turns, err = r.Native.Turns(readCtx, a.thread)
 					r.timings.observe("history_read", time.Since(started))
+					r.observeLatency("actor.history_read", a.thread, started, err)
 				} else {
 					r.timings.reusedHistory()
 				}
@@ -889,11 +1063,13 @@ actorLoop:
 						started = time.Now()
 						err = r.HistoryPreparing(readCtx, a.thread, turns)
 						r.timings.observe("history_prepare", time.Since(started))
+						r.observeLatency("actor.history_prepare", a.thread, started, err)
 					}
 					if err == nil {
 						started = time.Now()
 						err = engine.Apply(readCtx, a.thread, turns, a.replay, r.now().UnixMilli())
 						r.timings.observe("projection", time.Since(started))
+						r.observeLatency("actor.projection", a.thread, started, err)
 					}
 					started = time.Now()
 					if err == nil {
@@ -909,6 +1085,7 @@ actorLoop:
 						err = r.HistoryHydrated(readCtx, a.thread, turns)
 					}
 					r.timings.observe("history_stage", time.Since(started))
+					r.observeLatency("actor.history_stage", a.thread, started, err)
 				}
 				cancel()
 				if err != nil {
@@ -927,9 +1104,9 @@ actorLoop:
 					}
 					r.mu.Unlock()
 					deliver(b, turns, err == nil)
-					syncName(b)
+					nameQueued := queueName(b)
 					mayIdle := err == nil && !tickPending && !deliveryPending && !groupRunning && groupRetryAtMS == 0 &&
-						settledThread(meta, turns) && (!nameStateKnown || b.FollowMode == "topic" || r.SyncGroupName == nil || syncedTitle == title)
+						settledThread(meta, turns) && nameQueued
 					if mayIdle {
 						// An unknown native write can return nil while awaiting
 						// readback. It still needs the normal controller cadence.
@@ -939,7 +1116,7 @@ actorLoop:
 							r.notice("input.reconcile_pending")
 						}
 					}
-					if mayIdle {
+					if mayIdle && !r.pinnedKeepAlive(a.thread) {
 						if dormantAt.IsZero() {
 							dormantAt = r.now().Add(r.actorIdleTimeout())
 						}

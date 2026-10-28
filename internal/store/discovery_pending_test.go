@@ -70,3 +70,77 @@ func TestPendingObservationsExcludesOnlyBoundRoutes(t *testing.T) {
 		t.Fatal("candidate filtering rewrote discovery provenance", err)
 	}
 }
+
+func TestCandidateSuspensionPreservesEvidenceAndTerminalStates(t *testing.T) {
+	s, _ := discoveryStore(t)
+	ctx := context.Background()
+	for _, thread := range []string{"candidate", "muted", "bound"} {
+		eligible(t, s, thread)
+	}
+	before, err := s.Observation(ctx, "host", "candidate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Exclude(ctx, "host", "muted", "directory_muted"); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := s.PrepareGroup(ctx, "host", "bound", "owner", "fixture", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimGroupDispatch(ctx, intent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ConfirmGroup(ctx, intent.ID, "chat"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BindConfirmedGroup(ctx, intent.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, thread := range []string{"candidate", "muted", "bound"} {
+		if err := s.SuspendCandidate(ctx, "host", thread); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.NotePending(ctx, "host", "candidate", "metadata_unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HoldCandidate(ctx, "host", "candidate", "active_unconfirmed"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.Observation(ctx, "host", "candidate")
+	if err != nil || !after.Suspended() || after.State != "pending" {
+		t.Fatalf("candidate not suspended: %+v %v", after, err)
+	}
+	after.State, after.ExclusionReason = before.State, before.ExclusionReason
+	if after != before {
+		t.Fatalf("suspension destroyed evidence: before=%+v after=%+v", before, after)
+	}
+	if err := s.HoldCandidate(ctx, "host", "candidate", "archived"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ = s.Observation(ctx, "host", "candidate")
+	if !after.Suspended() || !after.Archived() {
+		t.Fatal("archive observation replaced missing-cwd hold")
+	}
+	pending, err := s.PendingObservations(ctx, "host")
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("suspended/terminal candidate still pending retry: %+v %v", pending, err)
+	}
+	if err := s.ResumeCandidate(ctx, "host", "candidate"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ = s.Observation(ctx, "host", "candidate")
+	if after.Suspended() || !after.Archived() || after.State != "pending" {
+		t.Fatal("resume bypassed archive evidence or granted eligibility")
+	}
+	for thread, want := range map[string]string{"muted": "excluded", "bound": "eligible"} {
+		if err := s.ResumeCandidate(ctx, "host", thread); err != nil {
+			t.Fatal(err)
+		}
+		o, _ := s.Observation(ctx, "host", thread)
+		if o.State != want || o.Suspended() {
+			t.Fatalf("suspension rewrote terminal/bound route: %+v", o)
+		}
+	}
+}

@@ -2,11 +2,34 @@ package rules
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
+
+func TestMissingDirectoryClassification(t *testing.T) {
+	base := t.TempDir()
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, cwd := range []string{filepath.Join(base, "missing"), file, filepath.Join(file, "child")} {
+		if _, err := ResolveScope(context.Background(), cwd, []string{base}); !errors.Is(err, ErrDirectoryMissing) {
+			t.Fatalf("missing/non-directory cwd did not suspend: %v", err)
+		}
+	}
+	if _, err := ResolveScope(context.Background(), base, []string{filepath.Join(base, "missing")}); err == nil || errors.Is(err, ErrDirectoryMissing) {
+		t.Fatalf("configured root failure classified as missing cwd: %v", err)
+	}
+	for _, cause := range []error{syscall.EACCES, syscall.EPERM, syscall.EIO, syscall.ESTALE} {
+		if err := directoryError(&os.PathError{Op: "stat", Path: "/private/fixture", Err: cause}); errors.Is(err, ErrDirectoryMissing) || err.Error() != "directory unavailable" {
+			t.Fatalf("transient/permission error suspended or leaked path: %v", err)
+		}
+	}
+}
 
 func testGit(t *testing.T, cwd string, args ...string) {
 	t.Helper()
