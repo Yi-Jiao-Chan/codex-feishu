@@ -3,10 +3,13 @@ package cards
 import (
 	"fmt"
 	"strings"
+
+	"codex-feishu/internal/displaypath"
 )
 
 type AttachmentView struct {
 	Kind, Name, Path, ImageKey, Status string
+	Paths                              displaypath.Formatter
 }
 
 // Human renders attachment metadata and already uploaded image keys, with no
@@ -44,7 +47,7 @@ func Human(source, body string, attachments []AttachmentView) string {
 			text += " · " + humanMetadata(attachment.Name)
 		}
 		if attachment.Path != "" && !humanDataURL(attachment.Path) {
-			text += "\n" + humanMetadata(attachment.Path)
+			text += "\n" + humanMetadata(attachment.Paths.Path(attachment.Path))
 		}
 		if attachment.Kind == "image" && (attachment.ImageKey == "" || humanDataURL(attachment.ImageKey)) {
 			text += "\n图片暂不可预览，请回Codex App查看"

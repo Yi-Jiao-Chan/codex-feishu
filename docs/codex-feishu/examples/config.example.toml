@@ -69,6 +69,8 @@ common_directories = []
 topics_enabled = false
 # 0 使用 1800 秒；显式值范围为 300–86400 秒。
 draft_ttl_seconds = 0
+# 名称搜索每路递归深度；0 使用默认 9 层，两路共用 500 毫秒预算。
+directory_search_depth = 0
 
 [file_preview]
 # 可选只读浏览器预览；IP直连需显式绑定可达地址，默认不开启。

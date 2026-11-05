@@ -162,6 +162,24 @@ func TestCommandDirectorySeparatesConfirmedRemovalFromRemainingRules(t *testing.
 	}
 }
 
+func TestCommandDirectoryDisplayKeepsCanonicalRule(t *testing.T) {
+	ctx := context.Background()
+	s, req, now := commandStoreRequest(t)
+	t.Setenv("HOME", req.Directory.Rule.Path)
+	reply, _, err := s.ApplyLocalCommand(ctx, req, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, details := commandSettingsSections(t, reply.Card)
+	if !strings.Contains(details, "$HOME（精确）") || strings.Contains(details, req.Directory.Rule.Path) {
+		t.Fatal("directory feedback did not shorten the home prefix")
+	}
+	rules, err := s.DirectoryRules(ctx, req.HostID, req.AppID)
+	if err != nil || len(rules) != 1 || rules[0].Path != req.Directory.Rule.Path {
+		t.Fatal("display path was persisted as a directory rule", err)
+	}
+}
+
 func commandStoreRequest(t *testing.T) (*Store, CommandRequest, time.Time) {
 	t.Helper()
 	s, project := directoryStoreFixture(t)

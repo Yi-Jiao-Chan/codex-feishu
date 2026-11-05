@@ -14,22 +14,29 @@ import (
 // from Feishu. It is deliberately independent from DiscoveryConfig: creation
 // scopes are an explicit user choice and are never inferred from discovery.
 type CreationConfig struct {
-	Enabled           bool     `toml:"enabled" json:"enabled"`
-	DefaultFollowMode string   `toml:"default_follow_mode" json:"default_follow_mode"`
-	EntryChatIDs      []string `toml:"entry_chat_ids" json:"entry_chat_ids"`
-	WorkgroupChatIDs  []string `toml:"workgroup_chat_ids" json:"workgroup_chat_ids"`
-	AllowedRoots      []string `toml:"allowed_roots" json:"allowed_roots"`
-	CommonDirectories []string `toml:"common_directories" json:"common_directories"`
-	TopicsEnabled     bool     `toml:"topics_enabled" json:"topics_enabled"`
-	DraftTTLSeconds   int      `toml:"draft_ttl_seconds" json:"draft_ttl_seconds"`
+	Enabled              bool     `toml:"enabled" json:"enabled"`
+	DefaultFollowMode    string   `toml:"default_follow_mode" json:"default_follow_mode"`
+	EntryChatIDs         []string `toml:"entry_chat_ids" json:"entry_chat_ids"`
+	WorkgroupChatIDs     []string `toml:"workgroup_chat_ids" json:"workgroup_chat_ids"`
+	AllowedRoots         []string `toml:"allowed_roots" json:"allowed_roots"`
+	CommonDirectories    []string `toml:"common_directories" json:"common_directories"`
+	TopicsEnabled        bool     `toml:"topics_enabled" json:"topics_enabled"`
+	DraftTTLSeconds      int      `toml:"draft_ttl_seconds" json:"draft_ttl_seconds"`
+	DirectorySearchDepth int      `toml:"directory_search_depth" json:"directory_search_depth"`
 }
 
 const defaultCreationTTLSeconds = 1800
+
+// DefaultCreationDirectorySearchDepth is the name-search depth when omitted.
+const DefaultCreationDirectorySearchDepth = 9
 
 // ValidateCreation validates only the local creation policy. In particular,
 // it does not consult discovery roots or call any remote API.
 func (c Config) ValidateCreation() error {
 	creation := c.Creation
+	if creation.DirectorySearchDepth < 0 {
+		return errors.New("creation.directory_search_depth must be positive, or 0 for default")
+	}
 	followMode := creation.DefaultFollowMode
 	if followMode == "" {
 		followMode = "group"
@@ -80,6 +87,14 @@ func (c Config) ValidateCreation() error {
 		}
 	}
 	return nil
+}
+
+// CreationDirectorySearchDepth returns the per-root name-search depth.
+func (c Config) CreationDirectorySearchDepth() int {
+	if c.Creation.DirectorySearchDepth > 0 {
+		return c.Creation.DirectorySearchDepth
+	}
+	return DefaultCreationDirectorySearchDepth
 }
 
 func canonicalCreationDirectories(directories []string, requireBrowseAccess bool) ([]string, error) {

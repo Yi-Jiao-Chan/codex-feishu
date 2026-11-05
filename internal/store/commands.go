@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"codex-feishu/internal/cards"
+	"codex-feishu/internal/displaypath"
 	"codex-feishu/internal/rules"
 )
 
@@ -346,7 +347,7 @@ func commandDirectoryLabel(rule rules.DirectoryRule) string {
 	if rule.Recursive {
 		mode = "递归"
 	}
-	return rule.Path + "（" + mode + "）"
+	return displaypath.Shorten(rule.Path) + "（" + mode + "）"
 }
 
 func commandNotificationCard(p rules.Policy, now time.Time) string {

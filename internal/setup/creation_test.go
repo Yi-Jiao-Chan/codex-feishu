@@ -21,19 +21,20 @@ func TestSetupCreationExplicitReplacementAndOmissionPreservation(t *testing.T) {
 	in.Features.Phase = "phase2"
 	in.Features.Creation = true
 	in.Creation = &config.CreationConfig{
-		Enabled:           true,
-		DefaultFollowMode: "topic",
-		EntryChatIDs:      []string{"oc_entry"},
-		WorkgroupChatIDs:  []string{"oc_workgroup"},
-		AllowedRoots:      []string{root},
-		CommonDirectories: []string{common},
-		TopicsEnabled:     true,
+		Enabled:              true,
+		DefaultFollowMode:    "topic",
+		EntryChatIDs:         []string{"oc_entry"},
+		WorkgroupChatIDs:     []string{"oc_workgroup"},
+		AllowedRoots:         []string{root},
+		CommonDirectories:    []string{common},
+		TopicsEnabled:        true,
+		DirectorySearchDepth: 6,
 	}
 	first, err := p.Build(context.Background(), in, paths)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.Config.Creation.Enabled || first.Config.Creation.DefaultFollowMode != "topic" || len(first.Config.Creation.AllowedRoots) != 1 {
+	if !first.Config.Creation.Enabled || first.Config.Creation.DefaultFollowMode != "topic" || len(first.Config.Creation.AllowedRoots) != 1 || first.Config.CreationDirectorySearchDepth() != 6 {
 		t.Fatalf("explicit creation policy was not planned: %+v", first.Config.Creation)
 	}
 	next := strings.Join(first.NextSteps, "\n")

@@ -99,7 +99,7 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 
 新建配置以及加载 TOML 时省略的交互字段使用问答默认值：`interactions.enabled=true`、`enabled_types=["question", "async_question"]`。显式 `enabled=false` 关闭全部交互；显式类型清单整体覆盖默认清单，开启时的空清单仍被拒绝。setup 重跑保留已有选择，不向旧清单自动加入异步问答或审批类型。详见 [13 审批与问答](13-feishu-approvals-and-questions.md#41-配置与验收操作)。
 
-向导 JSON 的 `creation` 对象是可选的；省略时保留已有 creation 配置，显式提供时整体替换。`features.creation=true` 仍要求显式 creation 范围，不能从 discovery.allowed_roots 推断；`features.phase` 可为 `phase1` 或 `phase2`，phase2 不会隐式开启创建。启用创建必须提供真实可读、可进入的 `creation.allowed_roots`，最终执行目录另需可写；入口群、工作群和 common directories 只按其自身范围校验。默认跟进位置为 group，topic 需要开启 topics 并配置工作群；draft TTL 为 0 时使用 1800 秒。计划只展示入口群和目录范围计数，topic 与创建 UI 仍需独立真实验收。
+向导 JSON 的 `creation` 对象是可选的；省略时保留已有 creation 配置，显式提供时整体替换。`features.creation=true` 仍要求显式 creation 范围，不能从 discovery.allowed_roots 推断；`features.phase` 可为 `phase1` 或 `phase2`，phase2 不会隐式开启创建。名称搜索深度由 `creation.directory_search_depth` 配置，0 或省略使用默认 9 层，正整数按每路搜索根计算；同步两路合计 500 毫秒、最多 16 个 worker，不限制扫描数量。超时转入最多 30 秒的后台搜索；缓存命中立即返回并后台刷新，后台同一时刻一个搜索、最多 2 个目录读取 worker。缓存仅在进程内保存，重启后重建。修改后重启服务，新查询采用新深度，已记录深度的旧查询分页沿用冻结深度。启用创建必须提供真实可读、可进入的 `creation.allowed_roots`，最终执行目录另需可写；入口群、工作群和 common directories 只按其自身范围校验。默认跟进位置为 group，topic 需要开启 topics 并配置工作群；draft TTL 为 0 时使用 1800 秒。计划只展示入口群和目录范围计数，topic 与创建 UI 仍需独立真实验收。
 
 目录交互统一使用飞书原生卡片与既有长连接：最近 / 项目速选、显式项目名 / 绝对路径搜索、带路径导航 / 当前层筛选 / 分页的目录面板。无需额外 HTTP listener、域名、反向代理、H5 或 OAuth 配置。长连接传递卡片操作事件；目录读取和权限校验均在远程桥进程完成，结果更新原卡。平台 API 校验和模拟测试仍不等于真实手机布局或交互验收。
 

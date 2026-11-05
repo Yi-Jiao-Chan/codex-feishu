@@ -43,7 +43,7 @@ creating_group 响应未知 → reconciling_group
 
 创建前在 SQLite 领取 `(host_id, thread_id)`，保存 stable intent 与预期成员，并先附着原生线程接收公开事件；建群在独立步骤执行，不阻塞事件存储。2026-10-14 按用户要求，任务群名统一为 `🤖 <会话标题>`，已有标识只保留一次，App 改名后仍保留此前缀。标题优先采用原生 `Thread.Name`，与 Codex App 的显示标题对齐，不加项目目录前缀、不截短有效 Name。Name 未提供时依次使用 preview、首条已清理附件包装的实际用户正文，附件单独输入使用简短任务名称；回退预览可缩短。工作目录放群描述。默认加入 owner 与机器人；其他用户只有列在 groups.additional_member_open_ids、且确认平台允许时才加入。notification target 不隐式扩大成员或操作权限。
 
-新建群描述写 `工作目录：<首次附着的实际 CWD>`，完整保留 worktree 路径，不用项目根替代、不截断。schema 23 在首次 dispatch 前冻结描述，限流重试与重启保持原描述和 UUID；已有 attempt 保留旧版原描述，既有群由单独 GET / PUT / GET 核验更新，不随发现隐式修改。接口与长度建议见[群工作目录研究](../research/chat-working-directory-2026-10-13.md)。
+新建群描述写 `工作目录：<首次附着的实际 CWD>`，保留 worktree 路径的全部层级，不用项目根替代、不截断；运行用户的 home 前缀按 [08 路径展示规则](08-cards-and-actions.md#视图与布局契约)缩为 `$HOME`，授权和绑定仍使用实际完整 CWD。schema 23 在首次 dispatch 前冻结描述，限流重试与重启保持原描述和 UUID；已有 attempt 保留旧版原描述，既有群由单独 GET / PUT / GET 核验更新，不随发现隐式修改。接口与长度建议见[群工作目录研究](../research/chat-working-directory-2026-10-13.md)。
 
 已绑定群名跟随每次已授权元数据读取；`thread/name/updated` 沿用 threadId 唤醒 actor，即使事件丢失也会由绑定元数据扫描补偿。actor 只持久保存期望名称并提交后台任务；群成员、群主、绑定校验、名称读回和 PUT 均由每个连接代际的两个独立 worker 执行。同一群串行，尚未执行的任务合并为最新标题，正文和队列处理不等待群名网络请求，actor 空闲退出不丢失改名任务。未变更标题在 actor 内不重复入队，重新激活后可再次读回核验。首次建群 UUID 和请求名称保持冻结，不在创建中的请求上改名；绑定确认后以独立 PUT 仅更新 name，topic 不修改共享群名。
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -17,20 +18,20 @@ func TestDirectorySearchRecursiveDepthNamesAndNoCatalog(t *testing.T) {
 	root := directory(t, t.TempDir(), "MATCH-root")
 	want := []string{root}
 	parent := root
-	for depth := 1; depth <= 5; depth++ {
+	for depth := 1; depth <= 11; depth++ {
 		parent = directory(t, parent, fmt.Sprintf("match-level-%d", depth))
-		if depth <= 4 {
+		if depth <= 10 {
 			want = append(want, parent)
 		}
 	}
 	directory(t, root, "unrelated")
-	s := DirectoryService{Roots: []string{root}, Projects: func(context.Context) ([]codexclient.Project, error) {
+	s := DirectoryService{Roots: []string{root}, SearchDepth: 10, Projects: func(context.Context) ([]codexclient.Project, error) {
 		t.Fatal("recursive filesystem search called the native catalog")
 		return nil, nil
 	}}
 	page, err := s.SearchRecursive(context.Background(), root, "  MaTcH  ", "", 100)
-	if err != nil || !reflect.DeepEqual(directoryPaths(page.Choices), want) || page.Path != root || page.Total != 5 || page.Next != "" {
-		t.Fatal("recursive search lost root/fourth level or included fifth level", page, err)
+	if err != nil || !reflect.DeepEqual(directoryPaths(page.Choices), want) || page.Path != root || page.Total != 11 || page.Next != "" {
+		t.Fatal("recursive search lost root/tenth level or included eleventh level", page, err)
 	}
 	page, err = s.SearchRecursive(context.Background(), root, "MATCH-root", "", 100)
 	if err != nil || !reflect.DeepEqual(directoryPaths(page.Choices), []string{root}) {
@@ -38,27 +39,96 @@ func TestDirectorySearchRecursiveDepthNamesAndNoCatalog(t *testing.T) {
 	}
 }
 
-func TestDirectorySearchRecursiveGlobalEntryBudget(t *testing.T) {
+func TestDirectorySearchRecursiveStreamsFilesWithoutLosingProjectMatches(t *testing.T) {
 	root := t.TempDir()
-	a, b := directory(t, root, "bucket-a"), directory(t, root, "bucket-b")
-	for _, path := range []string{a, b} {
-		for i := 0; i < (maxDirectoryCandidates-2)/2; i++ {
-			if err := os.WriteFile(filepath.Join(path, fmt.Sprintf("file-%04d", i)), nil, 0600); err != nil {
-				t.Fatal(err)
-			}
+	want := directory(t, root, "sdlc-flow")
+	files := directory(t, root, "source-files")
+	for i := 0; i < maxDirectoryCandidates+128; i++ {
+		if err := os.WriteFile(filepath.Join(files, fmt.Sprintf("file-%04d", i)), nil, 0600); err != nil {
+			t.Fatal(err)
 		}
 	}
 	s := DirectoryService{Roots: []string{root}}
-	page, err := s.SearchRecursive(context.Background(), root, "bucket", "", 100)
-	if err != nil || page.Total != 2 {
-		t.Fatal("exact global entry budget was rejected", page, err)
+	page, err := s.SearchRecursive(context.Background(), root, "sdlc-flow", "", 100)
+	if err != nil || !reflect.DeepEqual(directoryPaths(page.Choices), []string{want}) || page.Total != 1 {
+		t.Fatal("unrelated files hid a matching project", page, err)
 	}
-	if err := os.WriteFile(filepath.Join(b, "one-extra-file"), nil, 0600); err != nil {
+}
+
+func TestDirectorySearchRecursiveExceedsLegacyCandidateLimit(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i <= maxDirectoryCandidates; i++ {
+		directory(t, root, fmt.Sprintf("child-%04d", i))
+	}
+	s := DirectoryService{Roots: []string{root}}
+	// Verify count/pagination independently of the interactive time budget;
+	// instrumented or loaded test hosts can legitimately take over 500ms.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	page, err := s.searchRecursiveRoots(ctx, []string{root}, "child", "", 100)
+	if err != nil || page.Total != maxDirectoryCandidates+1 || len(page.Choices) != 100 || page.Next != filepath.Join(root, "child-0099") {
+		t.Fatal("recursive name search retained the legacy candidate limit", page, err)
+	}
+	page, err = s.searchRecursiveRoots(ctx, []string{root}, "child", filepath.Join(root, fmt.Sprintf("child-%04d", maxDirectoryCandidates-1)), 100)
+	if err != nil || page.Total != maxDirectoryCandidates+1 || page.Offset != maxDirectoryCandidates || !reflect.DeepEqual(directoryPaths(page.Choices), []string{filepath.Join(root, fmt.Sprintf("child-%04d", maxDirectoryCandidates))}) || page.Next != "" {
+		t.Fatal("matches beyond the legacy candidate limit were unreachable", page, err)
+	}
+	scanCtx, cancelScan := context.WithCancel(context.Background())
+	defer cancelScan()
+	timer := time.AfterFunc(time.Millisecond, cancelScan)
+	defer timer.Stop()
+	page, err = s.SearchRecursive(scanCtx, root, "child", "", 100)
+	if !errors.Is(err, context.Canceled) || len(page.Choices) != 0 || page.Total != 0 || page.Offset != 0 || page.Next != "" {
+		t.Fatal("cancellation during a large scan returned partial results", page, err)
+	}
+}
+
+func TestDirectorySearchRecursiveWorkerReadFailurePreservesError(t *testing.T) {
+	s := DirectoryService{Roots: []string{t.TempDir()}}
+	missing := filepath.Join(s.Roots[0], "removed")
+	err := s.searchRecursiveRoot(context.Background(), missing, "match", map[string]DirectoryChoice{})
+	if !errors.Is(err, ErrDirectoryUnavailable) {
+		t.Fatal("worker read failure was replaced by pool cancellation", err)
+	}
+}
+
+func TestDirectorySearchRecursivePrunesGeneratedTreesButAllowsExplicitRoots(t *testing.T) {
+	root := t.TempDir()
+	want := directory(t, root, "sdlc-flow")
+	s := DirectoryService{Roots: []string{root}}
+	for _, relative := range []string{".config", "node_modules", "vendor", "__pycache__", "pkg/mod"} {
+		tree := filepath.Join(root, filepath.FromSlash(relative))
+		if err := os.MkdirAll(tree, 0700); err != nil {
+			t.Fatal(err)
+		}
+		nested := directory(t, tree, "sdlc-flow")
+		page, err := s.SearchRecursive(context.Background(), tree, "sdlc-flow", "", 100)
+		if err != nil || !reflect.DeepEqual(directoryPaths(page.Choices), []string{nested}) {
+			t.Fatal("explicitly selected generated/hidden root was not searched", relative, page, err)
+		}
+		page, err = s.SearchRecursive(context.Background(), root, filepath.Base(tree), "", 100)
+		if err != nil || !slices.Contains(directoryPaths(page.Choices), tree) {
+			t.Fatal("generated/hidden directory name could not be selected", relative, page, err)
+		}
+	}
+	cache := directory(t, root, ".cache")
+	for i := 0; i <= maxDirectoryCandidates; i++ {
+		directory(t, cache, fmt.Sprintf("cache-%04d", i))
+	}
+	if err := os.Symlink(cache, filepath.Join(root, "cache-alias")); err != nil {
 		t.Fatal(err)
 	}
-	page, err = s.SearchRecursive(context.Background(), root, "bucket", "", 100)
-	if !errors.Is(err, ErrDirectoryLimit) || len(page.Choices) != 0 || page.Total != 0 || page.Next != "" {
-		t.Fatal("global overflow returned partial results or counted only directories", page, err)
+	deep := directory(t, cache, "deep")
+	directory(t, deep, "sdlc-flow")
+	if err := os.Symlink(deep, filepath.Join(root, "cache-descendant-alias")); err != nil {
+		t.Fatal(err)
+	}
+	// A project simply named mod is still searched outside a pkg/mod cache.
+	mod := directory(t, root, "mod")
+	second := directory(t, mod, "sdlc-flow")
+	page, err := s.SearchRecursive(context.Background(), root, "sdlc-flow", "", 100)
+	if err != nil || !reflect.DeepEqual(directoryPaths(page.Choices), []string{second, want}) || page.Total != 2 {
+		t.Fatal("name search descended into metadata/dependencies or pruned a normal project", page, err)
 	}
 }
 
@@ -109,9 +179,9 @@ func TestDirectorySearchRecursiveSymlinkScopeAliasesAndShallowestDepth(t *testin
 	target := directory(t, c, "target")
 	var want []string
 	parent := target
-	for depth := 1; depth <= 4; depth++ {
+	for depth := 1; depth <= 10; depth++ {
 		parent = directory(t, parent, fmt.Sprintf("found-%d", depth))
-		if depth <= 3 {
+		if depth <= 9 {
 			want = append(want, parent)
 		}
 	}
@@ -127,7 +197,7 @@ func TestDirectorySearchRecursiveSymlinkScopeAliasesAndShallowestDepth(t *testin
 	}
 	// The deployment authorizes both siblings; this search still must remain
 	// within its narrower root and never enumerate the outside symlink target.
-	s := DirectoryService{Roots: []string{base}}
+	s := DirectoryService{Roots: []string{base}, SearchDepth: 10}
 	page, err := s.SearchRecursive(context.Background(), root, "found", "", 100)
 	if err != nil || !reflect.DeepEqual(directoryPaths(page.Choices), want) || page.Total != len(want) {
 		t.Fatal("symlink traversal escaped, looped, duplicated, or lost shallow route", page, err)

@@ -6,7 +6,43 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
+
+func TestCreationDirectorySearchDepthConfiguration(t *testing.T) {
+	c, _, _, _ := enabledCreationConfig(t)
+	for _, depth := range []int{0, 1, 4, 10, 32} {
+		c.Creation.DirectorySearchDepth = depth
+		if err := c.ValidateCreation(); err != nil {
+			t.Fatal(depth, err)
+		}
+		want := depth
+		if want == 0 {
+			want = DefaultCreationDirectorySearchDepth
+		}
+		if c.CreationDirectorySearchDepth() != want {
+			t.Fatal("configured depth was not effective", depth)
+		}
+	}
+	c.Creation.DirectorySearchDepth = -1
+	if err := c.ValidateCreation(); err == nil || !strings.Contains(err.Error(), "directory_search_depth") {
+		t.Fatal("negative search depth was accepted", err)
+	}
+	c.Creation.DirectorySearchDepth = 6
+	raw, err := toml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil || loaded.CreationDirectorySearchDepth() != 6 {
+		t.Fatal("TOML search depth did not round trip", err)
+	}
+}
 
 func enabledCreationConfig(t *testing.T) (Config, string, string, string) {
 	t.Helper()

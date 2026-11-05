@@ -403,7 +403,7 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	if followMode == "" {
 		followMode = "group"
 	}
-	plan.NextSteps = append(plan.NextSteps, fmt.Sprintf("creation: enabled=%t follow_mode=%s entry_chat_ids=%d workgroup_chat_ids=%d allowed_roots=%d common_directories=%d; creation scope is separate from discovery roots", creation.Enabled, followMode, len(creation.EntryChatIDs), len(creation.WorkgroupChatIDs), len(creation.AllowedRoots), len(creation.CommonDirectories)))
+	plan.NextSteps = append(plan.NextSteps, fmt.Sprintf("creation: enabled=%t follow_mode=%s entry_chat_ids=%d workgroup_chat_ids=%d allowed_roots=%d common_directories=%d directory_search_depth=%d; creation scope is separate from discovery roots", creation.Enabled, followMode, len(creation.EntryChatIDs), len(creation.WorkgroupChatIDs), len(creation.AllowedRoots), len(creation.CommonDirectories), plan.Config.CreationDirectorySearchDepth()))
 	if creation.Enabled && creation.TopicsEnabled {
 		plan.NextSteps = append(plan.NextSteps, "creation topics require independent real Feishu/App UI acceptance; this plan does not mark them ready")
 	}

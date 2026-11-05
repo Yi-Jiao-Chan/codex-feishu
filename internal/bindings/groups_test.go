@@ -87,6 +87,25 @@ func TestGroupDescriptionUsesAttachedWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestGroupDescriptionShortensHomeWithoutChangingAuthorization(t *testing.T) {
+	t.Setenv("HOME", "/synthetic/operator")
+	m, g, _ := groupManager(t)
+	cwd := "/synthetic/operator/.codex/worktrees/fixture/项目"
+	m.Native.(*nativeGroupFixture).cwd = cwd
+	m.Authorize = func(_ context.Context, thread codexclient.Thread) error {
+		if thread.CWD != cwd {
+			t.Fatal("authorization received a display path")
+		}
+		return nil
+	}
+	if _, err := m.Ensure(context.Background(), "thread", "task"); err != nil {
+		t.Fatal(err)
+	}
+	if g.description != "工作目录：$HOME/.codex/worktrees/fixture/项目" {
+		t.Fatal("group description did not shorten the home prefix")
+	}
+}
+
 func TestMissingAbsoluteWorkingDirectoryDoesNotCreateGroup(t *testing.T) {
 	m, g, _ := groupManager(t)
 	m.Native.(*nativeGroupFixture).cwd = "relative/project"
