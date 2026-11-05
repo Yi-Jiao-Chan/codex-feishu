@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"codex-feishu/internal/displaypath"
 )
 
 const creationInputMaxRunes = 1000
@@ -116,6 +118,7 @@ type CreationView struct {
 	SearchPage                                                                  *CreationDirectoryPage
 	DirectoryPage                                                               *CreationDirectoryPage
 	Busy                                                                        string
+	Paths                                                                       displaypath.Formatter
 }
 
 func creationWorkspace(v CreationView) []element {
@@ -221,11 +224,15 @@ func creationCompactPath(path string) string {
 func creationDirectorySummary(v CreationView, path, label string, action element) element {
 	name, parent := "尚未选择目录", ""
 	if path != "" {
-		name, parent = interactionLine(filepath.Base(path), 28), creationCompactPath(filepath.Dir(path))
+		display := v.Paths.Path(path)
+		name, parent = interactionLine(filepath.Base(display), 28), creationCompactPath(filepath.Dir(display))
+		if display == "$HOME" {
+			parent = ""
+		}
 	}
 	text := []element{creationText(label, "notation"), creationText("**"+creationLiteral(name)+"**", "normal")}
 	if parent != "" {
-		details := []element{creationText(creationLiteral(path), "notation")}
+		details := []element{creationText(creationLiteral(v.Paths.Path(path)), "notation")}
 		text = append(text, taskPanel(parent, details))
 	}
 	columns := []element{{"tag": "column", "width": "weighted", "weight": 1, "vertical_spacing": "2px", "elements": text}}
@@ -258,12 +265,17 @@ func creationLiteral(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]", "(", "\\(", ")", "\\)", "!", "\\!", "#", "\\#").Replace(Safe(value))
 }
 
-func creationChoiceLabel(choice CreationDirectoryChoice, readOnly bool) string {
+func creationChoiceLabel(choice CreationDirectoryChoice, readOnly bool, paths displaypath.Formatter) string {
+	display := paths.Path(choice.Path)
 	name := strings.TrimSpace(choice.Label)
-	if name == "" || name == choice.Path {
-		name = choice.Path
+	base := filepath.Base(display)
+	if name == "" || name == choice.Path || name == base {
+		name = base
+		if display != base {
+			name += " · " + creationCompactPath(filepath.Dir(display))
+		}
 	} else {
-		name += " · " + choice.Path
+		name += " · " + display
 	}
 	if readOnly {
 		name = "只读 · " + name
@@ -271,7 +283,7 @@ func creationChoiceLabel(choice CreationDirectoryChoice, readOnly bool) string {
 	return name
 }
 
-func creationSelectOptions(choices []CreationDirectoryChoice, writableOnly bool) []element {
+func creationSelectOptions(choices []CreationDirectoryChoice, writableOnly bool, paths displaypath.Formatter) []element {
 	options := []element{}
 	seen := map[string]bool{}
 	for _, choice := range choices {
@@ -280,11 +292,30 @@ func creationSelectOptions(choices []CreationDirectoryChoice, writableOnly bool)
 		}
 		seen[choice.Path] = true
 		options = append(options, element{
-			"text":  element{"tag": "plain_text", "content": creationChoiceLabel(choice, choice.ReadOnly)},
+			"text":  element{"tag": "plain_text", "content": creationChoiceLabel(choice, choice.ReadOnly, paths)},
 			"value": choice.Path,
 		})
 	}
 	return options
+}
+
+// The native picker may clip a single-line label. Keep a separate, locally
+// expandable copy of exactly its offered paths, without a stale selected-path
+// summary: form selections stay on the client until the next explicit submit.
+func creationDirectoryPaths(options []element, paths displaypath.Formatter) element {
+	details := make([]element, 0, len(options))
+	for _, option := range options {
+		path, _ := option["value"].(string)
+		display := paths.Path(path)
+		text := creationLiteral(display)
+		if name := filepath.Base(display); name != display {
+			text = "**" + creationLiteral(name) + "**\n" + text
+		}
+		details = append(details, creationText(text, "normal"))
+	}
+	panel := taskPanel(fmt.Sprintf("查看完整路径 · %d 个目录", len(options)), details)
+	panel["element_id"] = "creation_directory_paths"
+	return panel
 }
 
 func creationMainDirectoryChoices(v CreationView) []CreationDirectoryChoice {
@@ -310,12 +341,13 @@ func creationMainDirectoryChoices(v CreationView) []CreationDirectoryChoice {
 func creationMainDirectoryElements(v CreationView) []element {
 	choices := creationMainDirectoryChoices(v)
 	for index := range choices {
-		choices[index].Label = "" // A single complete path identifies each choice.
+		choices[index].Label = "" // Identify directories by their actual basename.
 	}
+	options := creationSelectOptions(choices, false, v.Paths)
 	selectDirectory := element{
 		"tag": "select_static", "name": "creation_directory", "type": "default", "width": "fill",
 		"placeholder": element{"tag": "plain_text", "content": "请选择工作目录"},
-		"options":     creationSelectOptions(choices, false),
+		"options":     options,
 	}
 	if len(selectDirectory["options"].([]element)) == 0 {
 		selectDirectory["disabled"] = true
@@ -331,6 +363,9 @@ func creationMainDirectoryElements(v CreationView) []element {
 		}
 	}
 	els := []element{creationText("工作目录", "normal"), selectDirectory}
+	if len(options) > 0 {
+		els = append(els, creationDirectoryPaths(options, v.Paths))
+	}
 	query := v.SearchQuery
 	if utf8.RuneCountInString(query) > creationInputMaxRunes {
 		query = ""
@@ -614,7 +649,7 @@ func creationWithAttachmentLimit(v CreationView, previewLimit int) string {
 			path = v.DirectoryPage.Path
 		}
 		if path != "" {
-			els = append(els, creationText(creationLiteral(interactionLine(path, 200)), "notation"))
+			els = append(els, creationText(creationLiteral(interactionLine(v.Paths.Path(path), 200)), "notation"))
 		}
 		els = append(els, creationText("任务和原目录已保留，处理完成后此卡会自动更新。", "notation"))
 		return render(els)
@@ -684,7 +719,7 @@ func creationWithAttachmentLimit(v CreationView, previewLimit int) string {
 				els = append(els, creationText("[打开任务位置]("+link+")", "normal"))
 			}
 		}
-		details := "目录：" + v.Directory
+		details := "目录：" + v.Paths.Path(v.Directory)
 		if v.ThreadID != "" {
 			details += "\nCodex 线程：" + v.ThreadID
 		}
@@ -784,7 +819,7 @@ func creationDirectory(v CreationView) string {
 		seen[c.Path] = true
 		label := filepath.Base(c.Path)
 		if p.Path == "" {
-			label = c.Path
+			label = v.Paths.Path(c.Path)
 		}
 		if c.ReadOnly {
 			label += " · 只读"
@@ -847,16 +882,16 @@ func creationSearch(v CreationView) string {
 			}
 			button["name"] = fmt.Sprintf("creation_result_%d", i)
 			row := element{"tag": "column_set", "flex_mode": "none", "horizontal_spacing": "8px", "columns": []element{
-				{"tag": "column", "width": "weighted", "weight": 1, "elements": []element{creationText("**"+creationLiteral(label)+"**", "normal"), creationText(creationLiteral(c.Path), "notation")}},
+				{"tag": "column", "width": "weighted", "weight": 1, "elements": []element{creationText("**"+creationLiteral(label)+"**", "normal"), creationText(creationLiteral(v.Paths.Path(c.Path)), "notation")}},
 				{"tag": "column", "width": "auto", "vertical_align": "center", "elements": []element{button}},
 			}}
 			els = append(els, row)
 		}
 	} else {
-		options := creationSelectOptions(choices, true)
+		options := creationSelectOptions(choices, true, v.Paths)
 		if len(options) > 0 {
 			selectResult := element{"tag": "select_static", "name": "creation_search_choice", "type": "default", "width": "fill", "placeholder": element{"tag": "plain_text", "content": "选择要使用的目录"}, "options": options}
-			els = append(els, creationForm("creation_result_form", []element{selectResult, creationRow(creationPrimary(creationButton(v, "使用所选目录", "creation_search_pick", nil, true)))}))
+			els = append(els, creationForm("creation_result_form", []element{selectResult, creationDirectoryPaths(options, v.Paths), creationRow(creationPrimary(creationButton(v, "使用所选目录", "creation_search_pick", nil, true)))}))
 		}
 		for _, c := range choices {
 			if c.ReadOnly {

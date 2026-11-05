@@ -677,7 +677,24 @@ func (s *Store) MaterializeCreation(ctx context.Context, draft string) (Binding,
 		return Binding{}, Receipt{}, err
 	}
 	members, _ := json.Marshal(i.Members)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO create_intents(intent_id,host_id,thread_id,owner_id,name,members_json,state,chat_id,created_at,description) VALUES(?,?,?,?,?,?,'confirmed',?,?,?) ON CONFLICT(host_id,thread_id) DO NOTHING`, i.ID, i.HostID, i.NativeThreadID, i.OwnerID, i.Name, string(members), chat, i.CreatedAtMS/1000, "工作目录："+i.ExecutionDirectory()); err != nil {
+	description := "工作目录：" + i.ExecutionDirectory()
+	if i.FollowMode == "group" {
+		var params string
+		err := tx.QueryRowContext(ctx, `SELECT params_json FROM creation_attempts WHERE draft_id=? AND step='group' AND state='confirmed' ORDER BY rowid DESC LIMIT 1`, draft).Scan(&params)
+		if err == nil {
+			var frozen struct{ Description string }
+			if json.Unmarshal([]byte(params), &frozen) != nil {
+				return Binding{}, Receipt{}, ErrConflict
+			}
+			// Older snapshots may omit the description; keep their cwd fallback.
+			if frozen.Description != "" {
+				description = frozen.Description
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return Binding{}, Receipt{}, err
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO create_intents(intent_id,host_id,thread_id,owner_id,name,members_json,state,chat_id,created_at,description) VALUES(?,?,?,?,?,?,'confirmed',?,?,?) ON CONFLICT(host_id,thread_id) DO NOTHING`, i.ID, i.HostID, i.NativeThreadID, i.OwnerID, i.Name, string(members), chat, i.CreatedAtMS/1000, description); err != nil {
 		return Binding{}, Receipt{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO bindings(host_id,thread_id,intent_id,chat_id,follow_mode,root_message_id,platform_thread_id) VALUES(?,?,?,?,?,?,?) ON CONFLICT(host_id,thread_id) DO NOTHING`, i.HostID, i.NativeThreadID, i.ID, chat, i.FollowMode, i.RootMessageID, i.PlatformThreadID); err != nil {

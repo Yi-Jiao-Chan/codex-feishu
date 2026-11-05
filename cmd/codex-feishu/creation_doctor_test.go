@@ -25,6 +25,7 @@ func TestDoctorReportsCreationCountsWithoutReadinessOrIDs(t *testing.T) {
 	cfg.Creation.WorkgroupChatIDs = []string{"oc_workgroup_secret"}
 	cfg.Creation.AllowedRoots = []string{cfg.Discovery.AllowedRoots[0]}
 	cfg.Creation.CommonDirectories = []string{cfg.Discovery.AllowedRoots[0]}
+	cfg.Creation.DirectorySearchDepth = 6
 	b, err := toml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +53,7 @@ func TestDoctorReportsCreationCountsWithoutReadinessOrIDs(t *testing.T) {
 		"workgroup_chat_ids_count": 1,
 		"allowed_roots_count":      1,
 		"common_directories_count": 1,
+		"directory_search_depth":   6,
 		"ui_verified":              false,
 	} {
 		if creation[key] != want {

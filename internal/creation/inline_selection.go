@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -15,9 +16,11 @@ import (
 // search separately, so deleting an attachment preserves an unsubmitted edit
 // without silently changing either the result set or its search root.
 type inlineDirectoryPosition struct {
-	Query string `json:"query"`
-	Root  string `json:"root,omitempty"`
-	After string `json:"after,omitempty"`
+	Query string   `json:"query"`
+	Root  string   `json:"root,omitempty"` // Retained for frozen single-root cursors.
+	Roots []string `json:"roots,omitempty"`
+	Depth int      `json:"depth,omitempty"`
+	After string   `json:"after,omitempty"`
 }
 
 func parseInlineDirectoryPosition(raw string) (inlineDirectoryPosition, error) {
@@ -27,6 +30,14 @@ func parseInlineDirectoryPosition(raw string) (inlineDirectoryPosition, error) {
 	}
 	if json.Unmarshal([]byte(raw), &p) != nil || validateDirectoryFilter(p.Query) != nil || !validDirectoryCursor(p.After) || p.Root != "" && !validDirectoryCursor(p.Root) {
 		return inlineDirectoryPosition{}, ErrDirectoryCursor
+	}
+	if len(p.Roots) > 2 || p.Depth < 0 {
+		return inlineDirectoryPosition{}, ErrDirectoryCursor
+	}
+	for _, root := range p.Roots {
+		if root == "" || !validDirectoryCursor(root) {
+			return inlineDirectoryPosition{}, ErrDirectoryCursor
+		}
 	}
 	return p, nil
 }
@@ -63,21 +74,40 @@ func attachmentIndex(raw any, count int) (int, bool) {
 	return int(value), true
 }
 
-func (m *Manager) inlineSearchRoot(ctx context.Context, selected string) (string, error) {
+func (m *Manager) inlineSearchRoots(ctx context.Context, selected string) ([]string, error) {
 	dirs := m.directories(nil)
+	roots := []string{}
+	// HOME supplies the cross-project route, but never bypasses allowed_roots.
+	// Browse resolves its logical alias before the roots are frozen for paging.
+	if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) && filepath.Dir(filepath.Clean(home)) != filepath.Clean(home) {
+		if choice, err := dirs.Browse(ctx, home); err == nil {
+			roots = append(roots, choice.Path)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if selected != "" {
 		choice, err := dirs.Browse(ctx, selected)
-		return choice.Path, err
+		if err != nil {
+			return nil, err
+		}
+		if len(roots) == 0 || roots[0] != choice.Path {
+			roots = append(roots, choice.Path)
+		}
+	}
+	if len(roots) > 0 {
+		return roots, nil
 	}
 	for _, root := range dirs.Roots {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return nil, err
 		}
 		if choice, err := dirs.Browse(ctx, root); err == nil {
-			return choice.Path, nil
+			return []string{choice.Path}, nil
 		}
 	}
-	return "", ErrDirectoryUnavailable
+	return nil, ErrDirectoryUnavailable
 }
 
 func (m *Manager) positionInlineDirectory(ctx context.Context, d *store.CreationDraft, kind string, value map[string]any) error {
@@ -93,12 +123,20 @@ func (m *Manager) positionInlineDirectory(ctx context.Context, d *store.Creation
 	position := inlineDirectoryPosition{Query: query}
 	if kind == "creation_find_next" && query == previous.Query {
 		position.Root, position.After = previous.Root, textValue(value, "after")
+		position.Roots = previous.Roots
+		position.Depth = previous.Depth
 	}
 	if !validDirectoryCursor(position.After) {
 		return ErrDirectoryCursor
 	}
-	if !filepath.IsAbs(query) && position.Root == "" {
-		position.Root, err = m.inlineSearchRoot(ctx, d.Directory)
+	if !filepath.IsAbs(query) && position.Root == "" && len(position.Roots) == 0 {
+		position.Roots, err = m.inlineSearchRoots(ctx, d.Directory)
+		if len(position.Roots) > 0 {
+			position.Root = position.Roots[len(position.Roots)-1]
+		}
+	}
+	if !filepath.IsAbs(query) && position.Depth == 0 {
+		position.Depth = m.Config.CreationDirectorySearchDepth()
 	}
 	// Persist the query even when its path cannot be read. The subsequent
 	// rendering reports the failure while retaining the last selected cwd.
@@ -157,8 +195,15 @@ func inlineDirectoryPage(ctx context.Context, dirs DirectoryService, d store.Cre
 		}
 		return page, ctx.Err()
 	}
-	if position.Root == "" || strings.TrimSpace(position.Query) == "" {
+	roots := position.Roots
+	if len(roots) == 0 && position.Root != "" {
+		roots = []string{position.Root}
+	}
+	if len(roots) == 0 || strings.TrimSpace(position.Query) == "" {
 		return DirectoryPage{}, ErrDirectoryUnavailable
 	}
-	return dirs.SearchRecursive(ctx, position.Root, position.Query, position.After, 100)
+	if position.Depth > 0 {
+		dirs.SearchDepth = position.Depth
+	}
+	return dirs.SearchRecursiveRoots(ctx, roots, position.Query, position.After, 100)
 }

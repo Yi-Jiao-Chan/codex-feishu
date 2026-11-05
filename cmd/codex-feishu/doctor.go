@@ -121,6 +121,7 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 			"workgroup_chat_ids_count": len(cfg.Creation.WorkgroupChatIDs),
 			"allowed_roots_count":      len(cfg.Creation.AllowedRoots),
 			"common_directories_count": len(cfg.Creation.CommonDirectories),
+			"directory_search_depth":   cfg.CreationDirectorySearchDepth(),
 			"ui_verified":              false,
 		}
 		attachments := cfg.AttachmentLimits()

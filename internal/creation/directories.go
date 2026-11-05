@@ -8,28 +8,38 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/config"
 	"codex-feishu/internal/rules"
 	"golang.org/x/sys/unix"
 )
 
 var (
-	ErrDirectoryUnavailable  = errors.New("creation directory is unavailable or not readable, writable and searchable")
-	ErrDirectoryOutsideRoots = errors.New("creation directory is outside allowed roots")
-	ErrDirectoryProject      = errors.New("creation project does not match the selected directory")
-	ErrDirectoryLimit        = errors.New("creation directory listing exceeds the candidate limit; enter an absolute path")
-	ErrDirectoryCursor       = errors.New("invalid creation directory cursor")
+	ErrDirectoryUnavailable   = errors.New("creation directory is unavailable or not readable, writable and searchable")
+	ErrDirectoryOutsideRoots  = errors.New("creation directory is outside allowed roots")
+	ErrDirectoryProject       = errors.New("creation project does not match the selected directory")
+	ErrDirectoryLimit         = errors.New("creation directory listing exceeds the candidate limit; enter an absolute path")
+	ErrDirectoryCursor        = errors.New("invalid creation directory cursor")
+	ErrDirectorySearchPending = errors.New("creation directory search is pending")
 )
 
-const maxDirectoryCandidates = 4096
+const (
+	maxDirectoryCandidates      = 4096
+	defaultDirectorySearchDepth = config.DefaultCreationDirectorySearchDepth
+	directorySearchTimeout      = 500 * time.Millisecond
+	directorySearchWorkers      = 16
+)
 
 type DirectoryService struct {
 	Roots, Common []string
 	Recent        []string
 	Projects      func(context.Context) ([]codexclient.Project, error)
+	SearchDepth   int
+	searchCache   *directorySearchCache
 }
 
 type DirectoryChoice struct {
@@ -305,96 +315,252 @@ func (s DirectoryService) Search(ctx context.Context, query, after string, limit
 	return page, ctx.Err()
 }
 
-// SearchRecursive matches visible directory names at root and up to four child
-// levels. Physical paths must remain inside both root and the configured scope.
-// The whole scan shares one entry budget, including files, and a three-second
-// deadline. Errors never return a partial result set or an incomplete total.
+// recursiveSearchDescends excludes metadata and generated dependency trees
+// from name-search traversal. Their directory names can still match, and an
+// explicitly selected root is always searched regardless of its basename.
+func recursiveSearchDescends(path string) bool {
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, ".") {
+		return false
+	}
+	switch name {
+	case "node_modules", "vendor", "__pycache__":
+		return false
+	case "mod":
+		return filepath.Base(filepath.Dir(path)) != "pkg"
+	}
+	return true
+}
+
+// SearchRecursive matches directory names at root and up to SearchDepth levels,
+// without descending into metadata or generated dependency trees. Physical
+// paths must remain inside both root and the configured scope. The whole scan
+// has a 500-millisecond synchronous deadline; cached complete results can be
+// refreshed in the background. Filesystem entries are streamed in small batches.
+// Errors never return a partial result set or an incomplete total.
 func (s DirectoryService) SearchRecursive(ctx context.Context, root, query, after string, limit int) (DirectoryPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	return s.SearchRecursiveRoots(ctx, []string{root}, query, after, limit)
+}
+
+// SearchRecursiveRoots searches each distinct canonical root to its own depth
+// limit. All routes share one deadline; verified matches are
+// deduplicated and paginated only after every route completes.
+func (s DirectoryService) SearchRecursiveRoots(ctx context.Context, roots []string, query, after string, limit int) (DirectoryPage, error) {
+	callerCtx := ctx
+	ctx, cancel := context.WithTimeout(ctx, directorySearchTimeout)
 	defer cancel()
-	page := DirectoryPage{Choices: []DirectoryChoice{}}
-	if err := ctx.Err(); err != nil {
-		return page, err
-	}
 	if !validDirectoryCursor(after) {
-		return page, ErrDirectoryCursor
+		return DirectoryPage{}, ErrDirectoryCursor
 	}
-	if strings.IndexFunc(query, unicode.IsControl) >= 0 {
-		return page, ErrDirectoryUnavailable
+	if s.searchCache != nil {
+		return s.searchCache.search(ctx, callerCtx, s, roots, query, after, limit)
+	}
+	return s.searchRecursiveRoots(ctx, roots, query, after, limit)
+}
+
+func (s DirectoryService) searchRecursiveRoots(ctx context.Context, roots []string, query, after string, limit int) (DirectoryPage, error) {
+	if !validDirectoryCursor(after) {
+		return DirectoryPage{}, ErrDirectoryCursor
+	}
+	snapshot, err := s.collectRecursiveDirectories(ctx, roots, query, directorySearchWorkers)
+	if err != nil {
+		return DirectoryPage{}, err
+	}
+	return snapshot.page(ctx, after, limit)
+}
+
+func (s DirectoryService) collectRecursiveDirectories(ctx context.Context, roots []string, query string, workers int) (directorySearchSnapshot, error) {
+	var snapshot directorySearchSnapshot
+	if err := ctx.Err(); err != nil {
+		return snapshot, err
+	}
+	if len(roots) == 0 || s.SearchDepth < 0 || strings.IndexFunc(query, unicode.IsControl) >= 0 {
+		return snapshot, ErrDirectoryUnavailable
 	}
 	needle := strings.ToLower(strings.TrimSpace(query))
-	base, err := s.Browse(ctx, root)
-	if err != nil {
-		return page, err
-	}
-	page.Path, page.ReadOnly = base.Path, base.ReadOnly
-	if parent, err := s.Browse(ctx, filepath.Dir(base.Path)); err == nil && parent.Path != base.Path {
-		page.Parent = parent.Path
-	}
 	unique := map[string]DirectoryChoice{}
-	if strings.Contains(strings.ToLower(filepath.Base(filepath.Clean(root))), needle) {
-		unique[base.Path] = base
-	}
-	type directoryDepth struct {
-		path  string
-		depth int
-	}
-	queue := []directoryDepth{{path: base.Path}}
-	seen := map[string]bool{base.Path: true}
-	remaining := maxDirectoryCandidates
-	// Breadth first discovery visits every physical directory at its shallowest
-	// visible depth, even when a symlink provides a shorter route to it.
-	for next := 0; next < len(queue); next++ {
-		if err := ctx.Err(); err != nil {
-			return page, err
+	seenRoots := map[string]bool{}
+	for _, root := range roots {
+		base, err := s.Browse(ctx, root)
+		if err != nil {
+			return directorySearchSnapshot{}, err
 		}
-		current := queue[next]
-		if current.depth == 4 {
+		if snapshot.Path == "" {
+			snapshot.Path, snapshot.ReadOnly = base.Path, base.ReadOnly
+			if parent, err := s.Browse(ctx, filepath.Dir(base.Path)); err == nil && parent.Path != base.Path {
+				snapshot.Parent = parent.Path
+			}
+		}
+		// Root aliases retain their visible name for matching, but never cause
+		// the same canonical root to be scanned twice.
+		if strings.Contains(strings.ToLower(filepath.Base(filepath.Clean(root))), needle) {
+			unique[base.Path] = base
+		}
+		if seenRoots[base.Path] {
 			continue
 		}
-		f, err := os.Open(current.path)
-		if err != nil {
-			return page, ErrDirectoryUnavailable
+		seenRoots[base.Path] = true
+		if err := s.searchRecursiveRootWithWorkers(ctx, base.Path, needle, unique, workers); err != nil {
+			return directorySearchSnapshot{}, err
 		}
-		entries, readErr := f.ReadDir(remaining + 1)
-		f.Close()
+	}
+	if err := ctx.Err(); err != nil {
+		return directorySearchSnapshot{}, err
+	}
+	paths := make([]string, 0, len(unique))
+	for path := range unique {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		snapshot.Choices = append(snapshot.Choices, unique[path])
+	}
+	if err := ctx.Err(); err != nil {
+		return directorySearchSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+type recursiveDirectoryChild struct {
+	choice           DirectoryChoice
+	matches, descend bool
+}
+
+func (s DirectoryService) readRecursiveDirectory(ctx context.Context, root, path, needle string) ([]recursiveDirectoryChild, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, ErrDirectoryUnavailable
+	}
+	defer f.Close()
+	var children []recursiveDirectoryChild
+	for {
 		if err := ctx.Err(); err != nil {
-			return page, err
+			return nil, err
 		}
+		entries, readErr := f.ReadDir(128)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return page, ErrDirectoryUnavailable
+			return nil, ErrDirectoryUnavailable
 		}
-		if len(entries) > remaining {
-			return page, ErrDirectoryLimit
-		}
-		remaining -= len(entries)
 		for _, entry := range entries {
 			if err := ctx.Err(); err != nil {
-				return page, err
+				return nil, err
 			}
 			if !entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
 				continue
 			}
-			choice, err := s.Browse(ctx, filepath.Join(current.path, entry.Name()))
-			if err != nil || !rules.Inside(base.Path, choice.Path) {
+			childPath := filepath.Join(path, entry.Name())
+			matches := strings.Contains(strings.ToLower(entry.Name()), needle)
+			descend := recursiveSearchDescends(childPath)
+			if !matches && !descend {
 				continue
 			}
-			// Match before deduplication: an alias can have a different visible
-			// name while still identifying an already discovered physical cwd.
-			if strings.Contains(strings.ToLower(entry.Name()), needle) {
-				unique[choice.Path] = choice
+			choice, err := s.Browse(ctx, childPath)
+			if err != nil || !rules.Inside(root, choice.Path) {
+				continue
 			}
-			if !seen[choice.Path] {
-				seen[choice.Path] = true
-				queue = append(queue, directoryDepth{path: choice.Path, depth: current.depth + 1})
+			// A visible symlink must not reopen a pruned physical tree,
+			// including an alias to a descendant inside that tree.
+			for path := choice.Path; descend && path != root; path = filepath.Dir(path) {
+				descend = recursiveSearchDescends(path)
 			}
+			children = append(children, recursiveDirectoryChild{choice: choice, matches: matches, descend: descend})
+		}
+		if errors.Is(readErr, io.EOF) {
+			return children, nil
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return page, err
+}
+
+func (s DirectoryService) searchRecursiveRoot(ctx context.Context, root, needle string, unique map[string]DirectoryChoice) error {
+	return s.searchRecursiveRootWithWorkers(ctx, root, needle, unique, directorySearchWorkers)
+}
+
+func (s DirectoryService) searchRecursiveRootWithWorkers(ctx context.Context, root, needle string, unique map[string]DirectoryChoice, workerCount int) (err error) {
+	scanCtx, cancel := context.WithCancel(ctx)
+	jobs := make(chan string)
+	results := make(chan []recursiveDirectoryChild)
+	var workers sync.WaitGroup
+	var firstError sync.Once
+	var scanErr error
+	for i := 0; i < workerCount; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-scanCtx.Done():
+					return
+				case path := <-jobs:
+					children, err := s.readRecursiveDirectory(scanCtx, root, path, needle)
+					if err != nil {
+						firstError.Do(func() {
+							scanErr = err
+							cancel()
+						})
+						return
+					}
+					select {
+					case results <- children:
+					case <-scanCtx.Done():
+						return
+					}
+				}
+			}
+		}()
 	}
-	page.Choices, page.Next, page.Total, page.Offset = directoryChoicesPage(unique, after, limit)
-	return page, nil
+	defer func() {
+		cancel()
+		workers.Wait()
+		if scanErr != nil {
+			err = scanErr
+		}
+	}()
+	frontier := []string{root}
+	seen := map[string]bool{root: true}
+	depthLimit := s.SearchDepth
+	if depthLimit == 0 {
+		depthLimit = defaultDirectorySearchDepth
+	}
+	// Each layer finishes before the next is submitted, so aliases always
+	// discover physical directories at their shallowest visible depth.
+	for depth := 0; depth < depthLimit && len(frontier) > 0; depth++ {
+		var next []string
+		submitted, completed := 0, 0
+		for completed < len(frontier) {
+			var submit chan string
+			var path string
+			if submitted < len(frontier) {
+				submit, path = jobs, frontier[submitted]
+			}
+			select {
+			case <-scanCtx.Done():
+				return scanCtx.Err()
+			case submit <- path:
+				submitted++
+			case children := <-results:
+				completed++
+				for _, child := range children {
+					if err := scanCtx.Err(); err != nil {
+						return err
+					}
+					// Match aliases before canonical deduplication; their visible
+					// names can differ while identifying the same execution cwd.
+					if child.matches {
+						unique[child.choice.Path] = child.choice
+					}
+					if child.descend && !seen[child.choice.Path] {
+						seen[child.choice.Path] = true
+						next = append(next, child.choice.Path)
+					}
+				}
+			}
+		}
+		frontier = next
+	}
+	return ctx.Err()
 }
 
 func directoryChildren(ctx context.Context, path string) ([]string, error) {

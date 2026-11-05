@@ -8,6 +8,7 @@
 
 | 文档 | 日期 / 版本 |
 | --- | --- |
+| [飞书目录搜索与 home 路径缩写部署](home-path-search-deployment-2026-11-03.md) | 2026-11-03 |
 | [飞书失败卡的手动重试](feishu-manual-retry-2026-10-27.md) | 2026-10-27 |
 | [最终回复投递纠正与失败卡](final-delivery-recovery-2026-10-26.md) | 2026-10-26 |
 | [原生 CoT 短标题与工具详情](cot-tool-details-2026-10-26.md) | 2026-10-26 |

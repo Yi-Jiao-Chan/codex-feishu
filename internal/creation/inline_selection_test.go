@@ -98,6 +98,7 @@ func TestInlineCreationDefaultsToWorktreeAndCanUncheck(t *testing.T) {
 
 func TestInlineSearchReplacesRecentChoicesAndRequiresExplicitSelection(t *testing.T) {
 	h := newManagerHarness(t)
+	h.m.Config.Creation.DirectorySearchDepth = 4
 	fourth := filepath.Join(h.root, "a", "b", "c", "needle")
 	fifth := filepath.Join(h.root, "a", "b", "c", "d", "needle")
 	for _, path := range []string{fourth, fifth} {
@@ -174,6 +175,34 @@ func TestInlineSearchFailurePreservesEditsAndDoesNotCreate(t *testing.T) {
 				t.Fatal("empty search accidentally created a task")
 			}
 		})
+	}
+}
+
+func TestInlineSearchFindsProjectBesideFileHeavyTree(t *testing.T) {
+	h := newManagerHarness(t)
+	want := directory(t, h.root, "sdlc-flow")
+	files := directory(t, h.root, "source-files")
+	for i := 0; i <= maxDirectoryCandidates; i++ {
+		if err := os.WriteFile(filepath.Join(files, fmt.Sprintf("source-%04d", i)), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := h.receive("inline-file-heavy-search", "task")
+	if err := h.action(d, "creation_find", map[string]any{"creation_query": "sdlc-flow", "creation_use_worktree": false}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick()
+	d = h.draft(d.SourceMessageID)
+	if got := inlineDirectoryValues(t, h, d); !reflect.DeepEqual(got, []string{want}) || d.ErrorCode != "" || d.Directory != h.root {
+		t.Fatal("unrelated source files emptied the project selector or changed its selection", got, d.ErrorCode)
+	}
+	h.g.expectedDirectory = want
+	if err := h.action(d, "creation_submit", map[string]any{"creation_directory": want, "creation_use_worktree": false}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick()
+	if len(h.n.starts) != 1 || h.n.starts[0].CWD != want {
+		t.Fatal("selected canonical project path did not reach creation")
 	}
 }
 

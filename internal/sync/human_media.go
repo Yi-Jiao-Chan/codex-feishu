@@ -21,6 +21,7 @@ import (
 
 	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/displaypath"
 	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/store"
 )
@@ -131,8 +132,9 @@ func (m *HumanMedia) Resolve(ctx context.Context, thread string, refs []codexcli
 
 func attachmentPlaceholders(refs []codexclient.AttachmentReference) []cards.AttachmentView {
 	views := make([]cards.AttachmentView, len(refs))
+	paths := displaypath.UserHome()
 	for n, ref := range refs {
-		views[n] = cards.AttachmentView{Kind: ref.Kind, Name: ref.Name, Path: ref.Path}
+		views[n] = cards.AttachmentView{Kind: ref.Kind, Name: ref.Name, Path: ref.Path, Paths: paths}
 	}
 	return views
 }

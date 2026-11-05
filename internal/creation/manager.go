@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -16,6 +17,7 @@ import (
 	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
+	"codex-feishu/internal/displaypath"
 	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/store"
 	"codex-feishu/internal/submissions"
@@ -60,20 +62,21 @@ type actionPayload struct {
 // Manager has one UI writer and one remote-creation worker. Ingress and card
 // callbacks only commit local state; each lane journals before remote writes.
 type Manager struct {
-	Store            *store.Store
-	Config           config.Config
-	Gateway          Gateway
-	Native           func() Native
-	Activate         func(string)
-	Now              func() time.Time
-	Notice           func(string)
-	mu               sync.Mutex
-	uiMu             sync.Mutex
-	wakeOnce         sync.Once
-	uiWake, workWake chan struct{}
-	workgroupNames   map[string]string // UI-lane display cache, never authorization.
-	controllers      map[string]*submissions.Controller
-	controllerNative Native
+	Store                *store.Store
+	Config               config.Config
+	Gateway              Gateway
+	Native               func() Native
+	Activate             func(string)
+	Now                  func() time.Time
+	Notice               func(string)
+	mu                   sync.Mutex
+	uiMu                 sync.Mutex
+	wakeOnce             sync.Once
+	uiWake, workWake     chan struct{}
+	workgroupNames       map[string]string // UI-lane display cache, never authorization.
+	controllers          map[string]*submissions.Controller
+	controllerNative     Native
+	directorySearchCache atomic.Pointer[directorySearchCache]
 }
 
 func (m *Manager) now() time.Time {
@@ -96,7 +99,7 @@ func contains(ids []string, id string) bool {
 	return false
 }
 func (m *Manager) directories(n Native) DirectoryService {
-	s := DirectoryService{Roots: m.Config.Creation.AllowedRoots, Common: m.Config.Creation.CommonDirectories}
+	s := DirectoryService{Roots: m.Config.Creation.AllowedRoots, Common: m.Config.Creation.CommonDirectories, SearchDepth: m.Config.CreationDirectorySearchDepth(), searchCache: m.directorySearchCache.Load()}
 	if n != nil {
 		s.Projects = n.ListProjects
 	}
@@ -245,6 +248,12 @@ func (m *Manager) runLane(ctx context.Context, wake <-chan struct{}, timeout tim
 }
 
 func (m *Manager) Run(ctx context.Context) {
+	searches := newDirectorySearchCache(ctx)
+	m.directorySearchCache.Store(searches)
+	defer func() {
+		m.directorySearchCache.CompareAndSwap(searches, nil)
+		searches.Close()
+	}()
 	m.initWake()
 	m.signalUI()
 	m.signalWork()
@@ -401,6 +410,9 @@ func actionError(err error) string {
 	}
 	if errors.Is(err, ErrWorktreeStorage) || errors.Is(err, ErrWorktreeIdentity) {
 		return "worktree-storage"
+	}
+	if errors.Is(err, ErrDirectorySearchPending) {
+		return "directory-searching"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "directory-read"
@@ -777,7 +789,18 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 	}
 	chat := i.ChatID
 	if i.FollowMode == "group" && chat == "" {
-		p := groupRequest{Name: i.Name, Owner: i.OwnerID, Members: i.Members, UUID: i.ID, Description: "工作目录：" + cwd}
+		p := groupRequest{Name: i.Name, Owner: i.OwnerID, Members: i.Members, UUID: i.ID, Description: "工作目录：" + displaypath.Shorten(cwd)}
+		// Reuse the frozen display text across upgrades and HOME changes. The
+		// remaining request fields still pass PrepareCreationAttempt's equality check.
+		if previous, err := m.Store.CreationAttempt(ctx, d.ID, "group"); err == nil {
+			var frozen groupRequest
+			if json.Unmarshal([]byte(previous.Params), &frozen) != nil {
+				return store.ErrConflict
+			}
+			p.Description = frozen.Description
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		raw, _ := json.Marshal(p)
 		a, err := m.Store.PrepareCreationAttempt(ctx, d.ID, "group", string(raw), m.now().UnixMilli())
 		if err != nil {
@@ -810,7 +833,7 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 		return m.Store.SetCreationError(ctx, d.ID, "target-membership")
 	}
 	if i.RootMessageID == "" {
-		root, err := m.ensureCard(ctx, d.ID, "root", cardRequest{Operation: "send", ChatID: chat}, cards.CreationRoot(i.Body, cwd, "来自飞书创建"))
+		root, err := m.ensureCard(ctx, d.ID, "root", cardRequest{Operation: "send", ChatID: chat}, cards.CreationRoot(i.Body, displaypath.Shorten(cwd), "来自飞书创建"))
 		if err != nil || root == "" {
 			return err
 		}
@@ -1176,11 +1199,7 @@ func entryRequest(d store.CreationDraft) cardRequest {
 }
 
 func busyFallback(host, path, status string) string {
-	preview := []rune(path)
-	if len(preview) > 200 {
-		path = string(preview[:199]) + "…"
-	}
-	return cards.Creation(cards.CreationView{Busy: status, Host: host, Directory: path})
+	return cards.Creation(cards.CreationView{Busy: status, Host: host, Directory: path, Paths: displaypath.UserHome()})
 }
 
 // A busy card is a real journaled write, not a callback PATCH racing the final
@@ -1262,6 +1281,7 @@ func (m *Manager) entryCard(ctx context.Context, n Native, d store.CreationDraft
 		return nil
 	}
 	v := cards.CreationView{State: d.State, Error: creationErrorText(d.ErrorCode), Host: d.HostID, Body: d.Body, Directory: d.Directory, ProjectLabel: "独立目录", FollowMode: d.FollowMode, TargetChatID: d.TargetChatID, Token: d.Token, Revision: d.Revision, TopicsEnabled: m.Config.Creation.TopicsEnabled, WorkspaceMode: d.WorkspaceMode, BaseBranch: d.BaseBranch}
+	v.Paths = displaypath.UserHome()
 	for _, part := range d.Attachments {
 		if part.Kind == "image" {
 			v.Images++
@@ -1432,9 +1452,11 @@ func creationErrorText(code string) string {
 	case "feedback":
 		return "操作反馈未能更新，任务与原目录已保留，请重新操作。"
 	case "directory-limit":
-		return "此目录条目较多，请输入更具体的绝对路径。"
+		return "目录扫描量已达上限，请输入目标目录的完整绝对路径。"
 	case "directory-read":
 		return "目录读取较慢，任务与原目录已保留，请缩小范围或输入完整路径。"
+	case "directory-searching":
+		return "正在后台查找目录，请稍后再次点击“查找”；任务与原目录已保留。"
 	case "project":
 		return "目录的项目归属已变更，请重新选择目录。"
 	case "target-membership":

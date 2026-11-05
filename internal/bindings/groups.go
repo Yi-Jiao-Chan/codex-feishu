@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/displaypath"
 	"codex-feishu/internal/feishu"
 	"codex-feishu/internal/latency"
 	"codex-feishu/internal/store"
@@ -165,7 +166,7 @@ func (m *Manager) Ensure(ctx context.Context, thread, name string) (binding stor
 	if !filepath.IsAbs(attached.CWD) {
 		return store.Binding{}, store.ErrIneligible
 	}
-	description, err := m.Store.FreezeGroupDescription(ctx, i.ID, "工作目录："+attached.CWD)
+	description, err := m.Store.FreezeGroupDescription(ctx, i.ID, "工作目录："+displaypath.Shorten(attached.CWD))
 	if err != nil {
 		return store.Binding{}, err
 	}

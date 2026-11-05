@@ -16,6 +16,7 @@ import (
 
 	"codex-feishu/internal/cards"
 	"codex-feishu/internal/codexclient"
+	"codex-feishu/internal/displaypath"
 	"codex-feishu/internal/store"
 )
 
@@ -311,6 +312,8 @@ func (c *Controller) view(ctx context.Context, row store.InteractionRequest, tur
 		return cards.InteractionView{}, store.ErrConflict
 	}
 	v := cards.InteractionView{Kind: r.Kind, State: row.State, Reason: r.Reason, CWD: r.CWD, Command: r.Command, Token: row.Token, Revision: row.Revision, Enabled: row.State == "pending" && row.AttemptID == "" && c.Native != nil && row.ConnectionID == c.Native.ConnectionID()}
+	paths := displaypath.UserHome()
+	v.CWD = paths.Path(r.CWD)
 	if r.Kind == "sensitive" {
 		v.Kind = "question"
 		v.Reason = "此请求包含私密问题，请在 Codex App 中回答。"
@@ -364,7 +367,7 @@ func (c *Controller) view(ctx context.Context, row store.InteractionRequest, tur
 	if r.Kind == "file" {
 		if r.GrantRoot != "" {
 			v.Enabled = false
-			v.Reason += "\n请求写入根目录：" + r.GrantRoot + "。该授权作用域尚未核验，请在 Codex App 中处理。"
+			v.Reason += "\n请求写入根目录：" + paths.Path(r.GrantRoot) + "。该授权作用域尚未核验，请在 Codex App 中处理。"
 		}
 		for _, t := range turns {
 			if t.ID != row.TurnID {
@@ -388,9 +391,9 @@ func (c *Controller) view(ctx context.Context, row store.InteractionRequest, tur
 						operation = "操作详情尚未核验，请回 Codex App 查看"
 					}
 					if change.MovePath != nil {
-						operation += "\n移动到：" + *change.MovePath
+						operation += "\n移动到：" + paths.Path(*change.MovePath)
 					}
-					v.Details = append(v.Details, cards.InteractionDetail{Title: f.Path, Content: "操作：" + operation + "\n\n" + f.Diff})
+					v.Details = append(v.Details, cards.InteractionDetail{Title: paths.Path(f.Path), Content: "操作：" + operation + "\n\n" + f.Diff})
 					if f.Diff == "" {
 						v.Enabled = false
 						v.Reason += "\n文件差异不完整，请在 Codex App 中查看。"
