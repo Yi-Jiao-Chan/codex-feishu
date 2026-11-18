@@ -70,7 +70,7 @@ func (c *Client) Retry(ctx context.Context, thread, attemptID string) (Turn, err
 		return Turn{}, err
 	}
 	if result.Turn.ID == "" {
-		return Turn{}, &UnknownError{Method: "turn/start"}
+		return Turn{}, c.incompatibleResponse("turn/start")
 	}
 	return result.Turn, nil
 }

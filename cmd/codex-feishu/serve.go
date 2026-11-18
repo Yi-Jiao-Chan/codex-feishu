@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"codex-feishu/compat"
 	"codex-feishu/internal/app"
 	"codex-feishu/internal/codexclient"
 	"codex-feishu/internal/config"
@@ -119,7 +118,7 @@ func runServe(ctx context.Context, args []string) int {
 		return 7
 	}
 	defer pairManager.Close()
-	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Pairing: pairManager, Connect: serveNativeConnect(cfg.Codex.CLIPath, codexclient.Discover, codexclient.Connect, cfg.Creation.Enabled)}
+	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: bot, Pairing: pairManager, Connect: serveNativeConnect(cfg.Codex.CLIPath, codexclient.Discover, codexclient.Connect)}
 	if preview != nil {
 		service.PreparePublic = func(ctx context.Context, _ string, body string) (string, error) {
 			return preview.preview.Rewrite(ctx, body)
@@ -265,7 +264,7 @@ func (n *discoveredNative) Retry(ctx context.Context, thread, attempt string) (c
 	return n.Client.Retry(ctx, thread, attempt)
 }
 
-func serveNativeConnect(cli string, discover func(context.Context, string) (codexclient.Daemon, error), connect func(context.Context, string) (*codexclient.Client, error), creationEnabled ...bool) func(context.Context) (app.ServiceNative, error) {
+func serveNativeConnect(cli string, discover func(context.Context, string) (codexclient.Daemon, error), connect func(context.Context, string) (*codexclient.Client, error)) func(context.Context) (app.ServiceNative, error) {
 	return func(ctx context.Context) (app.ServiceNative, error) {
 		inspectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -273,14 +272,11 @@ func serveNativeConnect(cli string, discover func(context.Context, string) (code
 		if err != nil {
 			return nil, errors.New("existing daemon unavailable")
 		}
-		if !compat.VerifiedCodexVersion(daemon.AppServerVersion) {
-			return nil, errors.New("native version is not in the verified compatibility list")
-		}
-		if len(creationEnabled) > 0 && creationEnabled[0] && !compat.VerifiedCreationCodexVersion(daemon.AppServerVersion) {
-			return nil, errors.New("native creation protocol version is not verified")
-		}
 		client, err := connect(ctx, daemon.SocketPath)
 		if err != nil {
+			if codexclient.IsCompatibilityError(err) {
+				return nil, &app.NativeHandshakeIncompatible{Version: daemon.AppServerVersion}
+			}
 			return nil, err
 		}
 		return &discoveredNative{Client: client, serverVersion: daemon.AppServerVersion}, nil

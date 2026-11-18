@@ -72,6 +72,8 @@ type Service struct {
 	nativeConnected      atomic.Bool
 	running              atomic.Bool
 	startedAtMS          atomic.Int64
+	compatibilityMu      sync.Mutex
+	compatibilityNotices map[compatibilityNoticeKey]bool
 }
 
 func (s *Service) now() time.Time {
@@ -417,6 +419,10 @@ func (s *Service) nativeLoop(ctx context.Context) {
 	for ctx.Err() == nil {
 		native, err := s.Connect(ctx)
 		if err != nil {
+			var incompatible *NativeHandshakeIncompatible
+			if errors.As(err, &incompatible) {
+				s.stageCompatibilityNotice(ctx, incompatible.Version, "共享连接")
+			}
 			s.notice("codex.connection_pending")
 			if !offlineStaged {
 				s.disconnected(ctx)
@@ -424,6 +430,7 @@ func (s *Service) nativeLoop(ctx context.Context) {
 			}
 		} else {
 			offlineStaged = false
+			s.observeCompatibility(ctx, native)
 			runtime := s.generation(native)
 			runtime.initialThreads = append([]string(nil), carryover...)
 			s.mu.Lock()
@@ -432,6 +439,10 @@ func (s *Service) nativeLoop(ctx context.Context) {
 			s.nativeConnected.Store(true)
 			s.notice("codex.connected")
 			err = runtime.Run(ctx) // Run cancels and joins its actors before returning.
+			if reader, ok := native.(interface{ Err() error }); ok && codexclient.IsCompatibilityError(reader.Err()) {
+				version, _ := nativeVersion(native)
+				s.stageCompatibilityNotice(ctx, version, "共享连接")
+			}
 			carryover = runtime.carryoverThreads()
 			s.nativeConnected.Store(false)
 			s.mu.Lock()
@@ -651,7 +662,11 @@ func (s *Service) generation(native ServiceNative) *Runtime {
 	r.CanAttach = s.creationAttachGate
 	if workspace, ok := native.(workspaceRestoreNative); ok {
 		r.PrepareWorkspace = func(ctx context.Context, thread string) error {
-			return s.prepareWorkspace(ctx, workspace, thread)
+			err := s.prepareWorkspace(ctx, workspace, thread)
+			if errors.Is(err, creation.ErrWorktreeRestoreUnsupported) {
+				s.stageCompatibilityNotice(ctx, workspace.AppServerVersion(), "托管工作树恢复")
+			}
+			return err
 		}
 		r.RememberWorkspace = func(ctx context.Context, thread codexclient.Thread) error {
 			return s.rememberWorkspace(ctx, workspace, thread)
@@ -846,6 +861,7 @@ func (s *Service) commandLoop(ctx context.Context, commands *Commands) {
 			if !s.Gateway.Ready() {
 				continue
 			}
+			s.retryCompatibilityNotices(ctx)
 			for i := 0; i < 16 && ctx.Err() == nil; i++ {
 				callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 				wrote, err := commands.DispatchOne(callCtx, s.Gateway)

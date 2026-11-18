@@ -52,25 +52,25 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 			return nil, err
 		}
 		if r.Data == nil {
-			return nil, errors.New("invalid native project page")
+			return nil, c.incompatibleResponse("project/list")
 		}
 		projects = append(projects, (*r.Data)...)
 		if r.NextCursor == nil || *r.NextCursor == "" {
 			break
 		}
 		if seen[*r.NextCursor] {
-			return nil, errors.New("repeated pagination cursor")
+			return nil, c.incompatibleResponse("project/list")
 		}
 		seen[*r.NextCursor] = true
 		params.Cursor = *r.NextCursor
 	}
 	for _, project := range projects {
 		if project.ID == "" || project.Roots == nil || project.Metadata == nil {
-			return nil, errors.New("invalid native project metadata")
+			return nil, c.incompatibleResponse("project/list")
 		}
 		for _, root := range project.Roots {
 			if !creationAbsolutePath(root.Path) {
-				return nil, errors.New("invalid native project root")
+				return nil, c.incompatibleResponse("project/list")
 			}
 		}
 	}
@@ -160,7 +160,11 @@ func (c *Client) StartCreation(ctx context.Context, s CreationSpec) (CreationRes
 	if err := c.Call(ctx, "thread/start", json.RawMessage(params), &raw); err != nil {
 		return CreationResult{}, err
 	}
-	return checkedCreationResponse(raw, s, "thread/start", "", true)
+	result, err := checkedCreationResponse(raw, s, "thread/start", "", true)
+	if err != nil {
+		err = c.incompatibleResponse("thread/start")
+	}
+	return result, err
 }
 
 // ReadCreation verifies one exactly identified creation candidate on this

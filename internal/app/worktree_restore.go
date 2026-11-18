@@ -228,7 +228,7 @@ func (s *Service) prepareWorkspace(ctx context.Context, n workspaceRestoreNative
 	s.clearActionsReady(thread)
 	if !compat.VerifiedWorktreeCodexVersion(n.AppServerVersion()) {
 		s.workspaceRestoreFeedback(ctx, scope, grant.ReceiptID, "unsupported")
-		return creation.ErrWorktreeRestoreUnsupported
+		return creation.ErrWorktreeProtocol
 	}
 	identity, bridge, err := s.restoreWorkspaceIdentity(ctx, n, meta)
 	if err != nil {

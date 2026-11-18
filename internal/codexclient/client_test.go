@@ -153,6 +153,44 @@ func TestExplicitRejectionIsNotUnknown(t *testing.T) {
 		t.Fatalf("wrong rejection classification: %v", err)
 	}
 }
+
+func TestIncompatibleWriteAcknowledgementFreezesOnlyThatMethod(t *testing.T) {
+	var adds atomic.Int32
+	path := fixture(t, func(ctx context.Context, c *websocket.Conn, w wire) {
+		switch w.Method {
+		case "thread/queue/add":
+			adds.Add(1)
+			send(ctx, c, w.ID, map[string]any{})
+		case "thread/queue/list":
+			send(ctx, c, w.ID, map[string]any{"data": []any{}})
+		default:
+			t.Errorf("unexpected method %s", w.Method)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	c, err := Connect(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var method string
+	c.SetCompatibilityObserver(func(observed string) { method = observed })
+	_, err = c.Add(ctx, "fixture", "first", "first-id")
+	var unknown *UnknownError
+	if !errors.As(err, &unknown) || !IsCompatibilityError(err) || method != "thread/queue/add" {
+		t.Fatalf("first ambiguous acknowledgement lost its classification: %v", err)
+	}
+	_, err = c.Add(ctx, "fixture", "second", "second-id")
+	var rejected *RPCError
+	if !errors.As(err, &rejected) || rejected.Code != -32601 || errors.As(err, &unknown) || adds.Load() != 1 {
+		t.Fatalf("disabled method was written or classified as ambiguous: %v", err)
+	}
+	if _, err := c.QueueState(ctx, "fixture"); err != nil {
+		t.Fatalf("queue reading was disabled by an incompatible add: %v", err)
+	}
+}
+
 func TestQueuePaginationAndWireIdentifiers(t *testing.T) {
 	path := fixture(t, func(ctx context.Context, c *websocket.Conn, w wire) {
 		var p map[string]any
@@ -220,7 +258,7 @@ func TestIncompleteTurnItemsAreLoadedAcrossOpaquePages(t *testing.T) {
 					if p["itemsView"] != "full" {
 						t.Error("full view was not requested")
 					}
-					send(ctx, c, w.ID, map[string]any{"data": []map[string]any{{"id": "t", "itemsView": view, "items": []any{}}}, "nextCursor": nil})
+					send(ctx, c, w.ID, map[string]any{"data": []map[string]any{{"id": "t", "status": "completed", "itemsView": view, "items": []any{}}}, "nextCursor": nil})
 				case "thread/items/list":
 					if p["threadId"] != "thread" || p["turnId"] != "t" || p["sortDirection"] != "asc" {
 						t.Error("item history has incorrect scope")
@@ -251,7 +289,7 @@ func TestIncompleteTurnItemsAreLoadedAcrossOpaquePages(t *testing.T) {
 func TestItemHistoryCannotCrossTurnScope(t *testing.T) {
 	path := fixture(t, func(ctx context.Context, c *websocket.Conn, w wire) {
 		if w.Method == "thread/turns/list" {
-			send(ctx, c, w.ID, map[string]any{"data": []map[string]any{{"id": "t", "itemsView": "notLoaded"}}, "nextCursor": nil})
+			send(ctx, c, w.ID, map[string]any{"data": []map[string]any{{"id": "t", "status": "completed", "itemsView": "notLoaded"}}, "nextCursor": nil})
 		} else {
 			send(ctx, c, w.ID, map[string]any{"data": []map[string]any{{"turnId": "different", "item": map[string]string{"type": "userMessage", "id": "wrong"}}}, "nextCursor": nil})
 		}

@@ -51,6 +51,34 @@ type CommandReply struct {
 	CreatedAtMS, DispatchedAtMS                                      int64
 }
 
+const CompatibilityNoticeKind = "codex_compatibility_notice"
+
+// StageCompatibilityNotice uses a separate logical message key for each
+// deployment, owner, server version and feature. The normal delivery journal
+// keeps that key across restarts and across definite rate-limit rejections.
+func (s *Store) StageCompatibilityNotice(ctx context.Context, host, app, owner, version, feature, card string, nowMS int64) error {
+	if owner == "" || version == "" || feature == "" || card == "" || nowMS <= 0 {
+		return ErrConflict
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{host, app, owner, version, feature}, "\x00")))
+	key := "compatibility:" + hex.EncodeToString(sum[:])
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := directoryDeployment(ctx, tx, host, app); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO command_replies(app_id,message_id,host_id,chat_id,chat_type,user_id,thread_id,kind,attempt_id,card_json,state,created_at_ms)
+		VALUES(?,?,?,?,'p2p',?,'',?,?,?,'ready',?) ON CONFLICT(app_id,message_id) DO NOTHING`,
+		app, key, host, owner, owner, CompatibilityNoticeKind, ID(), card, nowMS)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 const commandColumns = `attempt_id,host_id,app_id,message_id,chat_id,chat_type,user_id,thread_id,kind,card_json,state,remote_id,created_at_ms,dispatched_at_ms`
 
 func scanCommandReply(row rowScanner) (r CommandReply, err error) {
@@ -461,6 +489,15 @@ func claimCommandReplyTx(ctx context.Context, tx *sql.Tx, r CommandReply, nowMS 
 	}
 	if err := commandWriteOne(ctx, tx, `INSERT INTO command_reply_attempts(attempt_id,host_id,app_id,message_id,chat_id,chat_type,user_id,thread_id,kind,card_json,created_at_ms,dispatched_at_ms,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'dispatching')`, r.ID, r.HostID, r.AppID, r.MessageID, r.ChatID, r.ChatType, r.UserID, r.ThreadID, r.Kind, r.Card, r.CreatedAtMS, nowMS); err != nil {
 		return CommandReply{}, false, err
+	}
+	// A private notice uses an open_id and has no original Feishu message or
+	// chat_id to use for reply routing and readback.
+	if r.Kind == CompatibilityNoticeKind {
+		if err := tx.Commit(); err != nil {
+			return CommandReply{}, false, err
+		}
+		r.DispatchedAtMS, r.State = nowMS, "dispatching"
+		return r, true, nil
 	}
 	if err := freezeFollowAttemptTx(ctx, tx, r.ID, r.HostID, r.ThreadID, r.ChatID, r.MessageID); err != nil {
 		return CommandReply{}, false, err

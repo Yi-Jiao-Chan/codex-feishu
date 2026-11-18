@@ -53,6 +53,12 @@ const MaxTaskRunes = 4000
 
 var ErrTaskTooLong = errors.New("creation task exceeds supported text length")
 var ErrAttachmentsDisabled = errors.New("creation attachments are disabled")
+var errCreationProtocol = errors.New("native thread creation is unavailable on this connection")
+
+func nativeCreationUnavailable(n Native) bool {
+	observed, ok := n.(interface{ MethodUnavailable(string) bool })
+	return ok && observed.MethodUnavailable("thread/start")
+}
 
 type actionPayload struct {
 	Form  map[string]any `json:"form"`
@@ -390,6 +396,9 @@ func (m *Manager) tickUI(ctx context.Context) error {
 }
 
 func actionError(err error) string {
+	if errors.Is(err, errCreationProtocol) {
+		return "creation-protocol"
+	}
 	if errors.Is(err, ErrWorktreeProtocol) {
 		return "worktree-protocol"
 	}
@@ -681,6 +690,9 @@ func (m *Manager) applyAction(ctx context.Context, n Native, a store.CreationAct
 		if n == nil {
 			return errors.New("creation requires native connection")
 		}
+		if nativeCreationUnavailable(n) {
+			return errCreationProtocol
+		}
 		if strings.TrimSpace(d.Body) == "" {
 			return errors.New("creation requires task text")
 		}
@@ -770,6 +782,11 @@ func (m *Manager) advance(ctx context.Context, n Native, d store.CreationDraft) 
 	}
 	if i.State == "rejected" || i.State == "confirmed" {
 		return nil
+	}
+	// Once a native attempt exists, its original identifiers must still be
+	// reconciled even if the next thread/start on this connection is blocked.
+	if i.RootMessageID == "" && nativeCreationUnavailable(n) {
+		return m.Store.SetCreationError(ctx, d.ID, actionError(errCreationProtocol))
 	}
 	if _, err = m.directories(n).Validate(ctx, i.Directory, i.ProjectID); err != nil {
 		return m.Store.SetCreationError(ctx, d.ID, actionError(err))
@@ -1421,8 +1438,10 @@ func (m *Manager) workgroupOptions(ctx context.Context, v *cards.CreationView) {
 
 func creationErrorText(code string) string {
 	switch code {
+	case "creation-protocol":
+		return "飞书桥已检测到新建会话协议不兼容，当前无法提交。"
 	case "worktree-protocol":
-		return "当前工作树尚不能安全接入 Codex 管理，请核验版本或已有归属后继续。"
+		return "当前工作树尚不能安全接入 Codex 管理。新建任务时可以取消勾选「工作树」，在所选目录执行。"
 	case "worktree-owner-unknown", "worktree-publish-unknown":
 		return "正在核验工作树归属与创建结果，请勿重复创建。"
 	case "worktree-scope":

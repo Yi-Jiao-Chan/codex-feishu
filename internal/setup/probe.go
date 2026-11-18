@@ -18,7 +18,8 @@ type Capabilities struct {
 	Released      bool     `json:"phase1_released"`
 	CodexProtocol string   `json:"codex_protocol"`
 	Capabilities  struct {
-		CandidateDeployment bool `json:"candidate_deployment"`
+		CandidateDeployment       bool `json:"candidate_deployment"`
+		CodexFeatureCompatibility bool `json:"codex_feature_compatibility,omitempty"`
 	} `json:"capabilities"`
 }
 

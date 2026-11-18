@@ -23,7 +23,7 @@ type worktreesDependencies struct {
 func defaultWorktreesDependencies() worktreesDependencies {
 	return worktreesDependencies{
 		connect: func(ctx context.Context, cfg config.Config) (creation.WorktreeAuditNative, func(), error) {
-			native, err := serveNativeConnect(cfg.Codex.CLIPath, codexclient.Discover, codexclient.Connect, true)(ctx)
+			native, err := serveNativeConnect(cfg.Codex.CLIPath, codexclient.Discover, codexclient.Connect)(ctx)
 			if err != nil {
 				return nil, nil, errors.New("existing native generation unavailable")
 			}

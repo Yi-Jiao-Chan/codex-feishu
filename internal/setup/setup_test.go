@@ -44,11 +44,13 @@ func fixture(t *testing.T) (Planner, Input, Paths) {
 func TestPlanUsesVerifiedCodexVersionGate(t *testing.T) {
 	for _, test := range []struct {
 		version  string
+		adaptive bool
 		accepted bool
 	}{
 		{version: "0.162.1", accepted: true},
 		{version: "0.162.2", accepted: false},
 		{version: "0.163.0", accepted: false},
+		{version: "0.169.1", adaptive: true, accepted: true},
 	} {
 		t.Run(test.version, func(t *testing.T) {
 			p, in, paths := fixture(t)
@@ -56,6 +58,7 @@ func TestPlanUsesVerifiedCodexVersionGate(t *testing.T) {
 			p.Probe = func(ctx context.Context, binary string) (Environment, error) {
 				env, err := probe(ctx, binary)
 				env.Daemon.AppServerVersion = test.version
+				env.Artifact.Capabilities.CodexFeatureCompatibility = test.adaptive
 				return env, err
 			}
 			_, err := p.Build(context.Background(), in, paths)
