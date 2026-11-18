@@ -23,6 +23,7 @@ type creationAddCall struct{ thread, body, client string }
 type managerNative struct {
 	h                      *managerHarness
 	appServerVersion       string
+	unavailableStart       bool
 	autoConsumeWorktree    bool
 	starts                 []codexclient.CreationSpec
 	adds                   []creationAddCall
@@ -53,6 +54,9 @@ func (n *managerNative) AppServerVersion() string {
 		return "0.162.1"
 	}
 	return n.appServerVersion
+}
+func (n *managerNative) MethodUnavailable(method string) bool {
+	return method == "thread/start" && n.unavailableStart
 }
 func (n *managerNative) StartCreation(ctx context.Context, s codexclient.CreationSpec) (codexclient.CreationResult, error) {
 	n.h.requireDispatch(ctx, "native")
@@ -492,6 +496,7 @@ func TestManagerCreationIngressAndLocalCallbacks(t *testing.T) {
 
 func TestManagerCreationOrderedFlowAndMirrorSuppression(t *testing.T) {
 	h := newManagerHarness(t)
+	h.n.appServerVersion = "0.169.1"
 	d := h.receive("source", "build the feature")
 	h.submitLocal(d)
 	if !reflect.DeepEqual(h.order, []string{"group", "root", "native", "add"}) {
@@ -525,6 +530,25 @@ func TestManagerCreationOrderedFlowAndMirrorSuppression(t *testing.T) {
 	h.tick()
 	if h.g.groups != 1 || len(h.n.starts) != 1 || len(h.n.adds) != 1 {
 		t.Fatal("restart recreated confirmed object")
+	}
+}
+
+func TestManagerCreationStopsBeforeWritesAfterObservedIncompatibility(t *testing.T) {
+	h := newManagerHarness(t)
+	h.n.appServerVersion = "0.169.1"
+	d := h.receive("source", "/new fixture task")
+	h.n.unavailableStart = true
+	h.submitLocal(d)
+	if got := h.draft("source"); got.State != "draft" || got.ErrorCode != "creation-protocol" {
+		t.Fatal("observed incompatibility did not explain the blocked submit")
+	}
+	if h.g.groups != 0 || h.g.roots != 0 || len(h.n.starts) != 0 || len(h.n.adds) != 0 {
+		t.Fatal("known incompatible creation attempted a remote mutation")
+	}
+	h.n.unavailableStart = false // A new native connection can try again.
+	h.submitLocal(h.draft("source"))
+	if h.draft("source").State != "created" || len(h.n.starts) != 1 || len(h.n.adds) != 1 {
+		t.Fatal("a compatible connection did not recover the original draft")
 	}
 }
 

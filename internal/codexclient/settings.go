@@ -77,7 +77,7 @@ func (c *Client) UpdateThreadSettings(ctx context.Context, threadID string, patc
 	}
 	var response map[string]json.RawMessage
 	if json.Unmarshal(raw, &response) != nil || response == nil {
-		return &UnknownError{"thread/settings/update", errors.New("invalid settings update response")}
+		return c.incompatibleResponse("thread/settings/update")
 	}
 	return nil
 }
@@ -130,9 +130,14 @@ func (c *Client) ReadThreadSettings(ctx context.Context, threadID string) (Threa
 		} `json:"thread"`
 	}
 	if json.Unmarshal(raw, &response) != nil || response.Thread.ID != threadID {
+		c.reportCompatibility("thread/settings/update")
 		return ThreadSettings{}, ErrSettingsUnavailable
 	}
-	return decodeThreadSettings(raw, threadID, "reasoningEffort")
+	settings, err := decodeThreadSettings(raw, threadID, "reasoningEffort")
+	if err != nil {
+		c.reportCompatibility("thread/settings/update")
+	}
+	return settings, err
 }
 
 // ParseThreadSettingsUpdated reads the native thread/settings/updated snapshot.
@@ -209,7 +214,7 @@ func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
 			return nil, err
 		}
 		if r.Data == nil {
-			return nil, errors.New("invalid native model page")
+			return nil, c.incompatibleResponse("model/list")
 		}
 		for _, model := range *r.Data {
 			if !settingValue(model.ID) || !settingValue(model.Model) || ids[model.ID] || !settingValue(model.DefaultReasoningEffort) || model.SupportedReasoningEfforts == nil {

@@ -224,6 +224,9 @@ func (c *Client) Attach(ctx context.Context, id string) (Thread, error) {
 		Thread Thread `json:"thread"`
 	}
 	err := c.Call(ctx, "thread/resume", map[string]any{"threadId": id, "excludeTurns": true}, &r)
+	if err == nil && r.Thread.ID != id {
+		err = c.incompatibleResponse("thread/resume")
+	}
 	return r.Thread, err
 }
 func (c *Client) Metadata(ctx context.Context, id string) (Thread, error) {
@@ -231,32 +234,12 @@ func (c *Client) Metadata(ctx context.Context, id string) (Thread, error) {
 		Thread Thread `json:"thread"`
 	}
 	err := c.Call(ctx, "thread/read", map[string]any{"threadId": id, "includeTurns": false}, &r)
+	if err == nil && r.Thread.ID != id {
+		err = c.incompatibleResponse("thread/read")
+	}
 	return r.Thread, err
 }
 
-// page walks opaque cursors, rejecting loops rather than silently truncating.
-func page[T any](ctx context.Context, c *Client, method string, p map[string]any) ([]T, error) {
-	var all []T
-	seen := map[string]bool{}
-	for {
-		var r struct {
-			Data       []T     `json:"data"`
-			NextCursor *string `json:"nextCursor"`
-		}
-		if err := c.Call(ctx, method, p, &r); err != nil {
-			return nil, err
-		}
-		all = append(all, r.Data...)
-		if r.NextCursor == nil || *r.NextCursor == "" {
-			return all, nil
-		}
-		if seen[*r.NextCursor] {
-			return nil, errors.New("repeated pagination cursor")
-		}
-		seen[*r.NextCursor] = true
-		p["cursor"] = *r.NextCursor
-	}
-}
 func (c *Client) List(ctx context.Context) ([]Thread, error) {
 	return c.ListArchive(ctx, false)
 }
@@ -282,14 +265,24 @@ func (c *Client) Turns(ctx context.Context, id string) ([]Turn, error) {
 	if err != nil {
 		return nil, err
 	}
+	seen := make(map[string]bool, len(turns))
 	for index := range turns {
 		turn := &turns[index]
+		if turn.ID == "" || seen[turn.ID] {
+			return nil, c.incompatibleResponse("thread/turns/list")
+		}
+		seen[turn.ID] = true
+		switch turn.Status {
+		case "inProgress", "completed", "failed", "interrupted":
+		default:
+			return nil, c.incompatibleResponse("thread/turns/list")
+		}
 		switch turn.ItemsView {
 		case "", "full": // Missing view is retained for legacy fixture compatibility.
 			continue
 		case "summary", "notLoaded":
 		default:
-			return nil, errors.New("unsupported turn items view")
+			return nil, c.incompatibleResponse("thread/turns/list")
 		}
 		entries, err := page[struct {
 			TurnID string `json:"turnId"`
@@ -301,7 +294,7 @@ func (c *Client) Turns(ctx context.Context, id string) ([]Turn, error) {
 		items := make([]Item, 0, len(entries))
 		for _, entry := range entries {
 			if entry.TurnID != turn.ID {
-				return nil, errors.New("item history returned another turn")
+				return nil, c.incompatibleResponse("thread/items/list")
 			}
 			items = append(items, entry.Item)
 		}
@@ -333,7 +326,12 @@ func (c *Client) QueueState(ctx context.Context, id string) ([]Queued, error) {
 		return nil, err
 	}
 	queue := make([]Queued, 0, len(metadata))
+	seen := make(map[string]bool, len(metadata))
 	for _, item := range metadata {
+		if item.ID == "" || seen[item.ID] {
+			return nil, c.incompatibleResponse("thread/queue/list")
+		}
+		seen[item.ID] = true
 		queue = append(queue, Queued{ID: item.ID, ClientUserMessageID: item.ClientID})
 	}
 	return queue, nil
@@ -353,14 +351,23 @@ func (c *Client) AddInput(ctx context.Context, id string, input json.RawMessage,
 		Queued Queued `json:"queuedSubmission"`
 	}
 	err := c.Call(ctx, "thread/queue/add", map[string]any{"threadId": id, "input": input, "clientUserMessageId": clientID}, &r)
+	if err == nil && (r.Queued.ID == "" || r.Queued.ClientUserMessageID != nil && *r.Queued.ClientUserMessageID != clientID) {
+		err = c.incompatibleResponse("thread/queue/add")
+	}
 	return r.Queued, err
 }
 func (c *Client) Delete(ctx context.Context, id, qid string) (bool, error) {
 	var r struct {
-		Deleted bool `json:"deleted"`
+		Deleted *bool `json:"deleted"`
 	}
 	err := c.Call(ctx, "thread/queue/delete", map[string]any{"threadId": id, "queuedSubmissionId": qid}, &r)
-	return r.Deleted, err
+	if err != nil {
+		return false, err
+	}
+	if r.Deleted == nil {
+		return false, c.incompatibleResponse("thread/queue/delete")
+	}
+	return *r.Deleted, nil
 }
 func (c *Client) Steer(ctx context.Context, id, turn, text, clientID string) error {
 	input, err := json.Marshal(TextInput(text))
@@ -373,11 +380,32 @@ func (c *Client) SteerInput(ctx context.Context, id, turn string, input json.Raw
 	if err := ValidateInput(input); err != nil {
 		return err
 	}
-	return c.Call(ctx, "turn/steer", map[string]any{"threadId": id, "expectedTurnId": turn, "input": input, "clientUserMessageId": clientID}, nil)
+	var r struct {
+		TurnID string `json:"turnId"`
+	}
+	err := c.Call(ctx, "turn/steer", map[string]any{"threadId": id, "expectedTurnId": turn, "input": input, "clientUserMessageId": clientID}, &r)
+	if err == nil && (r.TurnID == "" || r.TurnID != turn) {
+		return c.incompatibleResponse("turn/steer")
+	}
+	return err
 }
 func (c *Client) Interrupt(ctx context.Context, id, turn string) error {
-	return c.Call(ctx, "turn/interrupt", map[string]any{"threadId": id, "turnId": turn}, nil)
+	var r *struct{}
+	err := c.Call(ctx, "turn/interrupt", map[string]any{"threadId": id, "turnId": turn}, &r)
+	if err == nil && r == nil {
+		return c.incompatibleResponse("turn/interrupt")
+	}
+	return err
 }
 func (c *Client) StartQueue(ctx context.Context, id string) error {
-	return c.Call(ctx, "thread/queue/start", map[string]any{"threadId": id}, nil)
+	var r struct {
+		Turn struct {
+			ID string `json:"id"`
+		} `json:"turn"`
+	}
+	err := c.Call(ctx, "thread/queue/start", map[string]any{"threadId": id}, &r)
+	if err == nil && r.Turn.ID == "" {
+		return c.incompatibleResponse("thread/queue/start")
+	}
+	return err
 }

@@ -8,6 +8,7 @@
 
 | 文档 | 日期 / 版本 |
 | --- | --- |
+| [Codex 升级后的按功能兼容与部署](codex-feature-compatibility-2026-11-18.md) | 2026-11-18 |
 | [飞书目录搜索与 home 路径缩写部署](home-path-search-deployment-2026-11-03.md) | 2026-11-03 |
 | [飞书失败卡的手动重试](feishu-manual-retry-2026-10-27.md) | 2026-10-27 |
 | [最终回复投递纠正与失败卡](final-delivery-recovery-2026-10-26.md) | 2026-10-26 |

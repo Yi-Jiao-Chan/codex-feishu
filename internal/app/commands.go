@@ -205,9 +205,9 @@ func (c Commands) Handle(ctx context.Context, in InboundCommand) error {
 	return nil
 }
 
-// DispatchOne replies to the original command message only. Its UUID and card
-// are committed before the gateway call. Only definite rate-limit rejections
-// reopen delivery; unknown and permanent rejections stay frozen.
+// DispatchOne delivers command replies and compatibility notices. The UUID and
+// card are committed before sending. Only definite rate-limit rejections
+// reopen delivery.
 func (c Commands) DispatchOne(ctx context.Context, gateway messages.MessageGateway) (bool, error) {
 	if c.Store == nil || gateway == nil {
 		return false, errors.New("command delivery requires storage and gateway")
@@ -273,7 +273,17 @@ func (c Commands) dispatchClaimedReply(ctx context.Context, gateway messages.Mes
 		r.UserID != c.Config.Access.OwnerOpenID || !c.Config.Operator(r.UserID)) {
 		return true, c.Store.FinishCommandReply(ctx, r.ID, "rejected", "")
 	}
-	remoteID, sendErr := replyFollowAttempt(ctx, c.Store, gateway, r.ID, r.HostID, r.ThreadID, r.ChatID, r.MessageID, r.Card)
+	var remoteID string
+	var sendErr error
+	if r.Kind == store.CompatibilityNoticeKind {
+		if r.HostID != c.Config.Host.ID || r.AppID != c.Config.Feishu.AppID || r.ChatType != "p2p" || r.ThreadID != "" ||
+			r.ChatID != r.UserID || r.UserID != c.Config.Access.OwnerOpenID || !config.ValidOpenID(r.UserID) || legacyVersionNotice(r.Card) {
+			return true, c.Store.FinishCommandReply(ctx, r.ID, "rejected", "")
+		}
+		remoteID, sendErr = gateway.SendCard(ctx, "open_id", r.UserID, r.Card, r.ID)
+	} else {
+		remoteID, sendErr = replyFollowAttempt(ctx, c.Store, gateway, r.ID, r.HostID, r.ThreadID, r.ChatID, r.MessageID, r.Card)
+	}
 	if errors.Is(sendErr, messages.ErrTopicRootIncomplete) {
 		return true, c.Store.DeferCommandReplyAttempt(ctx, r.ID, max(c.now().UnixMilli(), r.DispatchedAtMS), 1000)
 	}

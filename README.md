@@ -27,7 +27,7 @@
 
 当前为 development 候选，`phase1_released=false`。M0 真实 App / 飞书联调已通过，后续能力已有自动测试、协议核验和部分客户端确认；完整一期验收尚未全部完成。当前验收结论见[集中验收清单](docs/codex-feishu/12-live-acceptance-handoff.md)，分功能证据见[实施与验证记录](docs/records/README.md)。
 
-仓库兼容清单已核验共享 daemon / CLI 0.162.0、0.162.1；目标环境仍须检查实际版本。普通输入复用原生 queue/add，不新建替代 app-server，不修改全局 Codex 配置。CLI 的外部输入回显和 fork 跟进不在当前交付范围内。
+飞书桥会尝试连接当前共享 daemon，包括新版 Codex，并按功能检查协议。检测到功能不兼容时，机器人会私聊部署所有者一次。兼容清单保留共享 daemon / CLI 0.162.0、0.162.1 的既有验收证据。普通输入复用原生 queue/add，不新建替代 app-server，不修改全局 Codex 配置。CLI 的外部输入回显和 fork 跟进不在当前交付范围内。
 
 ## 从源码开始
 

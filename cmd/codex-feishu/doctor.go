@@ -173,31 +173,18 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 		cli = cfg.Codex.CLIPath
 	}
 	daemon, err := deps.discover(ctx, cli)
-	compatible := err == nil && daemon.Status == "running" && compat.VerifiedCodexVersion(daemon.AppServerVersion)
-	if err != nil {
+	running := err == nil && daemon.Status == "running"
+	if !running {
 		o.Checks = append(o.Checks, check{"codex.daemon", "fail", true, "existing shared daemon unavailable; no daemon started"})
 		fail(3)
 	} else {
 		data["codex_daemon"] = daemon
 		o.Checks = append(o.Checks, check{"codex.daemon", "pass", true, "inspected existing shared daemon using the configured CLI"})
 		verifiedVersions := strings.Join(compat.VerifiedCodexVersions(), ", ")
-		if !compatible {
-			o.Checks = append(o.Checks, check{"codex.compatibility", "fail", true, "actual server version " + daemon.AppServerVersion + " is outside the verified compatibility versions: " + verifiedVersions})
-			fail(3)
-		} else {
-			o.Checks = append(o.Checks, check{"codex.compatibility", "pass", true, "actual shared server version " + daemon.AppServerVersion + "; verified compatibility versions: " + verifiedVersions})
-		}
-		if cfg.Creation.Enabled {
-			status := "pass"
-			if !compat.VerifiedCreationCodexVersion(daemon.AppServerVersion) {
-				status = "fail"
-				fail(3)
-			}
-			o.Checks = append(o.Checks, check{"creation.protocol", status, true, "creation requires the separately verified 0.162.1 project/start/source protocol"})
-		}
+		o.Checks = append(o.Checks, check{"codex.compatibility", "pass", false, "actual shared server version " + daemon.AppServerVersion + "; historical verification versions: " + verifiedVersions + "; runtime checks each feature"})
 	}
 	if codexOnly {
-		if compatible {
+		if running {
 			count, err := deps.nativeProbe(ctx, daemon)
 			if err != nil {
 				o.Checks = append(o.Checks, check{"codex.handshake_and_list", "fail", true, "read-only native probe unavailable"})

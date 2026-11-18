@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,6 +67,16 @@ type UnknownError struct {
 func (e *UnknownError) Error() string { return "Codex RPC result unknown: " + e.Method }
 func (e *UnknownError) Unwrap() error { return e.Cause }
 
+var errIncompatibleResponse = errors.New("incompatible Codex response")
+
+// IsCompatibilityError distinguishes protocol mismatches from a lost
+// connection, a timeout, or a request rejected for its task-specific input.
+func IsCompatibilityError(err error) bool {
+	var rpc *RPCError
+	return errors.Is(err, errIncompatibleResponse) ||
+		errors.As(err, &rpc) && (rpc.Code == -32601 || strings.HasSuffix(rpc.Message, " requires experimentalApi capability"))
+}
+
 type Event struct {
 	Generation uint64
 	Method     string
@@ -84,23 +95,68 @@ type reply struct {
 	err  error
 }
 type Client struct {
-	conn           *websocket.Conn
-	ctx            context.Context
-	cancel         context.CancelFunc
-	mu             sync.Mutex
-	pending        map[string]chan reply
-	serverRequests map[string]InteractiveRequest
-	serverAnswered map[string]string
-	serverTerminal map[string]bool
-	writeGate      chan struct{}
-	seq            atomic.Uint64
-	events         chan Event
-	done           chan struct{}
-	closeOnce      sync.Once
-	generation     uint64
-	connectionID   string
-	codexHome      string // Immutable initialize response, not this client's environment.
-	terminal       error
+	conn            *websocket.Conn
+	ctx             context.Context
+	cancel          context.CancelFunc
+	mu              sync.Mutex
+	pending         map[string]chan reply
+	serverRequests  map[string]InteractiveRequest
+	serverAnswered  map[string]string
+	serverTerminal  map[string]bool
+	writeGate       chan struct{}
+	seq             atomic.Uint64
+	events          chan Event
+	done            chan struct{}
+	closeOnce       sync.Once
+	generation      uint64
+	connectionID    string
+	codexHome       string // Immutable initialize response, not this client's environment.
+	terminal        error
+	compatibility   func(string)
+	disabledMethods map[string]bool
+}
+
+// SetCompatibilityObserver reports method names only, without RPC payloads.
+func (c *Client) SetCompatibilityObserver(observer func(string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.compatibility = observer
+}
+
+func (c *Client) reportCompatibility(method string) {
+	c.mu.Lock()
+	observer := c.compatibility
+	c.mu.Unlock()
+	if observer != nil {
+		observer(method)
+	}
+}
+
+func (c *Client) incompatibleResponse(method string) error {
+	switch method {
+	case "thread/queue/add", "thread/queue/delete", "thread/queue/start", "turn/steer", "turn/interrupt",
+		"thread/settings/update", "thread/start", "turn/start":
+		c.disableMethod(method)
+	}
+	c.reportCompatibility(method)
+	// An invalid acknowledgement does not prove a write was rejected.
+	return &UnknownError{Method: method, Cause: errIncompatibleResponse}
+}
+
+func (c *Client) disableMethod(method string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.disabledMethods == nil {
+		c.disabledMethods = make(map[string]bool)
+	}
+	c.disabledMethods[method] = true
+}
+
+// MethodUnavailable is scoped to failures observed on this connection.
+func (c *Client) MethodUnavailable(method string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.disabledMethods[method]
 }
 
 var generation atomic.Uint64
@@ -121,19 +177,29 @@ func Connect(ctx context.Context, path string) (*Client, error) {
 	// a healthy long-running service generation.
 	setupCtx, stopSetup := context.WithTimeout(ctx, 30*time.Second)
 	defer stopSetup()
-	conn, _, err := websocket.Dial(setupCtx, "ws://localhost/", &websocket.DialOptions{HTTPClient: &http.Client{Transport: tr}, CompressionMode: websocket.CompressionDisabled})
+	conn, response, err := websocket.Dial(setupCtx, "ws://localhost/", &websocket.DialOptions{HTTPClient: &http.Client{Transport: tr}, CompressionMode: websocket.CompressionDisabled})
 	if err != nil {
 		tr.CloseIdleConnections()
+		if response != nil {
+			switch response.StatusCode {
+			case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusUpgradeRequired, http.StatusNotImplemented:
+				return nil, errIncompatibleResponse
+			}
+		}
 		return nil, errors.New("cannot connect to shared Codex Unix WebSocket")
 	}
 	conn.SetReadLimit(32 << 20)
 	life, cancel := context.WithCancel(ctx)
 	c := &Client{conn: conn, ctx: life, cancel: cancel, pending: map[string]chan reply{}, serverRequests: map[string]InteractiveRequest{}, serverAnswered: map[string]string{}, serverTerminal: map[string]bool{}, writeGate: make(chan struct{}, 1), events: make(chan Event, 512), done: make(chan struct{}), generation: generation.Add(1), connectionID: hex.EncodeToString(nonce[:])}
 	go c.read()
-	var initialized struct {
+	var initialized *struct {
 		CodexHome string `json:"codexHome"`
 	}
 	err = c.Call(setupCtx, "initialize", map[string]any{"clientInfo": map[string]string{"name": "codex-feishu", "title": "Codex Feishu Bridge", "version": "0.0.1-dev"}, "capabilities": map[string]bool{"experimentalApi": true}}, &initialized)
+	var rejected *RPCError
+	if err == nil && initialized == nil || errors.As(err, &rejected) && rejected.Code == -32602 {
+		err = errIncompatibleResponse
+	}
 	if err == nil {
 		c.codexHome = initialized.CodexHome
 		b, _ := json.Marshal(map[string]string{"method": "initialized"})
@@ -174,7 +240,17 @@ func (c *Client) Call(ctx context.Context, method string, params, dst any) error
 	c.pending[id] = wait
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
-	if err = c.writeMessage(ctx, b, nil); err != nil {
+	if err = c.writeMessage(ctx, b, func() error {
+		if c.MethodUnavailable(method) {
+			return &RPCError{Code: -32601}
+		}
+		return nil
+	}); err != nil {
+		var refused *RPCError
+		if errors.As(err, &refused) {
+			c.reportCompatibility(method)
+			return refused // Guard ran before the frame was written.
+		}
 		return &UnknownError{method, err}
 	}
 	select {
@@ -182,13 +258,17 @@ func (c *Client) Call(ctx context.Context, method string, params, dst any) error
 		if r.err != nil {
 			var re *RPCError
 			if errors.As(r.err, &re) {
+				if IsCompatibilityError(re) {
+					c.disableMethod(method)
+					c.reportCompatibility(method)
+				}
 				return re
 			}
 			return &UnknownError{method, r.err}
 		}
 		if dst != nil {
 			if err = json.Unmarshal(r.data, dst); err != nil {
-				return &UnknownError{method, errors.New("invalid result shape")}
+				return c.incompatibleResponse(method)
 			}
 		}
 		return nil
@@ -226,7 +306,7 @@ func (c *Client) read() {
 		}
 		var w wire
 		if json.Unmarshal(b, &w) != nil {
-			terminal = errors.New("invalid RPC frame")
+			terminal = errIncompatibleResponse
 			return
 		}
 		if w.Method == "" && len(w.ID) > 0 {

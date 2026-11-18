@@ -26,7 +26,7 @@ func TestMultipartInputAddAndSteerPreserveFullWireArray(t *testing.T) {
 			send(ctx, c, w.ID, map[string]any{"queuedSubmission": map[string]any{"id": "q-multipart", "clientUserMessageId": "cid-add"}})
 		case "turn/steer":
 			steerInput = append(json.RawMessage(nil), params["input"]...)
-			send(ctx, c, w.ID, map[string]any{})
+			send(ctx, c, w.ID, map[string]any{"turnId": "turn"})
 		}
 	})
 	client, err := Connect(context.Background(), path)
@@ -63,7 +63,7 @@ func TestLegacyTextAddAndSteerKeepTextInputWire(t *testing.T) {
 			send(ctx, c, w.ID, map[string]any{"queuedSubmission": map[string]any{"id": "q-legacy"}})
 		case "turn/steer":
 			steerInput = append(json.RawMessage(nil), params["input"]...)
-			send(ctx, c, w.ID, map[string]any{})
+			send(ctx, c, w.ID, map[string]any{"turnId": "turn"})
 		}
 	})
 	client, err := Connect(context.Background(), path)

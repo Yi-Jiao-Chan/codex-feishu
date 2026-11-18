@@ -25,11 +25,12 @@ import (
 // Local protocol fixture: real Unix WebSocket Client/Service, no daemon CLI,
 // real credentials, native user threads, or Feishu connections.
 type serveVersionSocket struct {
-	path, cwd string
-	mu        sync.Mutex
-	conn      *websocket.Conn
-	methods   map[string]int
-	accepted  atomic.Int32
+	path, cwd        string
+	mu               sync.Mutex
+	conn             *websocket.Conn
+	methods          map[string]int
+	accepted         atomic.Int32
+	queueUnavailable atomic.Bool
 }
 
 func newServeVersionSocket(t *testing.T, cwd string) *serveVersionSocket {
@@ -64,6 +65,13 @@ func newServeVersionSocket(t *testing.T, cwd string) *serveVersionSocket {
 			f.mu.Lock()
 			f.methods[in.Method]++
 			f.mu.Unlock()
+			if in.Method == "thread/queue/list" && f.queueUnavailable.Load() {
+				reply, _ := json.Marshal(map[string]any{"id": in.ID, "error": map[string]any{"code": -32601, "message": "fixture method not found"}})
+				if conn.Write(r.Context(), websocket.MessageText, reply) != nil {
+					return
+				}
+				continue
+			}
 			var result any
 			switch in.Method {
 			case "initialized":
@@ -74,6 +82,8 @@ func newServeVersionSocket(t *testing.T, cwd string) *serveVersionSocket {
 				result = map[string]any{"thread": map[string]any{"id": "local-owned-thread", "cwd": f.cwd, "source": "cli", "status": map[string]string{"type": "idle"}}}
 			case "thread/turns/list", "thread/queue/list", "thread/list", "thread/loaded/list", "threadSection/list":
 				result = map[string]any{"data": []any{}, "nextCursor": nil}
+			case "thread/queue/add":
+				result = map[string]any{"queuedSubmission": map[string]string{"id": "fixture-queue-id"}}
 			default:
 				t.Errorf("unexpected native fixture method %s", in.Method)
 				return
@@ -102,11 +112,10 @@ func (f *serveVersionSocket) count(method string) int {
 	return f.methods[method]
 }
 
-// This receiver remains available during native incompatibility, matching the
-// production offline-receive contract. Its methods have no remote side effects.
+// This receiver and its in-memory deliveries have no remote side effects.
 type serveVersionGateway struct {
-	ready           atomic.Bool
-	listens, groups atomic.Int32
+	ready                    atomic.Bool
+	listens, groups, notices atomic.Int32
 }
 
 func (g *serveVersionGateway) Ready() bool { return g.ready.Load() }
@@ -132,7 +141,13 @@ func (*serveVersionGateway) AddReaction(context.Context, string, string) (string
 	return "local-reaction", nil
 }
 func (*serveVersionGateway) DeleteReaction(context.Context, string, string) error { return nil }
-func (*serveVersionGateway) SendCard(context.Context, string, string, string, string) (string, error) {
+func (g *serveVersionGateway) SendCard(_ context.Context, kind, target, card, _ string) (string, error) {
+	if kind == "open_id" {
+		if target != "ou_fixture_owner_valid" || !strings.Contains(card, "任务队列") || !strings.Contains(card, "0.169.1") {
+			return "", errors.New("unexpected compatibility notice")
+		}
+		g.notices.Add(1)
+	}
 	return "local-send", nil
 }
 func (*serveVersionGateway) ReplyCard(context.Context, string, string, string) (string, error) {
@@ -153,68 +168,35 @@ func serveVersionWait(t *testing.T, ctx context.Context, predicate func() bool) 
 	}
 }
 
-func TestServeNativeFactoryRejectsInitialUnverifiedBeforeConnect(t *testing.T) {
-	var discovers, dials atomic.Int32
-	factory := serveNativeConnect("configured-local-cli", func(ctx context.Context, cli string) (codexclient.Daemon, error) {
-		discovers.Add(1)
-		if cli != "configured-local-cli" {
-			t.Error("ignored configured CLI")
-		}
-		if _, ok := ctx.Deadline(); !ok {
-			t.Error("discovery is unbounded")
-		}
-		return codexclient.Daemon{Status: "running", AppServerVersion: "0.163.0", SocketPath: "never-dial-this"}, nil
-	}, func(context.Context, string) (*codexclient.Client, error) {
-		dials.Add(1)
-		return nil, errors.New("unexpected dial")
-	})
-	native, err := factory(context.Background())
-	if native != nil || err == nil || !strings.Contains(err.Error(), "verified compatibility list") || discovers.Load() != 1 || dials.Load() != 0 {
-		t.Fatal("initial incompatible daemon reached a native connection or lost rejection")
+func TestServeNativeFactoryConnectsAnyDiscoveredVersion(t *testing.T) {
+	for _, version := range []string{"0.162.0", "0.162.1", "0.169.1"} {
+		t.Run(version, func(t *testing.T) {
+			socket := newServeVersionSocket(t, t.TempDir())
+			factory := serveNativeConnect("local-cli", func(ctx context.Context, cli string) (codexclient.Daemon, error) {
+				if _, bounded := ctx.Deadline(); cli != "local-cli" || !bounded {
+					t.Error("ignored configured CLI or discovery deadline")
+				}
+				return codexclient.Daemon{Status: "running", AppServerVersion: version, SocketPath: socket.path}, nil
+			}, codexclient.Connect)
+			native, err := factory(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer native.Close()
+			if socket.accepted.Load() != 1 || native.(interface{ AppServerVersion() string }).AppServerVersion() != version {
+				t.Fatal("lost connected server version")
+			}
+			if queue, err := native.Queue(context.Background(), "local-owned-thread"); err != nil || len(queue) != 0 {
+				t.Fatal("read-only queue check failed", err)
+			}
+			if queued, err := native.Add(context.Background(), "local-owned-thread", "fixture", "fixture-client"); err != nil || queued.ID != "fixture-queue-id" {
+				t.Fatal("compatible queue submission was version-gated", err)
+			}
+		})
 	}
 }
 
-func TestServeNativeFactoryAcceptsVerifiedDotOneWithLocalUnixWebSocket(t *testing.T) {
-	root := t.TempDir()
-	socket := newServeVersionSocket(t, root)
-	var dials atomic.Int32
-	factory := serveNativeConnect("local-cli", func(context.Context, string) (codexclient.Daemon, error) {
-		return codexclient.Daemon{Status: "running", AppServerVersion: "0.162.1", SocketPath: socket.path}, nil
-	}, func(ctx context.Context, path string) (*codexclient.Client, error) {
-		dials.Add(1)
-		return codexclient.Connect(ctx, path)
-	})
-	native, err := factory(context.Background())
-	if err != nil || native == nil || dials.Load() != 1 || socket.accepted.Load() != 1 {
-		t.Fatalf("verified 0.162.1 was not accepted by the local Unix WebSocket gate: native=%v err=%v dials=%d accepted=%d", native != nil, err, dials.Load(), socket.accepted.Load())
-	}
-	versioned, ok := native.(interface{ AppServerVersion() string })
-	if !ok {
-		t.Fatal("native wrapper does not expose the discovered daemon version")
-	}
-	if version := versioned.AppServerVersion(); version != "0.162.1" {
-		t.Fatalf("native wrapper lost the discovered daemon version: %q", version)
-	}
-	native.Close()
-}
-
-func TestServeNativeFactoryCreationRequiresVerifiedDotOneBeforeConnect(t *testing.T) {
-	root := t.TempDir()
-	socket := newServeVersionSocket(t, root)
-	var dials atomic.Int32
-	factory := serveNativeConnect("local-cli", func(context.Context, string) (codexclient.Daemon, error) {
-		return codexclient.Daemon{Status: "running", AppServerVersion: "0.162.0", SocketPath: socket.path}, nil
-	}, func(ctx context.Context, path string) (*codexclient.Client, error) {
-		dials.Add(1)
-		return codexclient.Connect(ctx, path)
-	}, true)
-	native, err := factory(context.Background())
-	if native != nil || err == nil || !strings.Contains(err.Error(), "creation protocol version is not verified") || dials.Load() != 0 || socket.accepted.Load() != 0 {
-		t.Fatalf("creation-incompatible daemon reached native connect: native=%v err=%v dials=%d accepted=%d", native != nil, err, dials.Load(), socket.accepted.Load())
-	}
-}
-
-func TestServeNativeFactoryRechecksVersionAfterDisconnectWithoutNativeWrites(t *testing.T) {
+func TestServeReconnectsAfterUpgradeAndNotifiesOnceWhenQueueIsMissing(t *testing.T) {
 	path, _, _, _ := doctorFixture(t)
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -255,12 +237,12 @@ func TestServeNativeFactoryRechecksVersionAfterDisconnectWithoutNativeWrites(t *
 		t.Fatal(err)
 	}
 	socket := newServeVersionSocket(t, root)
-	var discovers, dials, rejections atomic.Int32
+	var discovers, dials atomic.Int32
 	factory := serveNativeConnect(cfg.Codex.CLIPath, func(_ context.Context, cli string) (codexclient.Daemon, error) {
 		if cli != cfg.Codex.CLIPath {
 			t.Error("ignored configured discovery CLI")
 		}
-		version := "0.163.0"
+		version := "0.169.1"
 		if discovers.Add(1) == 1 {
 			version = "0.162.0"
 		}
@@ -270,16 +252,7 @@ func TestServeNativeFactoryRechecksVersionAfterDisconnectWithoutNativeWrites(t *
 		return codexclient.Connect(ctx, path)
 	})
 	gateway := &serveVersionGateway{}
-	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: "ou_fixture_bot_valid", RetryInterval: 5 * time.Millisecond, Connect: func(ctx context.Context) (app.ServiceNative, error) {
-		native, err := factory(ctx)
-		if err != nil {
-			if !strings.Contains(err.Error(), "verified compatibility list") {
-				t.Error("connection factory lost version rejection")
-			}
-			rejections.Add(1)
-		}
-		return native, err
-	}}
+	service := &app.Service{Config: cfg, Store: db, Gateway: gateway, BotID: "ou_fixture_bot_valid", RetryInterval: 5 * time.Millisecond, Connect: factory}
 	done := make(chan error, 1)
 	go func() { done <- service.Run(ctx) }()
 	t.Cleanup(func() {
@@ -294,22 +267,29 @@ func TestServeNativeFactoryRechecksVersionAfterDisconnectWithoutNativeWrites(t *
 		health, err := service.Health(ctx)
 		return err == nil && health.NativeConnected && health.HydratedBindings == 1 && socket.count("thread/resume") == 1
 	})
+	socket.queueUnavailable.Store(true)
+	initialHistory := socket.count("thread/turns/list")
 	socket.disconnect()
-	serveVersionWait(t, ctx, func() bool { return rejections.Load() >= 2 && !service.NativeConnected() })
-	attaches := socket.count("thread/resume")
 	receipt, fresh, err := db.Claim(ctx, store.Receipt{AppID: cfg.Feishu.AppID, ThreadID: "local-owned-thread", ChatID: "local-chat", MessageID: "local-offline-input", Body: "owned local fixture input"})
 	if err != nil || !fresh {
-		t.Fatal("local offline input not persisted")
+		t.Fatal("local input not persisted")
 	}
 	service.Wake("local-owned-thread")
-	rejected := rejections.Load()
-	serveVersionWait(t, ctx, func() bool { return rejections.Load() > rejected })
-	health, err := service.Health(ctx)
-	if err != nil || !health.Running || health.NativeConnected || health.HydratedBindings != 0 || !health.FeishuConnected {
-		t.Fatal("incompatible generation reported native readiness or stopped offline receiver")
+	serveVersionWait(t, ctx, func() bool {
+		return dials.Load() == 2 && service.NativeConnected() && socket.count("thread/turns/list") > initialHistory && gateway.notices.Load() == 1
+	})
+	historyBeforeRetry := socket.count("thread/turns/list")
+	socket.disconnect()
+	serveVersionWait(t, ctx, func() bool {
+		return dials.Load() == 3 && service.NativeConnected() && socket.count("thread/turns/list") > historyBeforeRetry
+	})
+	var notices int
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM command_replies WHERE kind=?`, store.CompatibilityNoticeKind).Scan(&notices); err != nil || notices != 1 {
+		t.Fatal("reconnect staged more than one notice", err)
 	}
-	if dials.Load() != 1 || socket.accepted.Load() != 1 || socket.count("thread/resume") != attaches || gateway.groups.Load() != 0 || gateway.listens.Load() != 1 {
-		t.Fatal("incompatible reconnect dialed, attached, created group or duplicated receiver")
+	health, err := service.Health(ctx)
+	if err != nil || !health.NativeConnected || !health.FeishuConnected || gateway.notices.Load() != 1 || gateway.groups.Load() != 0 || gateway.listens.Load() != 1 {
+		t.Fatal("queue failure stopped sync, duplicated the receiver, or repeated its notice")
 	}
 	for _, method := range []string{"thread/start", "thread/queue/add", "thread/queue/delete", "thread/queue/start", "turn/steer", "turn/interrupt"} {
 		if socket.count(method) != 0 {

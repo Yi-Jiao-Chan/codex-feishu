@@ -38,7 +38,7 @@ func (c *Client) ListArchiveSince(ctx context.Context, archived bool, since int6
 			return nil, err
 		}
 		if response.Data == nil {
-			return nil, errors.New("invalid native thread page")
+			return nil, c.incompatibleResponse("thread/list")
 		}
 
 		boundaryCrossed := false
@@ -66,7 +66,7 @@ func (c *Client) ListArchiveSince(ctx context.Context, archived bool, since int6
 
 		if response.NextCursor != nil && *response.NextCursor != "" {
 			if _, exists := seen[*response.NextCursor]; exists {
-				return nil, errors.New("repeated pagination cursor")
+				return nil, c.incompatibleResponse("thread/list")
 			}
 		}
 		if orderingVerified && boundaryCrossed {
@@ -83,13 +83,13 @@ func (c *Client) ListArchiveSince(ctx context.Context, archived bool, since int6
 // Sections lists all native thread sections and rejects entries without an
 // identity, which cannot be used safely as a section filter.
 func (c *Client) Sections(ctx context.Context) ([]ThreadSection, error) {
-	sections, err := pageWithRequiredData[ThreadSection](ctx, c, "threadSection/list", map[string]any{"limit": 100})
+	sections, err := page[ThreadSection](ctx, c, "threadSection/list", map[string]any{"limit": 100})
 	if err != nil {
 		return nil, err
 	}
 	for _, section := range sections {
 		if strings.TrimSpace(section.ID) == "" {
-			return nil, errors.New("invalid native thread section identity")
+			return nil, c.incompatibleResponse("threadSection/list")
 		}
 	}
 	return sections, nil
@@ -100,7 +100,7 @@ func (c *Client) ListSection(ctx context.Context, sectionID string, archived boo
 	if strings.TrimSpace(sectionID) == "" {
 		return nil, errors.New("section ID is required")
 	}
-	return pageWithRequiredData[Thread](ctx, c, "thread/list", map[string]any{
+	return page[Thread](ctx, c, "thread/list", map[string]any{
 		"sectionId":      sectionID,
 		"limit":          100,
 		"sortKey":        "section_position",
@@ -112,10 +112,9 @@ func (c *Client) ListSection(ctx context.Context, sectionID string, archived boo
 	})
 }
 
-// pageWithRequiredData is the strict variant used by scan adapters. A
-// missing or null data field is a malformed page, not an empty successful
-// result; this keeps a failed section scan from removing known bindings.
-func pageWithRequiredData[T any](ctx context.Context, c *Client, method string, p map[string]any) ([]T, error) {
+// page walks opaque cursors. Missing or null data and cursor loops cannot be
+// treated as a complete snapshot for reconciliation.
+func page[T any](ctx context.Context, c *Client, method string, p map[string]any) ([]T, error) {
 	var all []T
 	seen := map[string]bool{}
 	for {
@@ -127,14 +126,14 @@ func pageWithRequiredData[T any](ctx context.Context, c *Client, method string, 
 			return nil, err
 		}
 		if response.Data == nil {
-			return nil, errors.New("invalid native page data")
+			return nil, c.incompatibleResponse(method)
 		}
 		all = append(all, (*response.Data)...)
 		if response.NextCursor == nil || *response.NextCursor == "" {
 			return all, nil
 		}
 		if seen[*response.NextCursor] {
-			return nil, errors.New("repeated pagination cursor")
+			return nil, c.incompatibleResponse(method)
 		}
 		seen[*response.NextCursor] = true
 		p["cursor"] = *response.NextCursor

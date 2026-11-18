@@ -86,6 +86,8 @@ verify 接收 `--allow-test-card`、`--allow-test-group`、`--allow-test-thread`
 
 配置 doctor 只查询既有管理端点、daemon version、机器人身份与权限 GET，不新建原生客户端或飞书长连接。独立的 `doctor --codex-only` 才执行短暂只读 handshake / thread list。权限按 API 文档认可的 OR 替代关系检查，只计算 `grant_status=1` 且 `scope_type=tenant`；缺字段、未知状态或授权响应不明确保留 pending。附件下载权限只在 `enabled=true` 时成为 required；独立附件的群接收权限还需 `receive_standalone=true`。关闭时不改变 baseline required/recommended scopes。单人任务群免 @ 的 `receive_one_to_one_group_without_mention` 独立报告 `im:message.group_msg`，保持可选，不受附件开关影响。scope 满足不证明消息订阅、卡片回调、建群、更新、reaction、附件收取、免 @ 或 App UI 已验收：每项能力的 `runtime_observed` 仍为 unknown，实际 verify 单独提供证据。
 
+`doctor` 报告实际 App Server 版本和历史验收版本。新版可直接进入握手和只读检查，创建功能在实际使用时核验原生结果。安装计划识别二进制的 `codex_feature_compatibility` 能力，支持该能力的构建可配置到新版 daemon。
+
 ## 配置与输入文件
 
 可选本地文件预览通过 `file_preview` 对象配置，默认关闭。setup 省略该对象时保留当前设置，显式提供时整体替换，启用时私有口令的变化会使旧 plan 失效。`file-preview init-secret` 只生成新的 0600 口令文件；`file-preview show-secret` 显式打印口令；`file-preview link` 本地登记指定文件并返回可点击地址。这些 CLI 均不发送消息或改变 Codex 会话。部署所有者也可私聊机器人发送 `/preview` 取得口令；群内只提示转到私聊，口令回复按现有私有 outbox 持久投递。监听、访问范围及真实浏览器验收见 [14 网页预览](14-file-preview.md)。
