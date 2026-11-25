@@ -31,6 +31,7 @@ func openFilePreview(cfg config.Config) (*filepreview.Service, error) {
 	return filepreview.New(filepreview.Options{
 		BaseURL: p.BaseURL, AllowedRoots: p.AllowedRoots, Directory: p.Directory,
 		SecretFile: p.SecretFile, MaxFileBytes: p.MaxFileBytes,
+		ArtifactRoots: p.ArtifactRoots, ArtifactCacheQuotaBytes: p.ArtifactCacheQuotaBytes,
 	})
 }
 
@@ -38,6 +39,10 @@ func startFilePreview(cfg config.Config) (*previewHTTP, error) {
 	p, err := openFilePreview(cfg)
 	if err != nil {
 		return nil, errors.New("file preview storage or access credential unavailable")
+	}
+	if err := p.StartArtifactCache(); err != nil {
+		p.Close()
+		return nil, err
 	}
 	listener, err := net.Listen("tcp", cfg.FilePreviewLimits().ListenAddress)
 	if err != nil {

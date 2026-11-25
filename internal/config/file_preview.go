@@ -15,14 +15,18 @@ import (
 // FilePreviewConfig is separate from discovery: finding a thread does not
 // authorize browser access to all of its files.
 type FilePreviewConfig struct {
-	Enabled       bool     `toml:"enabled" json:"enabled"`
-	BaseURL       string   `toml:"base_url" json:"base_url"`
-	ListenAddress string   `toml:"listen_address" json:"listen_address"`
-	AllowedRoots  []string `toml:"allowed_roots" json:"allowed_roots"`
-	Directory     string   `toml:"directory" json:"directory"`
-	SecretFile    string   `toml:"secret_file" json:"secret_file"`
-	MaxFileBytes  int64    `toml:"max_file_bytes" json:"max_file_bytes"`
+	Enabled                 bool     `toml:"enabled" json:"enabled"`
+	BaseURL                 string   `toml:"base_url" json:"base_url"`
+	ListenAddress           string   `toml:"listen_address" json:"listen_address"`
+	AllowedRoots            []string `toml:"allowed_roots" json:"allowed_roots"`
+	Directory               string   `toml:"directory" json:"directory"`
+	SecretFile              string   `toml:"secret_file" json:"secret_file"`
+	MaxFileBytes            int64    `toml:"max_file_bytes" json:"max_file_bytes"`
+	ArtifactRoots           []string `toml:"artifact_roots" json:"artifact_roots,omitempty"`
+	ArtifactCacheQuotaBytes int64    `toml:"artifact_cache_quota_bytes" json:"artifact_cache_quota_bytes,omitempty"`
 }
+
+const DefaultArtifactCacheQuotaBytes int64 = 8 << 30
 
 func (c Config) FilePreviewLimits() FilePreviewConfig {
 	p := c.FilePreview
@@ -38,6 +42,9 @@ func (c Config) FilePreviewLimits() FilePreviewConfig {
 	if p.MaxFileBytes == 0 {
 		p.MaxFileBytes = 1 << 20
 	}
+	if len(p.ArtifactRoots) != 0 && p.ArtifactCacheQuotaBytes == 0 {
+		p.ArtifactCacheQuotaBytes = DefaultArtifactCacheQuotaBytes
+	}
 	return p
 }
 
@@ -45,6 +52,9 @@ func (c Config) ValidateFilePreview() error {
 	p := c.FilePreviewLimits()
 	if p.MaxFileBytes < 1 || p.MaxFileBytes > 10<<20 {
 		return errors.New("file_preview.max_file_bytes must be between 1 and 10 MiB")
+	}
+	if p.ArtifactCacheQuotaBytes < 0 {
+		return errors.New("file_preview.artifact_cache_quota_bytes must be positive or omitted")
 	}
 	for _, path := range []string{p.Directory, p.SecretFile} {
 		if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n") {
@@ -74,6 +84,7 @@ func (c Config) ValidateFilePreview() error {
 	if len(p.AllowedRoots) == 0 {
 		return errors.New("enabled file preview requires explicit allowed_roots")
 	}
+	allowed := make(map[string]bool, len(p.AllowedRoots))
 	for _, root := range p.AllowedRoots {
 		if !filepath.IsAbs(root) || strings.ContainsAny(root, "\x00\r\n") {
 			return errors.New("file preview allowed roots must be absolute directories")
@@ -85,6 +96,16 @@ func (c Config) ValidateFilePreview() error {
 		info, err := os.Stat(physical)
 		if err != nil || !info.IsDir() {
 			return errors.New("file preview allowed directory is unavailable")
+		}
+		allowed[physical] = true
+	}
+	for _, root := range p.ArtifactRoots {
+		if !filepath.IsAbs(root) || strings.ContainsAny(root, "\x00\r\n") {
+			return errors.New("file preview artifact roots must be absolute directories")
+		}
+		physical, err := filepath.EvalSymlinks(root)
+		if err != nil || physical == string(filepath.Separator) || !allowed[physical] {
+			return errors.New("file preview artifact roots must be explicit allowed_roots entries and cannot be the filesystem root")
 		}
 	}
 	return nil

@@ -110,6 +110,8 @@ development 包的 `phase1_released=false` 和 pending 验收模板不能改成 
 
 setup 输入可提供 `file_preview` 对象：`enabled=true`、`base_url`（用户设备可访问的 HTTP/HTTPS origin）、`listen_address`（IP 加端口）、`allowed_roots`、`secret_file`；`directory` 默认数据库旁 `file-preview`，单文件上限默认 1 MiB。IP 直连需显式监听可达网卡，默认 `127.0.0.1:8787` 只可本机访问。HTTP 由所用网络承载口令与内容，需要传输加密时接 HTTPS。
 
+大文件在线阅读与按需缓存可在同一对象中配置 `artifact_roots` 与 `artifact_cache_quota_bytes`。产物根须显式列入 `allowed_roots`，按需缓存默认配额 8 GiB，单文件分页预览上限 2 GiB。参见 [大文件与按需缓存](14-file-preview.md#大文件与按需缓存)。
+
 沿用既有 stop→plan/apply→install/start 规则，不并行启动第二个桥。首次浏览器打开需输入私有口令；`file-preview link --config PATH --file /absolute/project/report.md --json` 可登记指定文件并返回 URL，不发送消息。doctor 的本地检查不能代替真实飞书点击、手机网络和浏览器登录验收。
 
 若应用已可用，按实际检查结果跳过已完成项。未完成时给用户一张具体操作清单：

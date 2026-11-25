@@ -130,6 +130,7 @@ func inspectDoctor(ctx context.Context, path string, codexOnly, requireRunning b
 			"enabled": preview.Enabled, "base_url": preview.BaseURL,
 			"listen_address": preview.ListenAddress, "allowed_roots_count": len(preview.AllowedRoots),
 			"max_file_bytes": preview.MaxFileBytes, "ui_verified": false,
+			"artifact_roots_count": len(preview.ArtifactRoots), "artifact_cache_quota_bytes": preview.ArtifactCacheQuotaBytes,
 		}
 		if preview.Enabled {
 			if _, err := cfg.FilePreviewSecret(); err != nil {

@@ -41,21 +41,31 @@ var (
 	errNotPreviewable = errors.New("file preview: file is not previewable")
 )
 
+var documentPreviewCSP = strings.Replace(previewCSP, "script-src 'none'", "script-src 'sha256-"+sourceFragmentHash()+"'", 1)
+
+func sourceFragmentHash() string {
+	hash := sha256.Sum256([]byte(sourceFragmentScript))
+	return base64.StdEncoding.EncodeToString(hash[:])
+}
+
 // Options defines the public origin and the only directories eligible for preview.
 // BaseURL must be an http(s) origin, without a path prefix, query or fragment.
 // Directory holds private per-file manifests; SecretFile contains the login secret.
 type Options struct {
-	BaseURL      string
-	AllowedRoots []string
-	Directory    string
-	SecretFile   string
-	MaxFileBytes int64
+	BaseURL                 string
+	AllowedRoots            []string
+	Directory               string
+	SecretFile              string
+	MaxFileBytes            int64
+	ArtifactRoots           []string
+	ArtifactCacheQuotaBytes int64
 }
 
 type allowedRoot struct {
-	path    string
-	aliases []string
-	handle  *os.Root
+	path     string
+	aliases  []string
+	handle   *os.Root
+	artifact bool
 }
 
 // Service implements http.Handler. Close must follow shutdown of its HTTP server.
@@ -74,6 +84,8 @@ type Service struct {
 	directoryPath string
 	secretPath    string
 	maxBytes      int64
+	artifactQuota int64
+	artifacts     *artifactCache
 	now           func() time.Time
 }
 
@@ -132,6 +144,18 @@ func New(opts Options) (_ *Service, err error) {
 		s.roots = append(s.roots, root)
 		s.rootsByPath[canonical] = root
 	}
+	if len(opts.ArtifactRoots) != 0 && opts.ArtifactCacheQuotaBytes <= 0 {
+		return nil, errors.New("file preview: artifact cache requires a positive quota")
+	}
+	for _, name := range opts.ArtifactRoots {
+		canonical, e := filepath.EvalSymlinks(name)
+		root := s.rootsByPath[canonical]
+		if !filepath.IsAbs(name) || e != nil || canonical == string(filepath.Separator) || root == nil {
+			return nil, errors.New("file preview: artifact roots must be explicit non-root allowed directories")
+		}
+		root.artifact = true
+		s.artifactQuota = opts.ArtifactCacheQuotaBytes
+	}
 	s.directory, s.directoryPath, err = openRegistry(opts.Directory)
 	if err != nil {
 		return nil, err
@@ -148,6 +172,9 @@ func (s *Service) Close() error {
 	}
 	s.closed = true
 	failed := false
+	if s.artifacts != nil {
+		s.artifacts.close()
+	}
 	for _, root := range s.roots {
 		if root.handle.Close() != nil {
 			failed = true
@@ -255,7 +282,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, r, http.StatusForbidden)
 		return
 	}
-	if r.URL.RawQuery != "" || r.URL.ForceQuery || r.URL.RawPath != "" {
+	if r.URL.ForceQuery || r.URL.RawPath != "" || (r.URL.RawQuery != "" && !validNext(r.URL.RequestURI())) {
 		writeStatus(w, r, http.StatusBadRequest)
 		return
 	}
@@ -270,12 +297,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveLogin(w, r)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/f/")
-	htmlDocument := strings.HasSuffix(id, "/html")
-	if htmlDocument {
-		id = strings.TrimSuffix(id, "/html")
-	}
-	if r.URL.Path != "/" && (!strings.HasPrefix(r.URL.Path, "/f/") || !validID(id)) {
+	id, action, hasAction := strings.Cut(strings.TrimPrefix(r.URL.Path, "/f/"), "/")
+	htmlDocument := action == "html"
+	if r.URL.Path != "/" && (!strings.HasPrefix(r.URL.Path, "/f/") || !validID(id) || (hasAction && !htmlDocument && action != "source")) {
 		writeStatus(w, r, http.StatusNotFound)
 		return
 	}
@@ -299,7 +323,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if htmlDocument {
 			writeStatus(w, r, http.StatusUnauthorized)
 		} else {
-			s.showLogin(w, r, r.URL.Path, "", http.StatusUnauthorized)
+			s.showLogin(w, r, r.URL.RequestURI(), "", http.StatusUnauthorized)
 		}
 		return
 	}
@@ -317,6 +341,17 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var file previewFile
 	if err == nil {
 		root := s.rootsByPath[record.Root]
+		if root != nil && root.artifact {
+			cache := s.artifacts
+			source, info, openErr := s.openSource(root, record.Relative, maxArtifactBytes)
+			s.mu.RUnlock()
+			if openErr != nil {
+				writeStatus(w, r, http.StatusNotFound)
+				return
+			}
+			s.serveArtifact(w, r, cache, id, record.Relative, source, info, action)
+			return
+		}
 		if root == nil {
 			err = errNotPreviewable
 		} else {
@@ -329,28 +364,41 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, r, http.StatusNotFound)
 		return
 	}
+	s.serveRendered(w, r, file, "/f/"+id, action)
+}
+
+func (s *Service) serveRendered(w http.ResponseWriter, r *http.Request, file previewFile, base, action string) {
 	var page []byte
-	if htmlDocument {
+	var err error
+	switch action {
+	case "html":
 		if !isHTMLFile(file.name) {
 			writeStatus(w, r, http.StatusNotFound)
 			return
 		}
+		w.Header().Set("Content-Security-Policy", htmlDocumentCSP)
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		page, err = renderHTMLDocument(file)
-	} else {
-		page, err = renderPreview(file, r.URL.Path+"/html")
+		if err != nil {
+			writePage(w, r, http.StatusUnprocessableEntity, "无法渲染 HTML", "可通过上方的「查看源码」阅读原文件。")
+			return
+		}
+	case "source":
+		page, err = renderSource(file, base)
+	default:
+		csp := documentPreviewCSP
+		if isHTMLFile(file.name) {
+			csp += "; frame-src " + s.baseURL + base + "/html"
+		}
+		if isHTMLFile(file.name) || isMarkdownFile(file.name) {
+			w.Header().Set("Content-Security-Policy", csp)
+		}
+		page, err = renderPreview(file, base)
 	}
 	if err != nil {
 		writeStatus(w, r, http.StatusInternalServerError)
 		return
-	}
-	if htmlDocument {
-		w.Header().Set("Content-Security-Policy", htmlDocumentCSP)
-		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-	} else if isHTMLFile(file.name) {
-		// A srcdoc child would inherit script-src 'none'. Only the registered
-		// report's independent wrapper may be framed by the script-free shell.
-		w.Header().Set("Content-Security-Policy", previewCSP+"; frame-src "+s.baseURL+r.URL.Path+"/html")
 	}
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
@@ -392,7 +440,7 @@ func (s *Service) serveLogin(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, r, http.StatusBadRequest)
 		return
 	}
-	if r.URL.Path != "/login" && next != r.URL.Path {
+	if r.URL.Path != "/login" && next != r.URL.RequestURI() {
 		writeStatus(w, r, http.StatusBadRequest)
 		return
 	}
@@ -418,7 +466,20 @@ func (s *Service) serveLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func validNext(next string) bool {
-	return next == "/" || strings.HasPrefix(next, "/f/") && validID(strings.TrimPrefix(next, "/f/"))
+	path, query, hasQuery := strings.Cut(next, "?")
+	if path == "/" {
+		return !hasQuery
+	}
+	id, ok := strings.CutPrefix(path, "/f/")
+	if !ok || !validID(strings.TrimSuffix(id, "/source")) {
+		return false
+	}
+	if !hasQuery {
+		return true
+	}
+	value, ok := strings.CutPrefix(query, "page=")
+	_, valid := parseArtifactPageNumber(value)
+	return ok && valid
 }
 
 func (s *Service) sameOrigin(r *http.Request) bool {

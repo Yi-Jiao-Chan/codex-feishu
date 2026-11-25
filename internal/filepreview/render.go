@@ -45,20 +45,25 @@ details{margin-top:32px;border-top:1px solid #d8dee4;padding-top:20px}summary{cu
 .preview-shell{width:100%;max-width:none;min-height:100vh;margin:0;padding:0;border:0;border-radius:0}
 .preview-header{display:flex;align-items:center;justify-content:space-between;gap:16px;min-width:0;padding:12px 24px;border-bottom:1px solid #d8dee4;background:#fff}.preview-title{min-width:0}.preview-heading{display:flex;align-items:center;gap:10px;min-width:0}.preview-heading h1{margin:0;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:1rem}.preview-heading .file-kind{flex:none;margin:0;white-space:nowrap}.preview-header .meta{margin:4px 0 0;font-size:.75rem;line-height:1.5}.preview-note::before{content:" · "}
 .reading-width{display:flex;align-items:center;gap:6px;flex:none;min-height:36px;color:#57606a;font-size:.85rem;cursor:pointer}.reading-width input{width:16px;height:16px;margin:0;accent-color:#0969da}.reading-width input:focus-visible{outline:2px solid #0969da;outline-offset:4px}
-.preview-content{min-width:0}.preview-markdown .preview-content{padding:32px clamp(16px,3vw,56px)}.preview-markdown:has(#reading-width:checked) .markdown-body{max-width:90ch}.preview-markdown>.source-panel{margin:0 clamp(16px,3vw,56px) 32px}
+.preview-content{min-width:0}.preview-markdown .preview-content{padding:32px clamp(16px,3vw,56px)}.preview-markdown:has(#reading-width:checked) .markdown-body{max-width:90ch}
 .preview-code{display:flex;flex-direction:column;height:100vh;height:100dvh;min-height:0;overflow:hidden}.preview-code .preview-header{flex:none}.preview-code .preview-content{flex:1;min-height:0;overflow:hidden}.preview-code .source{height:100%;max-width:none;margin:0;border:0;border-radius:0}
-.preview-html{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto minmax(0,1fr);height:100vh;height:100dvh;min-height:0;overflow:hidden}.preview-html .preview-header{grid-column:1;grid-row:1}.preview-html .source-panel{grid-column:2;grid-row:1;min-width:0;min-height:0;margin:0;padding:0;border:0;border-bottom:1px solid #d8dee4;background:#fff}.preview-html .source-panel>summary{display:flex;align-items:center;width:100%;height:100%;padding:12px 24px;white-space:nowrap;font-size:.8rem}.preview-html .source-panel>summary::before{content:"›";margin-right:8px;font-size:1.2rem;line-height:1}.preview-html .source-panel[open]{grid-column:1/-1;grid-row:2;overflow:auto}.preview-html .source-panel[open]>summary{position:sticky;top:0;z-index:1;height:auto;margin:0;border-bottom:1px solid #d8dee4;background:#fff}.preview-html .source-panel[open]>summary::before{content:"⌄"}.preview-html .source-panel .source{margin:0;border:0;border-radius:0}.html-view{grid-column:1/-1;grid-row:2;min-width:0;min-height:0;overflow:hidden}.preview-html .source-panel[open]+.html-view{display:none}
-@media(hover:hover) and (pointer:fine){.preview-html .source-panel>summary:hover{background:#f6f8fa}}
+.preview-html{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}.preview-html .preview-header{flex:none}.html-view{flex:1;min-height:0;overflow:hidden}
+.preview-actions{display:flex;align-items:center;gap:16px;flex:none}.preview-actions a{white-space:nowrap}
 @media(max-width:650px){main{margin:0;padding:24px 16px;border-radius:0;border:0}.login{margin:24px auto}.markdown-body h1{font-size:1.65rem}pre{padding:14px 12px}.source{padding:12px 0}.line-no{min-width:3.2em;padding:0 .65em}.meta{margin-bottom:24px}}
-@media(max-width:650px){.preview-header{gap:10px;padding:10px 12px}.preview-heading{gap:8px}.preview-heading h1{font-size:.9rem}.preview-heading .file-kind{font-size:.7rem}.reading-width{min-height:44px;font-size:.8rem}.preview-markdown .preview-content{padding-top:24px}.preview-html{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr)}.preview-html .source-panel{grid-column:1;grid-row:2}.preview-html .source-panel>summary{padding:6px 12px}.preview-html .source-panel[open]{grid-row:2/4}.html-view{grid-row:3}}
+@media(max-width:650px){.preview-header{gap:10px;padding:10px 12px;flex-wrap:wrap}.preview-heading{gap:6px}.preview-heading h1{font-size:.9rem}.preview-heading .file-kind{font-size:.7rem}.reading-width{min-height:44px;font-size:.8rem}.preview-markdown .preview-content{padding-top:24px}}
 `
 
 var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>文件预览登录</title><style>` + pageStyle + `</style></head><body><main class="login"><h1>文件预览</h1><p>输入预览口令后打开已分享的文件。</p>{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}<form method="post" action=""><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="next" value="{{.Next}}"><label for="password">预览口令</label><input type="password" id="password" name="password" autocomplete="current-password" maxlength="256" required autofocus><button type="submit">打开预览</button></form></main></body></html>`))
 
-var previewTemplate = template.Must(template.New("preview").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Name}} · 文件预览</title><style>` + pageStyle + `</style></head><body><main class="preview-shell {{if .IsHTML}}preview-html{{else if .IsMarkdown}}preview-markdown{{else}}preview-code{{end}}">
-<header class="preview-header"><div class="preview-title"><div class="preview-heading">{{if .IsMarkdown}}<span class="file-kind">Markdown 阅读</span>{{else if .IsHTML}}<span class="file-kind">HTML 交互预览</span>{{else if .Language}}<span class="file-kind">{{.Language}}</span>{{else}}<span class="file-kind">文本</span>{{end}}<h1 title="{{.Name}}">{{.Name}}</h1></div><p class="meta">当前文件内容 · 修改时间 {{.Modified}} · 每次打开读取最新内容{{if .IsHTML}}<span class="preview-note">{{if .HTMLPath}}内嵌脚本可运行；图片和外部资源不加载{{else}}无法生成 HTML 页面预览，请查看源码。{{end}}</span>{{end}}</p></div>{{if .IsMarkdown}}<label class="reading-width"><input id="reading-width" type="checkbox">舒适宽度</label>{{end}}</header>
-{{if .IsMarkdown}}<div class="preview-content"><article class="markdown-body">{{.Markdown}}</article></div><details class="source-panel"><summary>查看 Markdown 源码 · 含行号</summary>{{.Source}}</details>
-{{else if .IsHTML}}<details class="source-panel"{{if not .HTMLPath}} open{{end}}><summary>查看 HTML 源码 · 含行号</summary>{{.Source}}</details>{{if .HTMLPath}}<div class="html-view"><iframe class="html-preview" title="{{.Name}} 页面预览" sandbox="allow-scripts" referrerpolicy="no-referrer" src="{{.HTMLPath}}"></iframe></div>{{end}}
+// Legacy /f/<id>#L links still target a line after moving source into its
+// own route. The preview shell CSP allows only this fixed inline script.
+const sourceFragmentScript = `if (/^#L[1-9][0-9]*$/.test(location.hash)) location.replace(location.pathname + "/source" + location.hash);`
+
+var previewTemplate = template.Must(template.New("preview").Parse(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Name}} · 文件预览</title><style>` + pageStyle + `</style>{{if .SourcePath}}<script>` + sourceFragmentScript + `</script>{{end}}</head><body><main class="preview-shell {{if .HTMLPath}}preview-html{{else if .IsMarkdown}}preview-markdown{{else}}preview-code{{end}}">
+<header class="preview-header"><div class="preview-title"><div class="preview-heading">{{if .Kind}}<span class="file-kind">{{.Kind}}</span>{{end}}<h1 title="{{.Name}}">{{.Name}}</h1></div><p class="meta">当前文件内容 · 修改时间 {{.Modified}}{{if .HTMLPath}}<span class="preview-note">内嵌脚本可运行 · 外部资源不加载</span>{{end}}</p></div>
+{{if or .IsMarkdown .SourcePath .ReturnPath}}<div class="preview-actions">{{if .IsMarkdown}}<label class="reading-width"><input id="reading-width" type="checkbox">舒适宽度</label>{{end}}{{if .SourcePath}}<a href="{{.SourcePath}}">查看源码</a>{{end}}{{if .ReturnPath}}<a href="{{.ReturnPath}}">返回渲染视图</a>{{end}}</div>{{end}}</header>
+{{if .IsMarkdown}}<div class="preview-content"><article class="markdown-body">{{.Markdown}}</article></div>
+{{else if .HTMLPath}}<div class="html-view"><iframe class="html-preview" title="{{.Name}} 页面预览" sandbox="allow-scripts" referrerpolicy="no-referrer" src="{{.HTMLPath}}"></iframe></div>
 {{else}}<div class="preview-content">{{.Source}}</div>{{end}}</main></body></html>`))
 
 // The trusted wrapper keeps the report in a frame even if its endpoint is opened
@@ -112,83 +117,117 @@ func writePage(w http.ResponseWriter, r *http.Request, status int, title, messag
 	}
 }
 
-func renderPreview(file previewFile, htmlPath string) ([]byte, error) {
+type previewPageData struct {
+	Name, Modified, Kind, HTMLPath, SourcePath, ReturnPath string
+	IsMarkdown                                             bool
+	Markdown, Source                                       template.HTML
+}
+
+func isMarkdownFile(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".md", ".markdown", ".mdown":
+		return true
+	default:
+		return false
+	}
+}
+
+func renderPreview(file previewFile, basePath string) ([]byte, error) {
+	data := previewPageData{Name: file.name, Modified: file.modified.UTC().Format(time.RFC3339)}
+	switch {
+	case isHTMLFile(file.name):
+		data.Kind = "HTML 交互预览"
+		data.HTMLPath = basePath + "/html"
+	case isMarkdownFile(file.name):
+		data.Kind = "Markdown 阅读"
+		data.IsMarkdown = true
+		markdown, err := renderMarkdown(file.content)
+		if err != nil {
+			return nil, err
+		}
+		data.Markdown = markdown
+	default:
+		return renderSource(file, "")
+	}
+	data.SourcePath = basePath + "/source"
+	return renderPreviewPage(data)
+}
+
+func renderMarkdown(content []byte) (template.HTML, error) {
 	var rendered bytes.Buffer
-	ext := strings.ToLower(filepath.Ext(file.name))
-	isMarkdown := ext == ".md" || ext == ".markdown" || ext == ".mdown"
-	isHTML := isHTMLFile(file.name)
-	if isMarkdown {
-		md := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithRendererOptions(
-			renderer.WithNodeRenderers(util.Prioritized(&codeHighlighter{remaining: highlightBytes}, 100)),
-		)) // Raw HTML and unsafe URL rendering stay disabled.
-		document := md.Parser().Parse(text.NewReader(file.content))
-		var images []*ast.Image
-		var unsafeAutolinks []*ast.AutoLink
-		var unsafeLinks []*ast.Link
-		_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
-			if !entering {
-				return ast.WalkContinue, nil
-			}
-			switch node := node.(type) {
-			case *ast.Image:
-				images = append(images, node)
-				return ast.WalkSkipChildren, nil
-			case *ast.AutoLink:
-				if !safeRenderedLink(node.URL(file.content)) {
-					unsafeAutolinks = append(unsafeAutolinks, node)
-				}
-			case *ast.Link:
-				if !safeRenderedLink(node.Destination) {
-					unsafeLinks = append(unsafeLinks, node)
-				}
-			}
+	md := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithRendererOptions(
+		renderer.WithNodeRenderers(util.Prioritized(&codeHighlighter{remaining: highlightBytes}, 100)),
+	)) // Raw HTML and unsafe URL rendering stay disabled.
+	document := md.Parser().Parse(text.NewReader(content))
+	var images []*ast.Image
+	var unsafeAutolinks []*ast.AutoLink
+	var unsafeLinks []*ast.Link
+	_ = ast.Walk(document, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
 			return ast.WalkContinue, nil
-		})
-		for _, image := range images {
-			// Images are rendered as text; opening a local preview never fetches an
-			// untrusted remote resource or forwards browser information to it.
-			parent := image.Parent()
-			parent.ReplaceChild(parent, image, ast.NewString([]byte("[图片："+string(image.Text(file.content))+"]")))
 		}
-		for _, link := range unsafeAutolinks {
-			parent := link.Parent()
-			parent.ReplaceChild(parent, link, ast.NewString(link.Label(file.content)))
-		}
-		for _, link := range unsafeLinks {
-			parent := link.Parent()
-			for child := link.FirstChild(); child != nil; {
-				next := child.NextSibling()
-				parent.InsertBefore(parent, link, child)
-				child = next
+		switch node := node.(type) {
+		case *ast.Image:
+			images = append(images, node)
+			return ast.WalkSkipChildren, nil
+		case *ast.AutoLink:
+			if !safeRenderedLink(node.URL(content)) {
+				unsafeAutolinks = append(unsafeAutolinks, node)
 			}
-			parent.RemoveChild(parent, link)
+		case *ast.Link:
+			if !safeRenderedLink(node.Destination) {
+				unsafeLinks = append(unsafeLinks, node)
+			}
 		}
-		if err := md.Renderer().Render(&rendered, file.content, document); err != nil {
-			return nil, errRender
-		}
+		return ast.WalkContinue, nil
+	})
+	for _, image := range images {
+		// Images are rendered as text; opening a local preview never fetches an
+		// untrusted remote resource or forwards browser information to it.
+		parent := image.Parent()
+		parent.ReplaceChild(parent, image, ast.NewString([]byte("[图片："+string(image.Text(content))+"]")))
 	}
-	var body bytes.Buffer
+	for _, link := range unsafeAutolinks {
+		parent := link.Parent()
+		parent.ReplaceChild(parent, link, ast.NewString(link.Label(content)))
+	}
+	for _, link := range unsafeLinks {
+		parent := link.Parent()
+		for child := link.FirstChild(); child != nil; {
+			next := child.NextSibling()
+			parent.InsertBefore(parent, link, child)
+			child = next
+		}
+		parent.RemoveChild(parent, link)
+	}
+	if err := md.Renderer().Render(&rendered, content, document); err != nil {
+		return "", errRender
+	}
+	return template.HTML(rendered.String()), nil
+}
+
+func renderSource(file previewFile, basePath string) ([]byte, error) {
+	data := previewPageData{Name: file.name, Modified: file.modified.UTC().Format(time.RFC3339), Kind: "文本"}
 	var lexer chroma.Lexer
-	language := ""
-	if !isMarkdown {
+	switch {
+	case isHTMLFile(file.name):
+		data.Kind = "HTML 源码"
+		lexer = lexers.Get("html")
+	case isMarkdownFile(file.name):
+		data.Kind = "Markdown 源码"
+	default:
 		lexer = lexers.Match(file.name)
-		if isHTML {
-			lexer = lexers.Get("html")
-		}
 		if lexer != nil {
-			language = lexer.Config().Name
+			data.Kind = lexer.Config().Name
 		}
 	}
-	data := struct {
-		Name, Modified, Language string
-		HTMLPath                 string
-		IsMarkdown, IsHTML       bool
-		Markdown, Source         template.HTML
-	}{Name: file.name, Modified: file.modified.UTC().Format(time.RFC3339), Language: language, IsMarkdown: isMarkdown, IsHTML: isHTML,
-		Markdown: template.HTML(rendered.String()), Source: template.HTML(numberedCode(file.content, lexer))}
-	if isHTML && interactiveHTMLDocument(file.content) != "" {
-		data.HTMLPath = htmlPath
-	}
+	data.ReturnPath = basePath
+	data.Source = template.HTML(numberedCode(file.content, lexer))
+	return renderPreviewPage(data)
+}
+
+func renderPreviewPage(data previewPageData) ([]byte, error) {
+	var body bytes.Buffer
 	if previewTemplate.Execute(&body, data) != nil {
 		return nil, errRender
 	}

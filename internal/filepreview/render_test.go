@@ -19,11 +19,31 @@ type renderedNode struct {
 
 func renderedPage(t *testing.T, name, content string) *renderedNode {
 	t.Helper()
-	body, err := renderPreview(previewFile{name: name, content: []byte(content), modified: time.Unix(1800000000, 0)}, testHTMLPath)
+	body, err := renderPreview(previewFile{name: name, content: []byte(content), modified: time.Unix(1800000000, 0)}, strings.TrimSuffix(testHTMLPath, "/html"))
 	if err != nil {
 		t.Fatal("render failed", err)
 	}
 	return parseRenderedPage(t, body)
+}
+
+func renderedSourcePage(t *testing.T, name, content string) *renderedNode {
+	t.Helper()
+	body, err := renderSource(previewFile{name: name, content: []byte(content)}, strings.TrimSuffix(testHTMLPath, "/html"))
+	if err != nil {
+		t.Fatal("source render failed", err)
+	}
+	return parseRenderedPage(t, body)
+}
+
+func assertSeparateSourceLink(t *testing.T, page *renderedNode) {
+	t.Helper()
+	links := renderedNodes(page, func(node *renderedNode) bool {
+		return node.tag == "a" && node.attrs["href"] == strings.TrimSuffix(testHTMLPath, "/html")+"/source"
+	})
+	lines := renderedNodes(page, func(node *renderedNode) bool { return renderedHasClass(node, "code-line") })
+	if len(links) != 1 || links[0].text.String() != "查看源码" || len(lines) != 0 {
+		t.Fatal("rendered preview did not keep the source behind its own link")
+	}
 }
 
 func parseRenderedPage(t *testing.T, body []byte) *renderedNode {
@@ -156,7 +176,11 @@ func assertNoRenderedActiveContent(t *testing.T, page *renderedNode) {
 	t.Helper()
 	for _, node := range renderedNodes(page, func(*renderedNode) bool { return true }) {
 		switch node.tag {
-		case "script", "img", "iframe", "object", "embed", "link":
+		case "script":
+			if len(node.attrs) != 0 || node.text.String() != sourceFragmentScript {
+				t.Fatal("rendered page contains an unexpected script")
+			}
+		case "img", "iframe", "object", "embed", "link":
 			t.Fatalf("rendered page contains active or external-resource element %s", node.tag)
 		}
 		for name, value := range node.attrs {
@@ -199,7 +223,7 @@ func TestRenderPreviewMultilineCommentsKeepSourceAnchors(t *testing.T) {
 	}
 }
 
-func TestRenderPreviewMarkdownReadsGFMBeforeCollapsedSource(t *testing.T) {
+func TestRenderPreviewMarkdownReadsGFMWithSeparateSource(t *testing.T) {
 	content := "# Fixture report\n\n## Examples\n\n- first item\n- second item\n\n- [x] finished\n- [ ] pending\n\n" +
 		"| Name | Value |\n| --- | --- |\n| count | 42 |\n\nUse `value()` and **strong text**.\n"
 	for _, ext := range []string{".md", ".markdown", ".mdown"} {
@@ -231,17 +255,9 @@ func TestRenderPreviewMarkdownReadsGFMBeforeCollapsedSource(t *testing.T) {
 			if _, checked := inputs[0].attrs["checked"]; !checked {
 				t.Fatal("completed task state was lost")
 			}
-			details := renderedTags(page, "details")
-			if len(details) != 1 {
-				t.Fatal("Markdown source has no disclosure")
-			}
-			if _, open := details[0].attrs["open"]; open {
-				t.Fatal("Markdown source is expanded by default")
-			}
-			if len(renderedTags(details[0], "article")) != 0 {
-				t.Fatal("Markdown reading article is hidden inside the source disclosure")
-			}
-			assertRenderedSourceLines(t, details[0], strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
+			assertSeparateSourceLink(t, page)
+			source := renderedSourcePage(t, "report"+ext, content)
+			assertRenderedSourceLines(t, source, strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
 			assertNoRenderedActiveContent(t, page)
 		})
 	}
@@ -266,7 +282,7 @@ func TestRenderPreviewHighlightsMarkdownFences(t *testing.T) {
 			if len(codes) != 1 || strings.TrimSuffix(codes[0].text.String(), "\n") != tc.code {
 				t.Fatal("highlighting changed fenced code text")
 			}
-			assertRenderedSourceLines(t, page, strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
+			assertRenderedSourceLines(t, renderedSourcePage(t, "report.md", content), strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
 			assertNoRenderedActiveContent(t, page)
 		})
 	}
@@ -296,7 +312,7 @@ func TestRenderPreviewFenceMetadataUsesOnlyBoundedLanguageNames(t *testing.T) {
 			if len(tc.language) > 64 && codes[0].attrs["class"] != "" {
 				t.Fatal("oversized fence metadata was copied to an HTML class")
 			}
-			assertRenderedSourceLines(t, page, strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
+			assertRenderedSourceLines(t, renderedSourcePage(t, "report.md", content), strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
 			assertNoRenderedActiveContent(t, page)
 		})
 	}
@@ -334,7 +350,7 @@ func TestRenderPreviewEmptyAndCRLFSource(t *testing.T) {
 	for _, name := range []string{"empty.go", "empty.md", "empty.txt"} {
 		t.Run(name, func(t *testing.T) {
 			page := renderedPage(t, name, "")
-			assertRenderedSourceLines(t, page, []string{""})
+			assertRenderedSourceLines(t, renderedSourcePage(t, name, ""), []string{""})
 			if name == "empty.md" && len(renderedTags(page, "article")) != 1 {
 				t.Fatal("empty Markdown lost its reading view")
 			}
@@ -372,6 +388,6 @@ func TestRenderPreviewLargeContentFallsBackWithoutTruncation(t *testing.T) {
 	if len(renderedTokenSpans(codes[1])) != 0 {
 		t.Fatal("cumulative Markdown highlight budget did not fall back to plain text")
 	}
-	assertRenderedSourceLines(t, page, strings.Split(strings.TrimSuffix(markdown, "\n"), "\n"))
+	assertRenderedSourceLines(t, renderedSourcePage(t, "large.md", markdown), strings.Split(strings.TrimSuffix(markdown, "\n"), "\n"))
 	assertNoRenderedActiveContent(t, page)
 }
