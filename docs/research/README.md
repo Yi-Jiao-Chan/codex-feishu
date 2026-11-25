@@ -20,6 +20,7 @@
 | [飞书图片、文件与图文混排入站资源核验](feishu-inbound-resources-2026-10-15.md) | 2026-10-15 |
 | [飞书卡片承载审批与用户问答](feishu-interactive-requests-2026-10-14.md) | 2026-10-14 |
 | [飞书打开服务器本地文件：浏览器链接方案](feishu-local-file-browser-links-options-2026-10-15.md) | 2026-10-15 |
+| [大型交互式 HTML 在线预览方案](large-interactive-html-preview-options-2026-11-25.md) | 2026-11-25 |
 | [飞书自建机器人 M0 最小权限核验](feishu-m0-permissions-2026-10-10.md) | 2026-10-10 |
 | [飞书 unknown 请求的只读核验边界](feishu-unknown-readback-2026-10-12.md) | 2026-10-12 |
 

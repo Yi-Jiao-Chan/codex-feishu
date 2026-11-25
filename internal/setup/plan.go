@@ -399,6 +399,9 @@ func (p Planner) Build(ctx context.Context, in Input, paths Paths) (Plan, error)
 	preview := plan.Config.FilePreviewLimits()
 	if preview.Enabled {
 		plan.NextSteps = append(plan.NextSteps, fmt.Sprintf("file preview: authenticated read-only browser access at %s; explicitly allowed roots=%d; max_file_bytes=%d; real client/network acceptance pending", preview.BaseURL, len(preview.AllowedRoots), preview.MaxFileBytes))
+		if len(preview.ArtifactRoots) != 0 {
+			plan.NextSteps = append(plan.NextSteps, fmt.Sprintf("file preview artifacts: explicitly allowed roots=%d; artifact_cache_quota_bytes=%d", len(preview.ArtifactRoots), preview.ArtifactCacheQuotaBytes))
+		}
 	}
 	followMode := creation.DefaultFollowMode
 	if followMode == "" {

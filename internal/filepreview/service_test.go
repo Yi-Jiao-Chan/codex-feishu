@@ -379,17 +379,25 @@ func TestAuthenticatedMarkdownIsSafe(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("markdown status = %d", w.Code)
 	}
-	body := w.Body.String()
+	body := strings.Replace(w.Body.String(), "<script>"+sourceFragmentScript+"</script>", "", 1)
 	for _, active := range []string{"<script", "<img", `href="javascript:`, `href="java&#`, `href="data:`, `href="ftp:`, `href="/etc/passwd"`} {
 		if strings.Contains(body, active) {
 			t.Fatalf("unsafe HTML was rendered: %s", active)
 		}
 	}
-	for _, expected := range []string{"<h1>Safe title</h1>", "<strong>strong</strong>", "<table>", `href="https://example.invalid/page?x=1&amp;y=2"`, "[图片：remote]", `id="L1"`} {
+	for _, expected := range []string{"<h1>Safe title</h1>", "<strong>strong</strong>", "<table>", `href="https://example.invalid/page?x=1&amp;y=2"`, "[图片：remote]", "查看源码"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("safe markdown feature missing: %s", expected)
 		}
 	}
+	if strings.Contains(body, `id="L1"`) {
+		t.Fatal("rendered Markdown included source lines")
+	}
+	if w := request(t, f.s, http.MethodGet, target+"/source", loggedIn(t, f.s)); w.Code != http.StatusOK ||
+		!strings.Contains(w.Body.String(), `id="L1"`) || w.Header().Get("Content-Security-Policy") != previewCSP {
+		t.Fatal("separate Markdown source did not preserve anchors and isolation")
+	}
+
 }
 
 func TestActualHTTPBrowserFlow(t *testing.T) {

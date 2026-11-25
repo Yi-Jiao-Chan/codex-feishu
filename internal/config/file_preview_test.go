@@ -39,6 +39,29 @@ func TestFilePreviewAllowsExplicitFilesystemRoot(t *testing.T) {
 	}
 }
 
+func TestFilePreviewArtifactScopeAndQuota(t *testing.T) {
+	c := validTestConfig(t)
+	c.FilePreview.Enabled = true
+	c.FilePreview.BaseURL = "http://10.0.0.1:8787"
+	root := t.TempDir()
+	c.FilePreview.AllowedRoots = []string{"/", root}
+	c.FilePreview.ArtifactRoots = []string{root}
+	if err := c.ValidateFilePreview(); err != nil || c.FilePreviewLimits().ArtifactCacheQuotaBytes != 8<<30 {
+		t.Fatal("authorized artifact root or default quota rejected", err)
+	}
+	c.FilePreview.ArtifactCacheQuotaBytes = -1
+	if err := c.ValidateFilePreview(); err == nil {
+		t.Fatal("negative quota was accepted")
+	}
+	c.FilePreview.ArtifactCacheQuotaBytes = 4 << 30
+	for _, unauthorized := range []string{"/", t.TempDir()} {
+		c.FilePreview.ArtifactRoots = []string{unauthorized}
+		if err := c.ValidateFilePreview(); err == nil {
+			t.Fatal("overbroad artifact root was accepted")
+		}
+	}
+}
+
 func TestFilePreviewSecretRemainsPrivateAndRejectsSymlinks(t *testing.T) {
 	c := validTestConfig(t)
 	path := c.FilePreviewLimits().SecretFile

@@ -200,7 +200,7 @@ func (s *Service) Rewrite(ctx context.Context, body string) (string, error) {
 		if root == nil {
 			continue
 		}
-		if _, err := s.readFile(root, relative); err != nil {
+		if err := s.checkReference(root, relative); err != nil {
 			if errors.Is(err, errNotPreviewable) {
 				continue
 			}
@@ -249,7 +249,7 @@ func (s *Service) Rewrite(ctx context.Context, body string) (string, error) {
 		if root == nil {
 			return codexclient.VisualizationFallback, nil
 		}
-		if _, err := s.readFile(root, relative); err != nil {
+		if err := s.checkReference(root, relative); err != nil {
 			if errors.Is(err, errNotPreviewable) {
 				return codexclient.VisualizationFallback, nil
 			}

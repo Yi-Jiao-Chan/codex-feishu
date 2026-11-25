@@ -33,7 +33,7 @@ func TestVisualizationUsesDurableAuthenticatedInteractivePreview(t *testing.T) {
 	}
 	session := loggedIn(t, f.s)
 	if w := request(t, f.s, http.MethodGet, target, session); w.Code != http.StatusOK ||
-		!strings.Contains(w.Body.String(), "synthetic chart") || !strings.Contains(w.Body.String(), `sandbox="allow-scripts"`) {
+		strings.Contains(w.Body.String(), "synthetic chart") || !strings.Contains(w.Body.String(), `sandbox="allow-scripts"`) {
 		t.Fatal("visualization did not use the existing isolated HTML preview")
 	}
 	if again, err := f.s.Rewrite(context.Background(), got); err != nil || again != got {

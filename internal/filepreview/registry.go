@@ -279,17 +279,16 @@ func deniedFileError(err error) error {
 	return errFileIO
 }
 
-// readFile traverses directories using held os.Root handles and refuses symlinks
+// openSource traverses directories using held os.Root handles and refuses symlinks
 // at every component. Each opened inode is compared with its lstat result; Root
 // additionally constrains resolution during a concurrent symlink replacement.
-func (s *Service) readFile(root *allowedRoot, relative string) (previewFile, error) {
-	var result previewFile
+func (s *Service) openSource(root *allowedRoot, relative string, limit int64) (*os.File, fs.FileInfo, error) {
 	if !allowedRelative(relative) {
-		return result, errNotPreviewable
+		return nil, nil, errNotPreviewable
 	}
 	abs := filepath.Join(root.path, relative)
 	if abs == s.secretPath || isWithin(abs, s.directoryPath) {
-		return result, errNotPreviewable
+		return nil, nil, errNotPreviewable
 	}
 	parts := strings.Split(relative, string(filepath.Separator))
 	current := root.handle
@@ -302,45 +301,68 @@ func (s *Service) readFile(root *allowedRoot, relative string) (previewFile, err
 	for _, part := range parts[:len(parts)-1] {
 		info, err := current.Lstat(part)
 		if err != nil {
-			return result, deniedFileError(err)
+			return nil, nil, deniedFileError(err)
 		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return result, errNotPreviewable
+			return nil, nil, errNotPreviewable
 		}
 		next, err := current.OpenRoot(part)
 		if err != nil {
-			return result, deniedFileError(err)
+			return nil, nil, deniedFileError(err)
 		}
 		openedRoots = append(openedRoots, next)
 		openedInfo, err := next.Stat(".")
 		if err != nil {
-			return result, deniedFileError(err)
+			return nil, nil, deniedFileError(err)
 		}
 		if !os.SameFile(info, openedInfo) {
-			return result, errNotPreviewable
+			return nil, nil, errNotPreviewable
 		}
 		current = next
 	}
 	name := parts[len(parts)-1]
 	info, err := current.Lstat(name)
 	if err != nil {
-		return result, deniedFileError(err)
+		return nil, nil, deniedFileError(err)
 	}
-	if !info.Mode().IsRegular() || info.Size() > s.maxBytes {
-		return result, errNotPreviewable
+	if !info.Mode().IsRegular() || info.Size() > limit {
+		return nil, nil, errNotPreviewable
 	}
 	f, err := current.OpenFile(name, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return result, deniedFileError(err)
+		return nil, nil, deniedFileError(err)
 	}
-	defer f.Close()
 	openedInfo, err := f.Stat()
 	if err != nil {
-		return result, deniedFileError(err)
+		_ = f.Close()
+		return nil, nil, deniedFileError(err)
 	}
-	if !os.SameFile(info, openedInfo) || !openedInfo.Mode().IsRegular() || openedInfo.Size() > s.maxBytes {
-		return result, errNotPreviewable
+	if !os.SameFile(info, openedInfo) || !openedInfo.Mode().IsRegular() || openedInfo.Size() > limit {
+		_ = f.Close()
+		return nil, nil, errNotPreviewable
 	}
+	return f, openedInfo, nil
+}
+
+func (s *Service) checkReference(root *allowedRoot, relative string) error {
+	if root.artifact {
+		f, _, err := s.openSource(root, relative, maxArtifactBytes)
+		if err != nil {
+			return err
+		}
+		return f.Close()
+	}
+	_, err := s.readFile(root, relative)
+	return err
+}
+
+func (s *Service) readFile(root *allowedRoot, relative string) (previewFile, error) {
+	var result previewFile
+	f, opened, err := s.openSource(root, relative, s.maxBytes)
+	if err != nil {
+		return result, err
+	}
+	defer f.Close()
 	body, err := io.ReadAll(io.LimitReader(f, s.maxBytes+1))
 	if err != nil {
 		return result, deniedFileError(err)
@@ -357,5 +379,5 @@ func (s *Service) readFile(root *allowedRoot, relative string) (previewFile, err
 		}
 	}
 	// The descriptor stays pinned to this regular file if its pathname changes.
-	return previewFile{name: name, content: body, modified: openedInfo.ModTime()}, nil
+	return previewFile{name: filepath.Base(relative), content: body, modified: opened.ModTime()}, nil
 }

@@ -94,7 +94,11 @@ func assertRenderedHTMLFrame(t *testing.T, page *renderedNode, name, content str
 	}
 	for _, node := range renderedNodes(page, func(*renderedNode) bool { return true }) {
 		switch node.tag {
-		case "script", "img", "object", "embed":
+		case "script":
+			if len(node.attrs) != 0 || node.text.String() != sourceFragmentScript {
+				t.Fatal("original HTML escaped into an outer script")
+			}
+		case "img", "object", "embed":
 			t.Fatal("original HTML escaped into an outer active element")
 		}
 		for attr := range node.attrs {
@@ -126,24 +130,15 @@ func assertRenderedHTMLFrame(t *testing.T, page *renderedNode, name, content str
 	return document
 }
 
-func assertRenderedHTMLSource(t *testing.T, page *renderedNode, content string, wantOpen bool) *renderedNode {
+func assertRenderedHTMLSource(t *testing.T, page *renderedNode, content string) *renderedNode {
 	t.Helper()
-	details := renderedTags(page, "details")
-	if len(details) != 1 {
-		t.Fatal("HTML source has no disclosure")
+	assertSeparateSourceLink(t, page)
+	source := renderedSourcePage(t, "report.html", content)
+	if len(renderedTags(source, "iframe")) != 0 || len(renderedTags(source, "script")) != 0 {
+		t.Fatal("HTML source includes active content")
 	}
-	if _, open := details[0].attrs["open"]; open != wantOpen {
-		t.Fatal("HTML source disclosure has the wrong open state")
-	}
-	summaries := renderedTags(details[0], "summary")
-	if len(summaries) != 1 || summaries[0].text.String() != "查看 HTML 源码 · 含行号" {
-		t.Fatal("HTML source disclosure has no descriptive summary")
-	}
-	if len(renderedTags(details[0], "iframe")) != 0 {
-		t.Fatal("HTML preview is hidden inside the source disclosure")
-	}
-	assertRenderedSourceLines(t, details[0], strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
-	return details[0]
+	assertRenderedSourceLines(t, source, strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
+	return source
 }
 
 func TestRenderPreviewHTMLDocumentAndSource(t *testing.T) {
@@ -157,8 +152,8 @@ func TestRenderPreviewHTMLDocumentAndSource(t *testing.T) {
 			if len(titles) != 1 || htmlNodeText(titles[0]) != "Fixture & demo" || len(headings) != 1 || htmlNodeText(headings[0]) != "Hello & goodbye" || htmlAttribute(headings[0], "title") != "'quoted'" {
 				t.Fatal("static HTML changed document text, entities or quoted attributes")
 			}
-			source := assertRenderedHTMLSource(t, page, content, false)
-			assertRenderedHighlight(t, page, source)
+			source := assertRenderedHTMLSource(t, page, content)
+			assertRenderedHighlight(t, source, source)
 		})
 	}
 }
@@ -175,7 +170,7 @@ func TestRenderPreviewHTMLClosingTagsAndQuotesStayInSrcdoc(t *testing.T) {
 	if len(scripts) != 1 || htmlNodeText(scripts[0]) != `window.fixture = "</iframe>";` || len(paragraphs) != 1 || htmlNodeText(paragraphs[0]) != "<literal> & raw text" || htmlAttribute(paragraphs[0], "title") != "'quoted' & text" {
 		t.Fatal("static HTML changed script text, entities or quoted attributes")
 	}
-	assertRenderedHTMLSource(t, page, content, false)
+	assertRenderedHTMLSource(t, page, content)
 }
 
 func TestRenderPreviewHTMLDirectoryLinksStayInChildDocument(t *testing.T) {
@@ -229,13 +224,13 @@ func TestRenderPreviewHTMLDirectoryLinksStayInChildDocument(t *testing.T) {
 	if len(want) != 0 {
 		t.Fatal("HTML preview lost directory links")
 	}
-	assertRenderedHTMLSource(t, page, content, false)
+	assertRenderedHTMLSource(t, page, content)
 }
 
 func TestRenderPreviewEmptyHTMLKeepsFrameAndSource(t *testing.T) {
 	page := renderedPage(t, "empty.html", "")
 	assertRenderedHTMLFrame(t, page, "empty.html", "")
-	assertRenderedHTMLSource(t, page, "", false)
+	assertRenderedHTMLSource(t, page, "")
 }
 
 func TestRenderPreviewHTMLRemovesHintsAndNestedContexts(t *testing.T) {
@@ -268,7 +263,7 @@ func TestRenderPreviewHTMLRemovesHintsAndNestedContexts(t *testing.T) {
 			if !strings.Contains(htmlNodeText(document), tc.retainedText) || strings.Contains(htmlNodeText(document), "nested fallback to remove") {
 				t.Fatal("static HTML removed unrelated content or retained a nested context subtree")
 			}
-			assertRenderedHTMLSource(t, page, tc.content, false)
+			assertRenderedHTMLSource(t, page, tc.content)
 		})
 	}
 }
@@ -289,22 +284,28 @@ func TestRenderPreviewHTMLNoscriptStaysInactive(t *testing.T) {
 					t.Fatalf("static noscript fallback materialized a %s element", tag)
 				}
 			}
-			assertRenderedHTMLSource(t, page, tc.content, false)
+			assertRenderedHTMLSource(t, page, tc.content)
 		})
 	}
 }
 
-func TestRenderPreviewHTMLParseFailureKeepsCompleteOpenSource(t *testing.T) {
+func TestHTMLParseFailureKeepsSeparateSource(t *testing.T) {
+	f := newFixture(t)
 	content := strings.Repeat("<div>", 600) + "deep fixture" + strings.Repeat("</div>", 600)
-	page := renderedPage(t, "deep.html", content)
-	if len(renderedTags(page, "iframe")) != 0 {
-		t.Fatal("failed HTML parsing still created a preview frame")
+	target := registeredURL(t, f.s, writeFixture(t, f.root, "deep.html", content))
+	session := loggedIn(t, f.s)
+	w := request(t, f.s, http.MethodGet, target, session)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "查看源码") || strings.Contains(w.Body.String(), "deep fixture") {
+		t.Fatal("preview shell did not expose its separate source link")
 	}
-	if !strings.Contains(page.text.String(), "无法生成 HTML 页面预览") {
-		t.Fatal("failed HTML parsing did not explain the source fallback")
+	w = request(t, f.s, http.MethodGet, target+"/html", session)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "无法渲染 HTML") {
+		t.Fatal("invalid HTML did not receive an explanation")
 	}
-	assertRenderedHTMLSource(t, page, content, true)
-	assertNoRenderedActiveContent(t, page)
+	w = request(t, f.s, http.MethodGet, target+"/source", session)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "deep fixture") {
+		t.Fatal("source could not be opened after HTML parse failure")
+	}
 }
 
 func TestHTMLPreviewServiceRequiresAuthentication(t *testing.T) {
@@ -318,7 +319,7 @@ func TestHTMLPreviewServiceRequiresAuthentication(t *testing.T) {
 				t.Fatal("unauthenticated HTML preview exposed a frame or document")
 			}
 			w = request(t, f.s, http.MethodGet, target, loggedIn(t, f.s))
-			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<iframe") || !strings.Contains(w.Body.String(), `src="/f/`) || !strings.Contains(w.Body.String(), "service-html-fixture") {
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<iframe") || !strings.Contains(w.Body.String(), `src="/f/`) || strings.Contains(w.Body.String(), "service-html-fixture") || !strings.Contains(w.Body.String(), "查看源码") {
 				t.Fatal("authenticated HTML preview did not render a registered document")
 			}
 			if w.Header().Get("X-DNS-Prefetch-Control") != "off" {
@@ -329,7 +330,7 @@ func TestHTMLPreviewServiceRequiresAuthentication(t *testing.T) {
 				name, value, _ := strings.Cut(strings.TrimSpace(directive), " ")
 				csp[name] = strings.TrimSpace(value)
 			}
-			if csp["default-src"] != "'none'" || csp["script-src"] != "'none'" || csp["frame-src"] != target+"/html" {
+			if csp["default-src"] != "'none'" || csp["script-src"] != "'sha256-"+sourceFragmentHash()+"'" || csp["frame-src"] != target+"/html" {
 				t.Fatal("HTML preview response relaxed resource or script CSP")
 			}
 		})
